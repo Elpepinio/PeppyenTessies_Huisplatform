@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { Home, ShoppingBasket, Wallet, LogOut, Lock, KeyRound } from "lucide-react";
+import { Home, List, Wallet, LogOut, Lock, KeyRound } from "lucide-react";
 
 // ---- Tools die op het platform beschikbaar zijn ----
 const TOOLS = [
   {
-    href: "/boodschappen",
-    label: "Boodschappen",
-    description: "Gedeelde, gecategoriseerde boodschappenlijst",
-    icon: ShoppingBasket,
+    href: "/lijsten",
+    label: "Lijsten",
+    description: "Boodschappen, paklijsten, klussenlijsten en meer",
+    icon: List,
     color: "#2D4A3E",
   },
   {
@@ -18,7 +18,6 @@ const TOOLS = [
     icon: Wallet,
     color: "#C86E4A",
   },
-  // Nieuwe tools komen hier later bij.
 ];
 
 export default function Platform() {
