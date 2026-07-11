@@ -5,16 +5,21 @@ const redis = Redis.fromEnv();
 const DATA_KEY = "huishouden:lijsten";
 
 const BOODSCHAPPEN_CATEGORIEEN = [
-  { id: "groente_fruit", label: "Groente & Fruit", icon: "🥦" },
+  // ── Markt ──
+  { id: "groentekraam",  label: "Groentekraam",   icon: "🥦" },
+  { id: "kaaskraam",     label: "Kaaskraam",       icon: "🧀" },
+  { id: "viskraam",      label: "Viskraam",        icon: "🐟" },
+  { id: "bloemenkraam",  label: "Bloemenkraam",    icon: "💐" },
+  // ── Supermarkt ──
   { id: "zuivel_eieren", label: "Zuivel & Eieren", icon: "🥛" },
-  { id: "vlees_vis", label: "Vlees & Vis", icon: "🥩" },
-  { id: "brood_bakkerij", label: "Brood & Bakkerij", icon: "🥐" },
-  { id: "houdbaar", label: "Houdbaar & Voorraad", icon: "🥫" },
-  { id: "diepvries", label: "Diepvries", icon: "🧊" },
-  { id: "drogisterij", label: "Drogisterij", icon: "🧴" },
-  { id: "huishouden", label: "Huishouden", icon: "🧽" },
-  { id: "dranken", label: "Dranken", icon: "🧃" },
-  { id: "overig", label: "Overig", icon: "🛒" },
+  { id: "vlees_vis",     label: "Vlees & Vis",     icon: "🥩" },
+  { id: "brood_bakkerij",label: "Brood & Bakkerij",icon: "🥐" },
+  { id: "houdbaar",      label: "Houdbaar",        icon: "🥫" },
+  { id: "diepvries",     label: "Diepvries",       icon: "🧊" },
+  { id: "drogisterij",   label: "Drogisterij",     icon: "🧴" },
+  { id: "huishouden",    label: "Huishouden",      icon: "🧽" },
+  { id: "dranken",       label: "Dranken",         icon: "🧃" },
+  { id: "overig",        label: "Overig",          icon: "🛒" },
 ];
 
 const DEFAULT_STATE = {

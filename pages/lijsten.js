@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, Check, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2 } from "lucide-react";
+import { Plus, Check, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift } from "lucide-react";
 
 // ---- Constanten ----
-const UNITS = ["stuks", "250g", "500g", "g", "kg", "ml", "l", "pak"];
+const UNITS = ["stuks", "g", "kg", "ml", "l", "pak"];
 
-const LIJST_ICONEN = ["🛒","✈️","🏖️","🏕️","🎿","🏠","🔧","🎉","📦","📋","🌍","🚗","🎒","💊","📚","🍽️","🧹","💡"];
+const LIJST_ICONEN = ["🛒","✈️","🏖️","🏕️","🎿","🏠","🔧","🎉","📦","📋","🌍","🚗","🚐","🏨","🎒","💊","📚","🍽️","🧹","💡","🎁","🎄","🎅"];
+
+const CADEAU_STATUSSEN = ["Idee", "Gekocht", "Ingepakt", "Gegeven"];
 
 const STANDAARD_CATEGORIEEN = [
   { id: "cat_1", label: "Categorie 1", icon: "📌" },
@@ -13,32 +15,251 @@ const STANDAARD_CATEGORIEEN = [
 ];
 
 const VAKANTIE_CATEGORIEEN = [
-  { id: "kleding", label: "Kleding", icon: "👕" },
-  { id: "toilettas", label: "Toilettas", icon: "🧴" },
-  { id: "documenten", label: "Documenten", icon: "📄" },
-  { id: "elektronica", label: "Elektronica", icon: "🔌" },
-  { id: "medicijnen", label: "Medicijnen", icon: "💊" },
-  { id: "entertainment", label: "Entertainment", icon: "🎮" },
-  { id: "overig", label: "Overig", icon: "📦" },
+  { id: "kleding",     label: "Kleding",      icon: "👕" },
+  { id: "toilettas",   label: "Toilettas",    icon: "🧴" },
+  { id: "documenten",  label: "Documenten",   icon: "📄" },
+  { id: "elektronica", label: "Elektronica",  icon: "🔌" },
+  { id: "medicijnen",  label: "Medicijnen",   icon: "💊" },
+  { id: "overig",      label: "Overig",       icon: "📦" },
 ];
 
 const LIJST_SJABLONEN = [
   { naam: "Vakantie paklijst", icon: "✈️", categorieen: VAKANTIE_CATEGORIEEN },
   { naam: "Boodschappen", icon: "🛒", categorieen: [
-    { id: "groente_fruit", label: "Groente & Fruit", icon: "🥦" },
-    { id: "zuivel_eieren", label: "Zuivel & Eieren", icon: "🥛" },
-    { id: "vlees_vis", label: "Vlees & Vis", icon: "🥩" },
+    { id: "groentekraam",   label: "Groentekraam",    icon: "🥦" },
+    { id: "kaaskraam",      label: "Kaaskraam",        icon: "🧀" },
+    { id: "viskraam",       label: "Viskraam",         icon: "🐟" },
+    { id: "bloemenkraam",   label: "Bloemenkraam",     icon: "💐" },
+    { id: "zuivel_eieren",  label: "Zuivel & Eieren",  icon: "🥛" },
+    { id: "vlees_vis",      label: "Vlees & Vis",      icon: "🥩" },
     { id: "brood_bakkerij", label: "Brood & Bakkerij", icon: "🥐" },
-    { id: "houdbaar", label: "Houdbaar & Voorraad", icon: "🥫" },
-    { id: "diepvries", label: "Diepvries", icon: "🧊" },
-    { id: "dranken", label: "Dranken", icon: "🧃" },
-    { id: "overig", label: "Overig", icon: "🛒" },
+    { id: "houdbaar",       label: "Houdbaar",         icon: "🥫" },
+    { id: "diepvries",      label: "Diepvries",        icon: "🧊" },
+    { id: "drogisterij",    label: "Drogisterij",      icon: "🧴" },
+    { id: "huishouden",     label: "Huishouden",       icon: "🧽" },
+    { id: "dranken",        label: "Dranken",          icon: "🧃" },
+    { id: "overig",         label: "Overig",           icon: "🛒" },
+  ]},
+  { naam: "Cadeaulijst", icon: "🎁", type: "cadeau", categorieen: [
+    { id: "pepijn",   label: "Pepijn",   icon: "👤" },
+    { id: "tessa",    label: "Tessa",    icon: "👤" },
+    { id: "familie",  label: "Familie",  icon: "👨‍👩‍👧" },
+    { id: "vrienden", label: "Vrienden", icon: "👫" },
+    { id: "overig",   label: "Overig",   icon: "🎁" },
+  ], items: [
+    { cat: "pepijn",   name: "Cadeau idee 1", amount: 1, unit: "stuks", status: "Idee", budget: "" },
+    { cat: "tessa",    name: "Cadeau idee 1", amount: 1, unit: "stuks", status: "Idee", budget: "" },
   ]},
   { naam: "Klussenlijst", icon: "🔧", categorieen: [
     { id: "binnen", label: "Binnen", icon: "🏠" },
     { id: "buiten", label: "Buiten", icon: "🌳" },
-    { id: "kopen", label: "Nog kopen", icon: "🛒" },
-    { id: "overig", label: "Overig", icon: "📦" },
+    { id: "kopen",  label: "Nog kopen", icon: "🛒" },
+    { id: "overig", label: "Overig",    icon: "📦" },
+  ]},
+  { naam: "Wintersport", icon: "🎿", categorieen: [
+    { id: "kleding",     label: "Kleding",      icon: "🧥" },
+    { id: "uitrusting",  label: "Uitrusting",   icon: "🎿" },
+    { id: "bescherming", label: "Bescherming",  icon: "⛑️" },
+    { id: "toilettas",   label: "Toilettas",    icon: "🧴" },
+    { id: "documenten",  label: "Documenten",   icon: "📄" },
+    { id: "elektronica", label: "Elektronica",  icon: "🔌" },
+    { id: "overig",      label: "Overig",       icon: "📦" },
+  ], items: [
+    { cat: "kleding",     name: "Skibroek",                amount: 1, unit: "stuks" },
+    { cat: "kleding",     name: "Ski-jas",                 amount: 1, unit: "stuks" },
+    { cat: "kleding",     name: "Thermobroek",             amount: 2, unit: "stuks" },
+    { cat: "kleding",     name: "Thermoshirt",             amount: 2, unit: "stuks" },
+    { cat: "kleding",     name: "Fleece trui",             amount: 1, unit: "stuks" },
+    { cat: "kleding",     name: "Skisokken",               amount: 4, unit: "stuks" },
+    { cat: "kleding",     name: "Handschoenen",            amount: 2, unit: "stuks" },
+    { cat: "kleding",     name: "Muts",                    amount: 1, unit: "stuks" },
+    { cat: "kleding",     name: "Sjaal / nekwarmer",       amount: 1, unit: "stuks" },
+    { cat: "kleding",     name: "Après-ski laarzen",       amount: 1, unit: "stuks" },
+    { cat: "kleding",     name: "Ondergoed",               amount: 5, unit: "stuks" },
+    { cat: "uitrusting",  name: "Skischoenen",             amount: 1, unit: "stuks" },
+    { cat: "uitrusting",  name: "Ski's of snowboard",      amount: 1, unit: "stuks" },
+    { cat: "uitrusting",  name: "Skistokken",              amount: 1, unit: "stuks" },
+    { cat: "uitrusting",  name: "Skipas",                  amount: 1, unit: "stuks" },
+    { cat: "bescherming", name: "Skihelm",                 amount: 1, unit: "stuks" },
+    { cat: "bescherming", name: "Skibril",                 amount: 1, unit: "stuks" },
+    { cat: "bescherming", name: "Rugprotector",            amount: 1, unit: "stuks" },
+    { cat: "bescherming", name: "Zonnebrand factor 50",    amount: 1, unit: "stuks" },
+    { cat: "bescherming", name: "Lippenbalsem",            amount: 1, unit: "stuks" },
+    { cat: "toilettas",   name: "Tandenborstel",           amount: 1, unit: "stuks" },
+    { cat: "toilettas",   name: "Tandpasta",               amount: 1, unit: "stuks" },
+    { cat: "toilettas",   name: "Shampoo",                 amount: 1, unit: "stuks" },
+    { cat: "toilettas",   name: "Douchegel",               amount: 1, unit: "stuks" },
+    { cat: "toilettas",   name: "Deodorant",               amount: 1, unit: "stuks" },
+    { cat: "toilettas",   name: "Ibuprofen / pijnstillers",amount: 1, unit: "stuks" },
+    { cat: "documenten",  name: "Paspoort / ID",           amount: 1, unit: "stuks" },
+    { cat: "documenten",  name: "Reisverzekeringspas",     amount: 1, unit: "stuks" },
+    { cat: "documenten",  name: "Rijbewijs",               amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Telefoon + oplader",      amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Powerbank",               amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Adapter / stekker",       amount: 1, unit: "stuks" },
+    { cat: "overig",      name: "Rugzak dagtas",           amount: 1, unit: "stuks" },
+    { cat: "overig",      name: "Waterfles",               amount: 1, unit: "stuks" },
+    { cat: "overig",      name: "Snacks voor onderweg",    amount: 1, unit: "stuks" },
+  ]},
+  { naam: "Zomervakantie", icon: "🏖️", categorieen: [
+    { id: "kleding",     label: "Kleding",       icon: "👕" },
+    { id: "strand",      label: "Strand & zwem", icon: "🏊" },
+    { id: "toilettas",   label: "Toilettas",     icon: "🧴" },
+    { id: "documenten",  label: "Documenten",    icon: "📄" },
+    { id: "elektronica", label: "Elektronica",   icon: "🔌" },
+    { id: "gezondheid",  label: "Gezondheid",    icon: "💊" },
+    { id: "overig",      label: "Overig",        icon: "📦" },
+  ], items: [
+    { cat: "kleding",    name: "T-shirts",                   amount: 5, unit: "stuks" },
+    { cat: "kleding",    name: "Shorts",                     amount: 3, unit: "stuks" },
+    { cat: "kleding",    name: "Avondkleding",               amount: 2, unit: "stuks" },
+    { cat: "kleding",    name: "Ondergoed",                  amount: 7, unit: "stuks" },
+    { cat: "kleding",    name: "Sweater / vest (avond)",     amount: 1, unit: "stuks" },
+    { cat: "kleding",    name: "Sandalen",                   amount: 1, unit: "stuks" },
+    { cat: "kleding",    name: "Sneakers",                   amount: 1, unit: "stuks" },
+    { cat: "kleding",    name: "Zonnehoed / pet",            amount: 1, unit: "stuks" },
+    { cat: "kleding",    name: "Zonnebril",                  amount: 1, unit: "stuks" },
+    { cat: "strand",     name: "Zwembroek / bikini",         amount: 2, unit: "stuks" },
+    { cat: "strand",     name: "Strandlaken",                amount: 2, unit: "stuks" },
+    { cat: "strand",     name: "Slippers",                   amount: 1, unit: "stuks" },
+    { cat: "strand",     name: "Zonnebrand SPF 50",          amount: 1, unit: "stuks" },
+    { cat: "strand",     name: "After sun",                  amount: 1, unit: "stuks" },
+    { cat: "strand",     name: "Strandtas",                  amount: 1, unit: "stuks" },
+    { cat: "toilettas",  name: "Tandenborstel",              amount: 1, unit: "stuks" },
+    { cat: "toilettas",  name: "Tandpasta",                  amount: 1, unit: "stuks" },
+    { cat: "toilettas",  name: "Shampoo",                    amount: 1, unit: "stuks" },
+    { cat: "toilettas",  name: "Douchegel",                  amount: 1, unit: "stuks" },
+    { cat: "toilettas",  name: "Deodorant",                  amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Paspoort / ID",              amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Reisverzekeringspas",        amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Vliegtickets / boarding pass",amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Hotelreservering",           amount: 1, unit: "stuks" },
+    { cat: "elektronica",name: "Telefoon + oplader",         amount: 1, unit: "stuks" },
+    { cat: "elektronica",name: "Powerbank",                  amount: 1, unit: "stuks" },
+    { cat: "elektronica",name: "Camera + geheugenkaart",     amount: 1, unit: "stuks" },
+    { cat: "elektronica",name: "Adapter / stekker",          amount: 1, unit: "stuks" },
+    { cat: "gezondheid", name: "Ibuprofen / pijnstillers",   amount: 1, unit: "stuks" },
+    { cat: "gezondheid", name: "Muggenspray",                amount: 1, unit: "stuks" },
+    { cat: "gezondheid", name: "Pleisters",                  amount: 1, unit: "stuks" },
+    { cat: "overig",     name: "Koffer / rugzak",            amount: 1, unit: "stuks" },
+    { cat: "overig",     name: "Handbagage tas",             amount: 1, unit: "stuks" },
+    { cat: "overig",     name: "Nekkussen (vliegtuig)",      amount: 1, unit: "stuks" },
+    { cat: "overig",     name: "Waterfles",                  amount: 1, unit: "stuks" },
+  ]},
+  { naam: "Camper vakantie", icon: "🚐", categorieen: [
+    { id: "kleding",     label: "Kleding",          icon: "👕" },
+    { id: "keuken",      label: "Keuken & eten",    icon: "🍳" },
+    { id: "camper",      label: "Camper & buiten",  icon: "🏕️" },
+    { id: "toilettas",   label: "Toilettas",        icon: "🧴" },
+    { id: "documenten",  label: "Documenten",       icon: "📄" },
+    { id: "elektronica", label: "Elektronica",      icon: "🔌" },
+    { id: "overig",      label: "Overig",           icon: "📦" },
+  ], items: [
+    // Kleding
+    { cat: "kleding", name: "T-shirts",               amount: 5, unit: "stuks" },
+    { cat: "kleding", name: "Shorts / broeken",       amount: 3, unit: "stuks" },
+    { cat: "kleding", name: "Ondergoed",              amount: 7, unit: "stuks" },
+    { cat: "kleding", name: "Sokken",                 amount: 6, unit: "stuks" },
+    { cat: "kleding", name: "Trui / fleece",          amount: 2, unit: "stuks" },
+    { cat: "kleding", name: "Regenjas",               amount: 1, unit: "stuks" },
+    { cat: "kleding", name: "Wandelschoenen",         amount: 1, unit: "stuks" },
+    { cat: "kleding", name: "Slippers",               amount: 1, unit: "stuks" },
+    { cat: "kleding", name: "Pet / zonnehoed",        amount: 1, unit: "stuks" },
+    { cat: "kleding", name: "Badpak / zwembroek",     amount: 2, unit: "stuks" },
+    { cat: "kleding", name: "Pyjama",                 amount: 2, unit: "stuks" },
+    // Keuken & eten
+    { cat: "keuken", name: "Koekenpan",               amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Snijplank",               amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Messen",                  amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Borden & bestek",         amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Mokken / glazen",         amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Olijfolie",               amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Zout & peper",            amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Theedoeken",              amount: 3, unit: "stuks" },
+    { cat: "keuken", name: "Afwasmiddel",             amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Koffie / thee",           amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Brood & beleg",           amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Snacks voor onderweg",    amount: 1, unit: "stuks" },
+    { cat: "keuken", name: "Koelbox extra eten",      amount: 1, unit: "stuks" },
+    // Camper & buiten
+    { cat: "camper", name: "Stoelen & tafel",         amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Luifel / zonnescherm",   amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Buitenkleed",             amount: 1, unit: "stuks" },
+    { cat: "camper", name: "BBQ / campinggrill",      amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Aanmaakblokjes",          amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Gas navulling",           amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Water jerrycan",          amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Zaklamp / hoofdlamp",    amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Touw / waslijntje",       amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Vuilniszakken",           amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Muggenspray",             amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Zonnebrand",              amount: 1, unit: "stuks" },
+    { cat: "camper", name: "Handtassen / strandtassen",amount: 1, unit: "stuks" },
+    // Toilettas
+    { cat: "toilettas", name: "Tandenborstel",        amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Tandpasta",            amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Shampoo",              amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Douchegel",            amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Deodorant",            amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Toiletpapier",         amount: 2, unit: "pak" },
+    { cat: "toilettas", name: "Ibuprofen / paracetamol",amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Pleisters",            amount: 1, unit: "stuks" },
+    // Documenten
+    { cat: "documenten", name: "Rijbewijs",           amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Paspoort / ID",       amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Kentekenbewijs camper",amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Verzekeringspapieren",amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Campingpas / ACSI",  amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Reserveringsbevestiging",amount: 1, unit: "stuks" },
+    // Elektronica
+    { cat: "elektronica", name: "Telefoon + oplader", amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Powerbank",          amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Verlengsnoer / adapter",amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Navigatie / GPS",   amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Camera",             amount: 1, unit: "stuks" },
+    // Overig
+    { cat: "overig", name: "Boeken / spelletjes",    amount: 1, unit: "stuks" },
+    { cat: "overig", name: "Kaarten / reisgids",     amount: 1, unit: "stuks" },
+    { cat: "overig", name: "EHBO-doos",              amount: 1, unit: "stuks" },
+    { cat: "overig", name: "Brandstof tanken",       amount: 1, unit: "stuks" },
+  ]},
+  { naam: "Weekendje weg", icon: "🏨", categorieen: [
+    { id: "kleding",    label: "Kleding",      icon: "👕" },
+    { id: "toilettas",  label: "Toilettas",    icon: "🧴" },
+    { id: "documenten", label: "Documenten",   icon: "📄" },
+    { id: "elektronica",label: "Elektronica",  icon: "🔌" },
+    { id: "overig",     label: "Overig",       icon: "📦" },
+  ], items: [
+    // Kleding — compact, 2 nachten
+    { cat: "kleding", name: "T-shirts",               amount: 2, unit: "stuks" },
+    { cat: "kleding", name: "Broek / rok",            amount: 1, unit: "stuks" },
+    { cat: "kleding", name: "Ondergoed",              amount: 3, unit: "stuks" },
+    { cat: "kleding", name: "Sokken",                 amount: 3, unit: "stuks" },
+    { cat: "kleding", name: "Avondkleding",           amount: 1, unit: "stuks" },
+    { cat: "kleding", name: "Trui / vest",            amount: 1, unit: "stuks" },
+    { cat: "kleding", name: "Schoenen extra paar",   amount: 1, unit: "stuks" },
+    { cat: "kleding", name: "Pyjama",                 amount: 1, unit: "stuks" },
+    // Toilettas — klein formaat
+    { cat: "toilettas", name: "Tandenborstel",        amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Tandpasta",            amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Deodorant",            amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Shampoo (reisformaat)",amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Douchegel",            amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Make-up essentials",  amount: 1, unit: "stuks" },
+    { cat: "toilettas", name: "Paracetamol",          amount: 1, unit: "stuks" },
+    // Documenten
+    { cat: "documenten", name: "ID / paspoort",       amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Hotelbevestiging",    amount: 1, unit: "stuks" },
+    { cat: "documenten", name: "Rijbewijs",           amount: 1, unit: "stuks" },
+    // Elektronica
+    { cat: "elektronica", name: "Telefoon + oplader", amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Powerbank",          amount: 1, unit: "stuks" },
+    { cat: "elektronica", name: "Oordopjes",          amount: 1, unit: "stuks" },
+    // Overig
+    { cat: "overig", name: "Tas / weekend bag",       amount: 1, unit: "stuks" },
+    { cat: "overig", name: "Zonnebril",               amount: 1, unit: "stuks" },
+    { cat: "overig", name: "Boek / e-reader",         amount: 1, unit: "stuks" },
+    { cat: "overig", name: "Contant geld",            amount: 1, unit: "stuks" },
   ]},
   { naam: "Lege lijst", icon: "📋", categorieen: STANDAARD_CATEGORIEEN },
 ];
@@ -66,14 +287,8 @@ async function saveData(data) {
 
 // ---- Stijlen ----
 const S = {
-  appBg: {
-    minHeight: "100vh",
-    background: "#FAF6F0",
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', Segoe UI, Roboto, sans-serif",
-    color: "#2D2A26",
-  },
+  appBg: { minHeight: "100vh", background: "#FAF6F0", fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', Segoe UI, Roboto, sans-serif", color: "#2D2A26" },
   header: { padding: "28px 20px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
-  eyebrow: { margin: 0, fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase", color: "#B8B2A8", fontWeight: 600 },
   title: { margin: "4px 0 0", fontSize: 28, fontWeight: 700, color: "#2D4A3E", letterSpacing: "-0.01em" },
   main: { flex: 1, padding: "4px 20px 140px", overflowY: "auto" },
   card: { background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 18, padding: "18px 16px", marginBottom: 12 },
@@ -83,31 +298,30 @@ const S = {
   footer: { position: "fixed", bottom: 0, left: 0, right: 0, padding: "14px 20px 28px", background: "linear-gradient(180deg, rgba(250,246,240,0) 0%, #FAF6F0 40%)", display: "flex", gap: 12 },
   checkbox: { width: 24, height: 24, minWidth: 24, borderRadius: 8, border: "2px solid #D8D0BF", background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 },
   checkboxOn: { background: "#2D4A3E", borderColor: "#2D4A3E" },
-  itemRow: { display: "flex", alignItems: "center", padding: "13px 14px", borderBottom: "1px solid #F3EEE3", gap: 10 },
-  itemMain: { flex: 1, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 },
+  itemRow: { display: "flex", alignItems: "flex-start", padding: "13px 14px", borderBottom: "1px solid #F3EEE3", gap: 10 },
+  itemMain: { flex: 1, display: "flex", flexDirection: "column", gap: 5, minWidth: 0 },
   itemName: { fontSize: 16, color: "#2D2A26" },
   itemNameChecked: { color: "#B8B2A8", textDecoration: "line-through" },
+  itemNote: { fontSize: 12, color: "#B8B2A8", fontStyle: "italic" },
   amountRow: { display: "flex", alignItems: "center", gap: 6 },
   amountBtn: { width: 24, height: 24, minWidth: 24, borderRadius: 7, border: "1px solid #E4DCCB", background: "#FAF6F0", fontSize: 15, color: "#2D4A3E", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
-  amountValue: { fontSize: 13, color: "#8C8576", minWidth: 20, textAlign: "center" },
   unitSelect: { fontSize: 12, color: "#8C8576", border: "1px solid #E4DCCB", borderRadius: 7, background: "#FAF6F0", padding: "3px 6px", marginLeft: 4 },
   catHeading: { fontSize: 13, fontWeight: 700, color: "#2D4A3E", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, paddingLeft: 2 },
   itemList: { listStyle: "none", margin: 0, padding: 0, background: "#FFFFFF", borderRadius: 14, overflow: "hidden", border: "1px solid #EFE9DC" },
-  addSheet: { position: "fixed", bottom: 0, left: 0, right: 0, background: "#FFFFFF", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: "22px 20px 32px", boxShadow: "0 -8px 30px rgba(45,42,38,0.12)", zIndex: 10, maxHeight: "80vh", overflowY: "auto", boxSizing: "border-box" },
+  addSheet: { position: "fixed", bottom: 0, left: 0, right: 0, background: "#FFFFFF", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: "22px 20px 32px", boxShadow: "0 -8px 30px rgba(45,42,38,0.12)", zIndex: 10, maxHeight: "85vh", overflowY: "auto", boxSizing: "border-box" },
   addTabs: { display: "flex", gap: 6, marginBottom: 16, background: "#F3EEE3", borderRadius: 12, padding: 4 },
-  addTabBtn: (active) => ({ flex: 1, border: "none", background: active ? "#FFFFFF" : "transparent", borderRadius: 9, padding: "9px 0", fontSize: 13, fontWeight: 600, color: active ? "#2D4A3E" : "#8C8576", cursor: "pointer", boxShadow: active ? "0 1px 4px rgba(45,42,38,0.08)" : "none" }),
+  addTabBtn: (active) => ({ flex: 1, border: "none", background: active ? "#FFFFFF" : "transparent", borderRadius: 9, padding: "9px 0", fontSize: 12, fontWeight: 600, color: active ? "#2D4A3E" : "#8C8576", cursor: "pointer", boxShadow: active ? "0 1px 4px rgba(45,42,38,0.08)" : "none" }),
   catPickerBtn: (active) => ({ width: 42, height: 42, borderRadius: 12, border: active ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: active ? "#FFFFFF" : "#FAF6F0", fontSize: 19, cursor: "pointer" }),
   pickChip: { border: "1px solid #E4DCCB", background: "#FAF6F0", borderRadius: 999, padding: "8px 14px", fontSize: 13, color: "#2D2A26", cursor: "pointer" },
   suggestChip: { border: "1px solid #E4DCCB", background: "#FFFFFF", borderRadius: 999, padding: "8px 14px", fontSize: 14, color: "#2D2A26", cursor: "pointer" },
-  loadingWrap: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, minHeight: "100vh" },
+  loadingWrap: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, minHeight: "100vh" },
   shopRow: { display: "flex", alignItems: "center", padding: "15px 14px", borderBottom: "1px solid #F3EEE3", gap: 14, cursor: "pointer" },
   shopCheckbox: (on) => ({ width: 26, height: 26, minWidth: 26, borderRadius: 999, border: `2px solid ${on ? "#B8B2A8" : "#D8D0BF"}`, background: on ? "#B8B2A8" : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }),
   shopItemName: (on) => ({ flex: 1, fontSize: 17, color: on ? "#C9C3B8" : "#2D2A26", textDecoration: on ? "line-through" : "none" }),
   shopItemAmount: { display: "block", fontSize: 12, color: "#B8B2A8", marginTop: 2 },
-  switchBtn: { margin: 0, fontSize: 12, letterSpacing: "0.04em", textTransform: "uppercase", color: "#B8B2A8", fontWeight: 600, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", textDecoration: "none", display: "inline-block" },
+  switchBtn: { margin: 0, fontSize: 12, letterSpacing: "0.04em", textTransform: "uppercase", color: "#B8B2A8", fontWeight: 600, background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "none", display: "inline-block" },
   editInput: { fontSize: 16, border: "1px solid #C86E4A", borderRadius: 8, padding: "4px 8px", background: "#FFFFFF", width: "100%", boxSizing: "border-box" },
-  starBtn: { background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex" },
-  removeBtn: { background: "none", border: "none", cursor: "pointer", padding: 4 },
+  iconBtn: { background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex" },
 };
 
 // ════════════════════════════════════════════════════════
@@ -116,12 +330,14 @@ const S = {
 export default function LijstenApp() {
   const [lists, setListsState] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeListId, setActiveListId] = useState(null); // null = overzicht
-  const [mode, setMode] = useState("lijst"); // lijst | pakken
+  const [verbindingsFout, setVerbindingsFout] = useState(false);
+  const [offline, setOffline] = useState(false);
+  const [activeListId, setActiveListId] = useState(null);
+  const [mode, setMode] = useState("lijst"); // lijst | pakken | instellingen
   const lastWriteRef = useRef(0);
   const pollRef = useRef(null);
 
-  // Nieuwe lijst form
+  // Nieuwe lijst
   const [showNieuw, setShowNieuw] = useState(false);
   const [nieuwNaam, setNieuwNaam] = useState("");
   const [nieuwIcoon, setNieuwIcoon] = useState("📋");
@@ -131,21 +347,57 @@ export default function LijstenApp() {
   const [editListId, setEditListId] = useState(null);
   const [editListNaam, setEditListNaam] = useState("");
 
-  // Item-toevoegen state
+  // Toevoegen
   const [showAdd, setShowAdd] = useState(false);
   const [addTab, setAddTab] = useState("typen");
   const [newProduct, setNewProduct] = useState("");
   const [newCategory, setNewCategory] = useState(null);
   const [newAmount, setNewAmount] = useState(1);
   const [newUnit, setNewUnit] = useState("stuks");
+  const [newNote, setNewNote] = useState("");
+  const [newBudget, setNewBudget] = useState("");
+  const [newStatus, setNewStatus] = useState("Idee");
 
   // Item-bewerken
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState("");
+  const [editNoteId, setEditNoteId] = useState(null);
+  const [editNoteText, setEditNoteText] = useState("");
+
+  // UI-opties
+  const [verbergAfgevinkt, setVerbergAfgevinkt] = useState(false);
+  const [showVorigeLijst, setShowVorigeLijst] = useState(false);
+  const [wijzigCatItemId, setWijzigCatItemId] = useState(null);
+  const [zoekterm, setZoekterm] = useState("");
+  const [showZoek, setShowZoek] = useState(false);
+
+  // Pakken-modus keuze
+  const [showPakkenKeuze, setShowPakkenKeuze] = useState(false);
+
+  // Undo voor verwijderen
+  const [undoItem, setUndoItem] = useState(null); // { item, listId, timer }
+
+  // Categorie beheer
+  const [newCatLabel, setNewCatLabel] = useState("");
+  const [newCatIcon, setNewCatIcon] = useState("📌");
 
   const [toast, setToast] = useState(null);
+  const [toastType, setToastType] = useState("success"); // success | undo
 
-  // ── Data laag ──────────────────────────────────────────
+  // ── Offline detectie ─────────────────────────────────
+  useEffect(() => {
+    const onOnline  = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener("online",  onOnline);
+    window.addEventListener("offline", onOffline);
+    setOffline(!navigator.onLine);
+    return () => {
+      window.removeEventListener("online",  onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  // ── Data laag ────────────────────────────────────────
   const persistLists = useCallback((nextLists) => {
     lastWriteRef.current = Date.now();
     setListsState(nextLists);
@@ -160,8 +412,10 @@ export default function LijstenApp() {
       if (active && data) {
         setListsState(data.lists || []);
         setLoading(false);
+        setVerbindingsFout(false);
       } else if (active) {
         setLoading(false);
+        setVerbindingsFout(true);
       }
     };
     refresh();
@@ -169,29 +423,34 @@ export default function LijstenApp() {
     return () => { active = false; clearInterval(pollRef.current); };
   }, []);
 
-  function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
+  function showToast(msg, type = "success") {
+    setToast(msg);
+    setToastType(type);
+    if (type !== "undo") setTimeout(() => setToast(null), 2500);
+  }
 
-  // ── Lijst-mutaties ──────────────────────────────────────
+  // ── Lijst-mutaties ───────────────────────────────────
   function maakLijst() {
     if (!nieuwNaam.trim()) return;
     const sjabloon = LIJST_SJABLONEN.find(s => s.naam === nieuwSjabloon);
     const categorieen = sjabloon ? sjabloon.categorieen : STANDAARD_CATEGORIEEN;
+    const startItems = sjabloon?.items?.map(item => ({
+      id: uid(), name: item.name, category: item.cat,
+      amount: item.amount || 1, unit: item.unit || "stuks",
+      checked: false, inCart: false, note: "",
+      status: item.status || null, budget: item.budget || null,
+      addedAt: Date.now(),
+    })) || [];
     const newList = {
-      id: uid(),
-      name: nieuwNaam.trim(),
-      icon: nieuwIcoon,
-      categories: categorieen,
-      items: [],
-      history: {},
-      favorites: [],
+      id: uid(), name: nieuwNaam.trim(), icon: nieuwIcoon,
+      type: sjabloon?.type || "standaard",
+      categories: categorieen, items: startItems,
+      history: {}, favorites: [], archief: [],
       createdAt: Date.now(),
     };
     persistLists([...lists, newList]);
-    setNieuwNaam("");
-    setNieuwIcoon("📋");
-    setNieuwSjabloon(null);
-    setShowNieuw(false);
-    setActiveListId(newList.id);
+    setNieuwNaam(""); setNieuwIcoon("📋"); setNieuwSjabloon(null);
+    setShowNieuw(false); setActiveListId(newList.id);
     showToast(`✅ Lijst "${newList.name}" aangemaakt`);
   }
 
@@ -206,69 +465,123 @@ export default function LijstenApp() {
     setEditListId(null);
   }
 
-  // ── Item-mutaties (binnen actieve lijst) ────────────────
+  function voegCatToe() {
+    if (!newCatLabel.trim() || !activeListId) return;
+    const newCat = { id: uid(), label: newCatLabel.trim(), icon: newCatIcon };
+    persistLists(lists.map(l => l.id === activeListId
+      ? { ...l, categories: [...l.categories, newCat] } : l));
+    setNewCatLabel(""); setNewCatIcon("📌");
+    showToast(`✅ Categorie "${newCat.label}" toegevoegd`);
+  }
+
+  function verwijderCat(catId) {
+    persistLists(lists.map(l => l.id === activeListId
+      ? { ...l, categories: l.categories.filter(c => c.id !== catId) } : l));
+  }
+
+  function dupliceerLijst(id) {
+    const orig = lists.find(l => l.id === id);
+    if (!orig) return;
+    const kopie = {
+      ...orig, id: uid(), name: `${orig.name} (kopie)`,
+      items: orig.items.map(i => ({ ...i, id: uid(), checked: false, inCart: false })),
+      history: {}, archief: [], createdAt: Date.now(),
+    };
+    persistLists([...lists, kopie]);
+    showToast(`✅ "${orig.name}" gedupliceerd`);
+  }
+
+  function herschikLijsten(vanIdx, naarIdx) {
+    const next = [...lists];
+    const [verplaatst] = next.splice(vanIdx, 1);
+    next.splice(naarIdx, 0, verplaatst);
+    persistLists(next);
+  }
+
+  function wijzigItemCategorie(itemId, catId) {
+    updateItem(itemId, { category: catId });
+  }
+
+  // ── Item-mutaties ────────────────────────────────────
   function updateList(id, updater) {
     persistLists(lists.map(l => l.id === id ? updater(l) : l));
   }
 
   const activeList = lists.find(l => l.id === activeListId);
+  const isCadeau = activeList?.type === "cadeau";
 
-  function addItem(name, categoryId, amount, unit) {
+  function addItem(name, categoryId, amount, unit, note, status, budget) {
     if (!name.trim() || !activeListId) return;
-    const exists = activeList?.items.find(i => i.name.toLowerCase() === name.toLowerCase() && !i.checked);
-    if (exists) return;
+    const exists = activeList?.items.find(i =>
+      i.name.toLowerCase() === name.toLowerCase() && !i.checked);
+    if (exists) { showToast("⚠️ Staat al in de lijst"); return; }
     updateList(activeListId, l => ({
       ...l,
       items: [...l.items, {
-        id: uid(),
-        name: name.trim(),
-        category: categoryId || (activeList?.categories[0]?.id),
-        amount: amount || 1,
-        unit: unit || "stuks",
-        checked: false,
-        inCart: false,
+        id: uid(), name: name.trim(),
+        category: categoryId || l.categories[0]?.id,
+        amount: amount || 1, unit: unit || "stuks",
+        checked: false, inCart: false,
+        note: note || "", status: status || null, budget: budget || null,
         addedAt: Date.now(),
       }],
     }));
-    setNewProduct("");
-    setNewAmount(1);
-    setNewUnit("stuks");
+    setNewProduct(""); setNewAmount(1); setNewUnit("stuks");
+    setNewNote(""); setNewBudget(""); setNewStatus("Idee");
     setShowAdd(false);
   }
 
   function toggleCheck(itemId) {
     updateList(activeListId, l => ({
-      ...l,
-      items: l.items.map(i => i.id === itemId ? { ...i, checked: !i.checked } : i),
+      ...l, items: l.items.map(i => i.id === itemId ? { ...i, checked: !i.checked } : i),
     }));
   }
 
   function toggleInCart(itemId) {
     updateList(activeListId, l => ({
-      ...l,
-      items: l.items.map(i => i.id === itemId ? { ...i, inCart: !i.inCart } : i),
+      ...l, items: l.items.map(i => i.id === itemId ? { ...i, inCart: !i.inCart } : i),
     }));
   }
 
   function removeItem(itemId) {
-    updateList(activeListId, l => ({
-      ...l,
-      items: l.items.filter(i => i.id !== itemId),
-    }));
+    // Undo: bewaar het item 5 seconden
+    const item = activeList?.items.find(i => i.id === itemId);
+    if (item) {
+      if (undoItem?.timer) clearTimeout(undoItem.timer);
+      const timer = setTimeout(() => setUndoItem(null), 5000);
+      setUndoItem({ item, listId: activeListId, timer });
+      showToast("🗑 Verwijderd", "undo");
+    }
+    updateList(activeListId, l => ({ ...l, items: l.items.filter(i => i.id !== itemId) }));
+  }
+
+  function undoRemove() {
+    if (!undoItem) return;
+    clearTimeout(undoItem.timer);
+    persistLists(lists.map(l => l.id === undoItem.listId
+      ? { ...l, items: [...l.items, undoItem.item] } : l));
+    setUndoItem(null);
+    setToast(null);
   }
 
   function updateItem(itemId, fields) {
     updateList(activeListId, l => ({
-      ...l,
-      items: l.items.map(i => i.id === itemId ? { ...i, ...fields } : i),
+      ...l, items: l.items.map(i => i.id === itemId ? { ...i, ...fields } : i),
     }));
   }
 
   function changeAmount(itemId, delta) {
     const item = activeList?.items.find(i => i.id === itemId);
     if (!item) return;
-    const next = Math.max(1, Math.round(((item.amount || 1) + delta) * 100) / 100);
+    const unit = item.unit || "stuks";
+    const stap = unit === "g" ? 100 : ["kg", "l", "ml"].includes(unit) ? 0.5 : 1;
+    const next = Math.max(stap, Math.round(((item.amount || stap) + delta * stap) * 100) / 100);
     updateItem(itemId, { amount: next });
+  }
+
+  function setAmountDirect(itemId, waarde) {
+    const parsed = parseFloat(String(waarde).replace(",", "."));
+    if (!isNaN(parsed) && parsed > 0) updateItem(itemId, { amount: parsed });
   }
 
   function toggleFavorite(name, categoryId) {
@@ -283,38 +596,95 @@ export default function LijstenApp() {
     });
   }
 
-  function finishPacking() {
+  // ── Pakken afronden: keuze bewaren of leegmaken ──────
+  function finishPacking(leegmaken) {
     updateList(activeListId, l => {
+      const huidigRonde = {
+        datum: new Date().toLocaleDateString("nl-NL"),
+        items: l.items.filter(i => i.checked).map(i => ({
+          name: i.name, category: i.category, amount: i.amount, unit: i.unit,
+        })),
+      };
+      const nextArchief = [huidigRonde, ...(l.archief || [])].slice(0, 5);
       const nextHistory = { ...l.history };
       l.items.filter(i => i.checked).forEach(i => {
         const key = i.name.toLowerCase();
-        nextHistory[key] = { name: i.name, category: i.category, count: (nextHistory[key]?.count || 0) + 1, lastUsed: Date.now() };
+        nextHistory[key] = {
+          name: i.name, category: i.category, amount: i.amount, unit: i.unit,
+          count: (nextHistory[key]?.count || 0) + 1, lastUsed: Date.now(),
+        };
       });
-      return { ...l, items: [], history: nextHistory };
+      if (leegmaken) {
+        return { ...l, items: [], history: nextHistory, archief: nextArchief };
+      } else {
+        // Bewaren: afvinkjes resetten, lijst intact laten
+        return {
+          ...l,
+          items: l.items.map(i => ({ ...i, checked: false, inCart: false })),
+          history: nextHistory,
+          archief: nextArchief,
+        };
+      }
     });
     setMode("lijst");
+    setShowPakkenKeuze(false);
+    showToast(leegmaken ? "✅ Lijst geleegd — alles opgeslagen" : "✅ Klaar! Vinkjes gereset voor volgende keer");
+  }
+
+  function laadVorigeLijst(ronde) {
+    if (!activeList) return;
+    const bestaandeNamen = new Set(activeList.items.map(i => i.name.toLowerCase()));
+    const nieuwItems = ronde.items
+      .filter(i => !bestaandeNamen.has(i.name.toLowerCase()))
+      .map(i => ({
+        id: uid(), name: i.name, category: i.category,
+        amount: i.amount, unit: i.unit,
+        checked: false, inCart: false, note: "", addedAt: Date.now(),
+      }));
+    updateList(activeListId, l => ({ ...l, items: [...l.items, ...nieuwItems] }));
+    setShowVorigeLijst(false);
+    showToast(`✅ ${nieuwItems.length} items toegevoegd`);
   }
 
   function saveEditName() {
     if (!editingId) return;
     const trimmed = editName.trim();
     if (trimmed) updateItem(editingId, { name: trimmed });
-    setEditingId(null);
-    setEditName("");
+    setEditingId(null); setEditName("");
   }
 
-  // ── Render helpers ──────────────────────────────────────
+  // ── Loading ──────────────────────────────────────────
   if (loading) return (
     <div style={S.appBg}>
       <div style={S.loadingWrap}>
         <span style={{ fontSize: 32 }}>📋</span>
-        <p style={{ color: "#B8B2A8", fontSize: 14 }}>Laden…</p>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[0,1,2].map(i => (
+            <div key={i} style={{ width: 7, height: 7, borderRadius: "50%", background: "#2D4A3E", opacity: 0.3, animation: `pulse 1.2s ease-in-out ${i*0.2}s infinite` }} />
+          ))}
+        </div>
+        <style>{`@keyframes pulse{0%,100%{opacity:.3;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}`}</style>
+      </div>
+    </div>
+  );
+
+  if (verbindingsFout) return (
+    <div style={S.appBg}>
+      <div style={{ ...S.loadingWrap, gap: 16, padding: "0 32px", textAlign: "center" }}>
+        <span style={{ fontSize: 40 }}>⚠️</span>
+        <p style={{ fontWeight: 700, fontSize: 17, color: "#2D4A3E", margin: 0 }}>Geen verbinding</p>
+        <p style={{ fontSize: 14, color: "#8C8576", margin: 0 }}>Controleer je internetverbinding.</p>
+        <button style={{ background: "#2D4A3E", color: "#FAF6F0", border: "none", borderRadius: 12, padding: "13px 28px", fontSize: 15, fontWeight: 700, cursor: "pointer" }}
+          onClick={() => { setVerbindingsFout(false); setLoading(true); window.location.reload(); }}>
+          Opnieuw proberen
+        </button>
+        <Link href="/" style={{ fontSize: 13, color: "#B8B2A8" }}>← Terug</Link>
       </div>
     </div>
   );
 
   // ════════════════════════════
-  // PAKKEN-MODUS (winkel/pakken)
+  // PAKKEN-MODUS
   // ════════════════════════════
   if (activeList && mode === "pakken") {
     const teNemen = activeList.items.filter(i => i.checked);
@@ -323,11 +693,36 @@ export default function LijstenApp() {
       .filter(g => g.items.length > 0);
     const uncategorized = teNemen.filter(i => !activeList.categories.find(c => c.id === i.category));
     const done = teNemen.filter(i => i.inCart).length;
+    const isVakantie = !activeList.name.toLowerCase().includes("boodschappen");
 
     return (
       <div style={S.appBg}>
+        {/* Keuze-overlay: leegmaken of bewaren */}
+        {showPakkenKeuze && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 200, display: "flex", alignItems: "flex-end" }}>
+            <div style={{ background: "#FFFFFF", width: "100%", padding: "24px 20px 40px", borderTopLeftRadius: 24, borderTopRightRadius: 24 }}>
+              <p style={{ margin: "0 0 6px", fontWeight: 700, fontSize: 17, color: "#2D4A3E" }}>Klaar met {isVakantie ? "inpakken" : "boodschappen"}!</p>
+              <p style={{ margin: "0 0 20px", fontSize: 14, color: "#8C8576" }}>Wat wil je doen met de lijst?</p>
+              <button style={{ ...S.btn(), width: "100%", marginBottom: 10, padding: "15px 0", borderRadius: 14 }}
+                onClick={() => finishPacking(false)}>
+                🔄 Vinkjes resetten — lijst bewaren
+                <span style={{ display: "block", fontSize: 12, fontWeight: 400, opacity: 0.8, marginTop: 3 }}>Handig voor volgende vakantie of week</span>
+              </button>
+              <button style={{ ...S.btn("#C86E4A"), width: "100%", padding: "15px 0", borderRadius: 14, marginBottom: 12 }}
+                onClick={() => finishPacking(true)}>
+                🗑 Lijst leegmaken
+                <span style={{ display: "block", fontSize: 12, fontWeight: 400, opacity: 0.8, marginTop: 3 }}>Items worden verwijderd, archief bewaard</span>
+              </button>
+              <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), width: "100%", padding: "12px 0", borderRadius: 14 }}
+                onClick={() => setShowPakkenKeuze(false)}>
+                Annuleer — nog niet klaar
+              </button>
+            </div>
+          </div>
+        )}
+
         <header style={{ ...S.header, alignItems: "center" }}>
-          <button style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, color: "#2D4A3E" }} onClick={() => setMode("lijst")}>
+          <button style={{ background: "none", border: "none", cursor: "pointer" }} onClick={() => setMode("lijst")}>
             <ChevronLeft size={20} color="#2D4A3E" />
           </button>
           <div style={{ textAlign: "center" }}>
@@ -357,6 +752,7 @@ export default function LijstenApp() {
                         <span style={S.shopItemName(item.inCart)}>
                           {item.name}
                           <span style={S.shopItemAmount}>{item.amount ?? 1} {item.unit || "stuks"}</span>
+                          {item.note && <span style={{ ...S.shopItemAmount, fontStyle: "italic" }}>📝 {item.note}</span>}
                         </span>
                       </li>
                     ))}
@@ -372,10 +768,7 @@ export default function LijstenApp() {
                         <span style={S.shopCheckbox(item.inCart)}>
                           {item.inCart && <Check size={15} color="#FAF6F0" strokeWidth={3} />}
                         </span>
-                        <span style={S.shopItemName(item.inCart)}>
-                          {item.name}
-                          <span style={S.shopItemAmount}>{item.amount ?? 1} {item.unit || "stuks"}</span>
-                        </span>
+                        <span style={S.shopItemName(item.inCart)}>{item.name}</span>
                       </li>
                     ))}
                   </ul>
@@ -384,11 +777,11 @@ export default function LijstenApp() {
             </>
           )}
         </main>
-
         <footer style={S.footer}>
-          <button style={{ ...S.btn(), width: "100%", padding: "16px 0", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 16, boxShadow: "0 6px 16px rgba(45,74,62,0.25)" }} onClick={finishPacking}>
+          <button style={{ ...S.btn(), width: "100%", padding: "16px 0", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 16, boxShadow: "0 6px 16px rgba(45,74,62,0.25)" }}
+            onClick={() => setShowPakkenKeuze(true)}>
             <RotateCcw size={16} color="#FAF6F0" />
-            Klaar — lijst leegmaken
+            Klaar met {isVakantie ? "inpakken" : "boodschappen"}
           </button>
         </footer>
       </div>
@@ -396,46 +789,216 @@ export default function LijstenApp() {
   }
 
   // ════════════════════════════
-  // LIJST-DETAIL SCHERM
+  // INSTELLINGEN
+  // ════════════════════════════
+  if (activeList && mode === "instellingen") {
+    const CAT_ICONEN = ["📌","🥦","🧀","🐟","💐","🥛","🥩","🥐","🥫","🧊","🧴","🧽","🧃","🛒","👕","🏊","📄","🔌","💊","📦","🏠","🌳","👤","👨‍👩‍👧","👫","🎁","🔧","📚","🍽️"];
+    return (
+      <div style={S.appBg}>
+        <header style={{ ...S.header, alignItems: "center" }}>
+          <button style={{ background: "none", border: "none", cursor: "pointer" }} onClick={() => setMode("lijst")}>
+            <ChevronLeft size={20} color="#2D4A3E" />
+          </button>
+          <h1 style={{ ...S.title, fontSize: 20 }}>Categorieën</h1>
+          <div style={{ width: 32 }} />
+        </header>
+        <main style={S.main}>
+          <ul style={{ ...S.itemList, marginBottom: 16 }}>
+            {activeList.categories.map(cat => (
+              <li key={cat.id} style={{ ...S.itemRow, alignItems: "center" }}>
+                <span style={{ fontSize: 20, marginRight: 4 }}>{cat.icon}</span>
+                <span style={{ flex: 1, fontSize: 15 }}>{cat.label}</span>
+                <button style={S.iconBtn} onClick={() => verwijderCat(cat.id)}>
+                  <Trash2 size={15} color="#B8B2A8" />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div style={{ ...S.card, border: "1px solid #2D4A3E44" }}>
+            <p style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 700, color: "#2D4A3E" }}>+ Nieuwe categorie</p>
+            <input style={{ ...S.inp, marginBottom: 10 }} placeholder="Naam" value={newCatLabel}
+              onChange={e => setNewCatLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && voegCatToe()} autoFocus />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+              {CAT_ICONEN.map(ic => (
+                <button key={ic} onClick={() => setNewCatIcon(ic)}
+                  style={{ width: 36, height: 36, borderRadius: 9, border: newCatIcon === ic ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: newCatIcon === ic ? "#FFFFFF" : "#FAF6F0", fontSize: 17, cursor: "pointer" }}>
+                  {ic}
+                </button>
+              ))}
+            </div>
+            <button style={{ ...S.btn(), width: "100%" }} onClick={voegCatToe}>Toevoegen</button>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // ════════════════════════════
+  // LIJST-DETAIL
   // ════════════════════════════
   if (activeList) {
     const defaultCatId = activeList.categories[0]?.id;
-    if (!newCategory) setNewCategory(defaultCatId);
+    if (newCategory === null && defaultCatId) setNewCategory(defaultCatId);
 
     const suggestions = Object.values(activeList.history || {})
-      .filter(h => h.count >= 2)
+      .filter(h => h.count >= 1)
       .filter(h => !activeList.items.some(i => i.name.toLowerCase() === h.name.toLowerCase()))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 8);
+      .sort((a, b) => b.count - a.count || b.lastUsed - a.lastUsed)
+      .slice(0, 10);
 
     const checkedCount = activeList.items.filter(i => i.checked).length;
 
+    // Zoekfilter
+    const zoekLower = zoekterm.toLowerCase();
+    const zoekActief = showZoek && zoekterm.length > 0;
+
+    const alleItems = verbergAfgevinkt
+      ? activeList.items.filter(i => !i.checked)
+      : activeList.items;
+
+    const gefilterd = zoekActief
+      ? alleItems.filter(i => i.name.toLowerCase().includes(zoekLower))
+      : alleItems;
+
     const grouped = activeList.categories
-      .map(cat => ({ cat, items: activeList.items.filter(i => i.category === cat.id) }))
+      .map(cat => ({
+        cat,
+        items: gefilterd
+          .filter(i => i.category === cat.id)
+          .sort((a, b) => (a.checked === b.checked ? 0 : a.checked ? 1 : -1)),
+      }))
       .filter(g => g.items.length > 0);
 
-    const uncategorized = activeList.items.filter(i => !activeList.categories.find(c => c.id === i.category));
+    const uncategorized = gefilterd.filter(i => !activeList.categories.find(c => c.id === i.category));
 
     return (
       <div style={S.appBg}>
+        {/* Toast / Undo */}
         {toast && (
-          <div style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", background: "#2D4A3E", color: "#FAF6F0", padding: "9px 20px", borderRadius: 10, fontWeight: 700, zIndex: 999, fontSize: 13, whiteSpace: "nowrap" }}>
-            {toast}
+          <div style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", background: toastType === "undo" ? "#1A1A2E" : "#2D4A3E", color: "#FAF6F0", padding: "9px 16px", borderRadius: 10, fontWeight: 700, zIndex: 999, fontSize: 13, whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 12 }}>
+            <span>{toast}</span>
+            {toastType === "undo" && (
+              <button onClick={undoRemove} style={{ background: "#C86E4A", color: "#FAF6F0", border: "none", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                Ongedaan maken
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Offline banner */}
+        {offline && (
+          <div style={{ background: "#C86E4A", color: "#FAF6F0", padding: "8px 16px", fontSize: 12, fontWeight: 600, textAlign: "center" }}>
+            📡 Geen verbinding — wijzigingen worden opgeslagen zodra je weer online bent
+          </div>
+        )}
+
+        {/* Note-editor overlay */}
+        {editNoteId && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setEditNoteId(null)}>
+            <div style={{ background: "#FFFFFF", width: "100%", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20 }} onClick={e => e.stopPropagation()}>
+              <p style={{ margin: "0 0 10px", fontWeight: 700, fontSize: 15 }}>📝 Notitie</p>
+              <textarea autoFocus style={{ ...S.inp, height: 80, resize: "none" }} value={editNoteText}
+                onChange={e => setEditNoteText(e.target.value)} placeholder="Voeg een notitie toe…" />
+              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1 }} onClick={() => setEditNoteId(null)}>Annuleer</button>
+                <button style={{ ...S.btn(), flex: 2 }} onClick={() => { updateItem(editNoteId, { note: editNoteText }); setEditNoteId(null); showToast("✅ Notitie opgeslagen"); }}>Opslaan</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Categorie-wijziger overlay */}
+        {wijzigCatItemId && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setWijzigCatItemId(null)}>
+            <div style={{ background: "#FFFFFF", width: "100%", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20 }} onClick={e => e.stopPropagation()}>
+              <p style={{ margin: "0 0 14px", fontWeight: 700, fontSize: 15 }}>Verplaats naar categorie</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {activeList.categories.map(cat => {
+                  const huidig = activeList.items.find(i => i.id === wijzigCatItemId)?.category === cat.id;
+                  return (
+                    <button key={cat.id}
+                      style={{ ...S.pickChip, background: huidig ? "#2D4A3E" : "#FAF6F0", color: huidig ? "#FAF6F0" : "#2D2A26", fontWeight: huidig ? 700 : 400 }}
+                      onClick={() => { wijzigItemCategorie(wijzigCatItemId, cat.id); setWijzigCatItemId(null); showToast(`✅ Verplaatst naar ${cat.label}`); }}>
+                      {cat.icon} {cat.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Vorige lijst overlay */}
+        {showVorigeLijst && (activeList.archief?.length > 0) && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setShowVorigeLijst(false)}>
+            <div style={{ background: "#FFFFFF", width: "100%", maxHeight: "75vh", overflowY: "auto", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20, boxSizing: "border-box" }} onClick={e => e.stopPropagation()}>
+              <p style={{ margin: "0 0 14px", fontWeight: 700, fontSize: 15 }}>📅 Vorige rondes</p>
+              {activeList.archief.map((ronde, idx) => (
+                <div key={idx} style={{ border: "1px solid #EFE9DC", borderRadius: 14, padding: 14, marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#2D4A3E" }}>📅 {ronde.datum} — {ronde.items.length} items</span>
+                    <button style={{ ...S.btn(), fontSize: 12, padding: "6px 14px" }} onClick={() => laadVorigeLijst(ronde)}>
+                      Alles toevoegen
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {ronde.items.map((item, i) => {
+                      const alInLijst = activeList.items.some(li => li.name.toLowerCase() === item.name.toLowerCase());
+                      return (
+                        <button key={i} disabled={alInLijst}
+                          style={{ ...S.pickChip, opacity: alInLijst ? 0.4 : 1, cursor: alInLijst ? "default" : "pointer" }}
+                          onClick={() => { if (!alInLijst) addItem(item.name, item.category, item.amount, item.unit); }}>
+                          {item.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
         <header style={S.header}>
           <div>
-            <button style={S.switchBtn} onClick={() => { setActiveListId(null); setMode("lijst"); setShowAdd(false); }}>
+            <button style={S.switchBtn} onClick={() => { setActiveListId(null); setMode("lijst"); setShowAdd(false); setShowZoek(false); setZoekterm(""); }}>
               ← Alle lijsten
             </button>
             <h1 style={S.title}>{activeList.icon} {activeList.name}</h1>
           </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
+            <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
+              onClick={() => { setShowZoek(v => !v); if (showZoek) setZoekterm(""); }} title="Zoeken">
+              <span style={{ fontSize: 15 }}>🔍</span>
+            </button>
+            {(activeList.archief?.length > 0) && (
+              <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
+                onClick={() => setShowVorigeLijst(true)} title="Vorige ronde laden">
+                <History size={16} color="#8C8576" />
+              </button>
+            )}
+            <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
+              onClick={() => setVerbergAfgevinkt(v => !v)} title={verbergAfgevinkt ? "Toon afgevinkt" : "Verberg afgevinkt"}>
+              {verbergAfgevinkt ? <Eye size={16} color="#2D4A3E" /> : <EyeOff size={16} color="#8C8576" />}
+            </button>
+            <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
+              onClick={() => setMode("instellingen")} title="Categorieën beheren">
+              <Settings size={16} color="#8C8576" />
+            </button>
+          </div>
         </header>
+
+        {/* Zoekbalk */}
+        {showZoek && (
+          <div style={{ padding: "0 20px 12px" }}>
+            <input autoFocus style={{ ...S.inp, fontSize: 15 }} placeholder="🔍 Zoek in lijst…"
+              value={zoekterm} onChange={e => setZoekterm(e.target.value)} />
+          </div>
+        )}
 
         <main style={S.main}>
           {/* Suggesties */}
-          {suggestions.length > 0 && (
+          {suggestions.length > 0 && !showAdd && !zoekActief && (
             <section style={{ marginBottom: 22 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "#C86E4A", marginBottom: 10 }}>
                 <Sparkles size={15} color="#C86E4A" />
@@ -445,7 +1008,8 @@ export default function LijstenApp() {
                 {suggestions.map(s => {
                   const cat = activeList.categories.find(c => c.id === s.category);
                   return (
-                    <button key={s.name} style={S.suggestChip} onClick={() => addItem(s.name, s.category, 1, "stuks")}>
+                    <button key={s.name} style={S.suggestChip}
+                      onClick={() => addItem(s.name, s.category, s.amount || 1, s.unit || "stuks")}>
                       {cat?.icon || "📦"} {s.name}
                     </button>
                   );
@@ -454,9 +1018,16 @@ export default function LijstenApp() {
             </section>
           )}
 
-          {/* Lege staat */}
-          {activeList.items.length === 0 && (
-            <div style={{ textAlign: "center", padding: "60px 20px" }}>
+          {/* Zoekresultaten leeg */}
+          {zoekActief && gefilterd.length === 0 && (
+            <div style={{ textAlign: "center", padding: "40px 20px" }}>
+              <p style={{ fontSize: 16, color: "#B8B2A8" }}>Geen items gevonden voor "{zoekterm}"</p>
+            </div>
+          )}
+
+          {/* Lege lijst */}
+          {!zoekActief && activeList.items.length === 0 && (
+            <div style={{ textAlign: "center", padding: "40px 20px" }}>
               <p style={{ fontSize: 17, fontWeight: 700, color: "#2D4A3E", margin: "0 0 6px" }}>Lijst is leeg</p>
               <p style={{ fontSize: 14, color: "#B8B2A8", margin: 0 }}>Tik op + om je eerste item toe te voegen.</p>
             </div>
@@ -469,7 +1040,8 @@ export default function LijstenApp() {
               <ul style={S.itemList}>
                 {items.map(item => (
                   <li key={item.id} style={S.itemRow}>
-                    <button style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}) }} onClick={() => toggleCheck(item.id)}>
+                    <button style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}), marginTop: 2 }}
+                      onClick={() => toggleCheck(item.id)}>
                       {item.checked && <Check size={14} color="#FAF6F0" strokeWidth={3} />}
                     </button>
                     <div style={S.itemMain}>
@@ -484,44 +1056,84 @@ export default function LijstenApp() {
                           {item.name}
                         </span>
                       )}
-                      <div style={S.amountRow}>
-                        <button style={S.amountBtn} onClick={() => changeAmount(item.id, -1)}>−</button>
-                        <span style={S.amountValue}>{item.amount ?? 1}</span>
-                        <button style={S.amountBtn} onClick={() => changeAmount(item.id, 1)}>+</button>
-                        <select style={S.unitSelect} value={item.unit || "stuks"} onChange={e => updateItem(item.id, { unit: e.target.value })}>
-                          {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                        </select>
-                      </div>
+
+                      {isCadeau ? (
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <select style={{ ...S.unitSelect, fontSize: 11 }} value={item.status || "Idee"}
+                            onChange={e => updateItem(item.id, { status: e.target.value })}>
+                            {CADEAU_STATUSSEN.map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                          <input style={{ ...S.unitSelect, width: 70, fontSize: 11 }} placeholder="Budget €"
+                            value={item.budget || ""} onChange={e => updateItem(item.id, { budget: e.target.value })} />
+                        </div>
+                      ) : (
+                        <div style={S.amountRow}>
+                          <button style={S.amountBtn} onClick={() => changeAmount(item.id, -1)}>−</button>
+                          <input
+                            style={{ fontSize: 13, color: "#8C8576", border: "1px solid #E4DCCB", borderRadius: 6, padding: "2px 4px", width: 44, textAlign: "center", background: "#FAF6F0" }}
+                            value={item.amount ?? 1}
+                            onChange={e => updateItem(item.id, { amount: e.target.value })}
+                            onBlur={e => setAmountDirect(item.id, e.target.value)}
+                            onKeyDown={e => e.key === "Enter" && setAmountDirect(item.id, e.target.value)}
+                          />
+                          <button style={S.amountBtn} onClick={() => changeAmount(item.id, 1)}>+</button>
+                          <select style={S.unitSelect} value={item.unit || "stuks"}
+                            onChange={e => updateItem(item.id, { unit: e.target.value })}>
+                            {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                          </select>
+                        </div>
+                      )}
+
+                      {item.note ? (
+                        <span style={S.itemNote} onClick={() => { setEditNoteId(item.id); setEditNoteText(item.note); }}>
+                          📝 {item.note}
+                        </span>
+                      ) : null}
                     </div>
-                    <button style={S.starBtn} onClick={() => toggleFavorite(item.name, item.category)}>
-                      <Star size={15}
-                        color={activeList.favorites.some(f => f.name.toLowerCase() === item.name.toLowerCase()) ? "#C86E4A" : "#D8D0BF"}
-                        fill={activeList.favorites.some(f => f.name.toLowerCase() === item.name.toLowerCase()) ? "#C86E4A" : "none"} />
-                    </button>
-                    <button style={S.removeBtn} onClick={() => removeItem(item.id)}>
-                      <X size={15} color="#B8B2A8" />
-                    </button>
+
+                    {/* Acties */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <button style={S.iconBtn} onClick={() => { setEditNoteId(item.id); setEditNoteText(item.note || ""); }}>
+                        <Pencil size={13} color={item.note ? "#C86E4A" : "#D8D0BF"} />
+                      </button>
+                      {!isCadeau && (
+                        <>
+                          <button style={S.iconBtn} onClick={() => toggleFavorite(item.name, item.category)}>
+                            <Star size={13}
+                              color={activeList.favorites.some(f => f.name.toLowerCase() === item.name.toLowerCase()) ? "#C86E4A" : "#D8D0BF"}
+                              fill={activeList.favorites.some(f => f.name.toLowerCase() === item.name.toLowerCase()) ? "#C86E4A" : "none"} />
+                          </button>
+                          <button style={S.iconBtn} title="Categorie wijzigen"
+                            onClick={() => setWijzigCatItemId(item.id)}>
+                            <span style={{ fontSize: 12, lineHeight: 1 }}>📂</span>
+                          </button>
+                        </>
+                      )}
+                      <button style={S.iconBtn} onClick={() => removeItem(item.id)}>
+                        <X size={13} color="#D8D0BF" />
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
             </section>
           ))}
 
-          {/* Niet-gecategoriseerde items */}
           {uncategorized.length > 0 && (
             <section style={{ marginBottom: 24 }}>
               <div style={S.catHeading}>📦 Overig</div>
               <ul style={S.itemList}>
                 {uncategorized.map(item => (
                   <li key={item.id} style={S.itemRow}>
-                    <button style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}) }} onClick={() => toggleCheck(item.id)}>
+                    <button style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}) }}
+                      onClick={() => toggleCheck(item.id)}>
                       {item.checked && <Check size={14} color="#FAF6F0" strokeWidth={3} />}
                     </button>
                     <div style={S.itemMain}>
                       <span style={{ ...S.itemName, ...(item.checked ? S.itemNameChecked : {}) }}>{item.name}</span>
                     </div>
-                    <button style={S.removeBtn} onClick={() => removeItem(item.id)}>
-                      <X size={15} color="#B8B2A8" />
+                    <button style={S.iconBtn} onClick={() => removeItem(item.id)}>
+                      <X size={13} color="#D8D0BF" />
                     </button>
                   </li>
                 ))}
@@ -536,34 +1148,60 @@ export default function LijstenApp() {
             <div style={S.addTabs}>
               {["typen", "favorieten"].map(t => (
                 <button key={t} style={S.addTabBtn(addTab === t)} onClick={() => setAddTab(t)}>
-                  {t === "typen" ? "Typen" : "Favorieten"}
+                  {t === "typen" ? "Typen" : "⭐ Favorieten"}
                 </button>
               ))}
             </div>
 
             {addTab === "typen" && (
               <>
-                <input autoFocus style={{ ...S.inp, marginBottom: 14 }} placeholder="Naam"
+                <input autoFocus style={{ ...S.inp, marginBottom: 10 }} placeholder="Naam"
                   value={newProduct} onChange={e => setNewProduct(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && addItem(newProduct, newCategory || defaultCatId, newAmount, newUnit)} />
-                <div style={S.amountRow}>
-                  <button style={S.amountBtn} onClick={() => setNewAmount(a => Math.max(1, a - 1))}>−</button>
-                  <span style={S.amountValue}>{newAmount}</span>
-                  <button style={S.amountBtn} onClick={() => setNewAmount(a => a + 1)}>+</button>
-                  <select style={S.unitSelect} value={newUnit} onChange={e => setNewUnit(e.target.value)}>
-                    {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                  </select>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "14px 0" }}>
+                  onKeyDown={e => e.key === "Enter" && addItem(newProduct, newCategory || defaultCatId, newAmount, newUnit, newNote, newStatus, newBudget)} />
+
+                {isCadeau ? (
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                    <select style={{ ...S.inp, flex: 1, fontSize: 13 }} value={newStatus}
+                      onChange={e => setNewStatus(e.target.value)}>
+                      {CADEAU_STATUSSEN.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <input style={{ ...S.inp, flex: 1, fontSize: 13 }} placeholder="Budget €"
+                      value={newBudget} onChange={e => setNewBudget(e.target.value)} />
+                  </div>
+                ) : (
+                  <div style={{ ...S.amountRow, marginBottom: 12 }}>
+                    <button style={S.amountBtn} onClick={() => setNewAmount(a => {
+                      const stap = newUnit === "g" ? 100 : ["kg","l","ml"].includes(newUnit) ? 0.5 : 1;
+                      return Math.max(stap, Math.round((+a - stap) * 100) / 100);
+                    })}>−</button>
+                    <input style={{ fontSize: 13, color: "#8C8576", border: "1px solid #E4DCCB", borderRadius: 6, padding: "2px 4px", width: 44, textAlign: "center", background: "#FAF6F0" }}
+                      value={newAmount} onChange={e => setNewAmount(e.target.value)}
+                      onBlur={e => { const p = parseFloat(String(e.target.value).replace(",",".")); if (!isNaN(p) && p > 0) setNewAmount(p); }} />
+                    <button style={S.amountBtn} onClick={() => setNewAmount(a => {
+                      const stap = newUnit === "g" ? 100 : ["kg","l","ml"].includes(newUnit) ? 0.5 : 1;
+                      return Math.round((+a + stap) * 100) / 100;
+                    })}>+</button>
+                    <select style={S.unitSelect} value={newUnit}
+                      onChange={e => { setNewUnit(e.target.value); setNewAmount(e.target.value === "g" ? 100 : 1); }}>
+                      {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                    </select>
+                  </div>
+                )}
+
+                <input style={{ ...S.inp, marginBottom: 12, fontSize: 14 }} placeholder="📝 Notitie (optioneel)"
+                  value={newNote} onChange={e => setNewNote(e.target.value)} />
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
                   {activeList.categories.map(c => (
-                    <button key={c.id} style={S.catPickerBtn((newCategory || defaultCatId) === c.id)} onClick={() => setNewCategory(c.id)} title={c.label}>
+                    <button key={c.id} style={S.catPickerBtn((newCategory || defaultCatId) === c.id)}
+                      onClick={() => setNewCategory(c.id)} title={c.label}>
                       {c.icon}
                     </button>
                   ))}
                 </div>
                 <div style={{ display: "flex", gap: 10 }}>
                   <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1 }} onClick={() => setShowAdd(false)}>Annuleer</button>
-                  <button style={{ ...S.btn(), flex: 2 }} onClick={() => addItem(newProduct, newCategory || defaultCatId, newAmount, newUnit)}>Toevoegen</button>
+                  <button style={{ ...S.btn(), flex: 2 }} onClick={() => addItem(newProduct, newCategory || defaultCatId, newAmount, newUnit, newNote, newStatus, newBudget)}>Toevoegen</button>
                 </div>
               </>
             )}
@@ -579,7 +1217,8 @@ export default function LijstenApp() {
                     {activeList.favorites.map(f => {
                       const cat = activeList.categories.find(c => c.id === f.category);
                       return (
-                        <button key={f.name} style={S.pickChip} onClick={() => addItem(f.name, f.category, 1, "stuks")}>
+                        <button key={f.name} style={S.pickChip}
+                          onClick={() => addItem(f.name, f.category, 1, "stuks")}>
                           {cat?.icon || "📦"} {f.name}
                         </button>
                       );
@@ -596,12 +1235,16 @@ export default function LijstenApp() {
           <button style={S.fab} onClick={() => { setShowAdd(true); setAddTab("typen"); }}>
             <Plus size={22} color="#FAF6F0" strokeWidth={2.4} />
           </button>
-          <button
-            style={{ ...S.btn(checkedCount === 0 ? "#E4DCCB" : "#C86E4A", checkedCount === 0 ? "#B8B2A8" : "#FAF6F0"), flex: 1, borderRadius: 16, boxShadow: checkedCount > 0 ? "0 6px 16px rgba(200,110,74,0.28)" : "none" }}
-            disabled={checkedCount === 0}
-            onClick={() => setMode("pakken")}>
-            {activeList.name === "Boodschappen" ? `Start boodschappen (${checkedCount})` : `Start pakken (${checkedCount})`}
-          </button>
+          {!isCadeau && (
+            <button
+              style={{ ...S.btn(checkedCount === 0 ? "#E4DCCB" : "#C86E4A", checkedCount === 0 ? "#B8B2A8" : "#FAF6F0"), flex: 1, borderRadius: 16, boxShadow: checkedCount > 0 ? "0 6px 16px rgba(200,110,74,0.28)" : "none" }}
+              disabled={checkedCount === 0}
+              onClick={() => setMode("pakken")}>
+              {activeList.name.toLowerCase().includes("boodschappen")
+                ? `Start boodschappen (${checkedCount})`
+                : `Start pakken (${checkedCount})`}
+            </button>
+          )}
         </footer>
       </div>
     );
@@ -626,11 +1269,14 @@ export default function LijstenApp() {
       </header>
 
       <main style={S.main}>
-        {/* Bestaande lijsten */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, marginBottom: 20 }}>
-          {lists.map(list => {
+          {lists.map((list, idx) => {
             const aantalItems = list.items.length;
             const aangevinkt = list.items.filter(i => i.checked).length;
+            const isCadeauLijst = list.type === "cadeau";
+            const gekocht = isCadeauLijst
+              ? list.items.filter(i => ["Gekocht","Ingepakt","Gegeven"].includes(i.status)).length
+              : null;
             return (
               <div key={list.id} style={{ ...S.card, cursor: "pointer", position: "relative" }}
                 onClick={() => { setActiveListId(list.id); setNewCategory(list.categories[0]?.id || null); }}>
@@ -646,10 +1292,25 @@ export default function LijstenApp() {
                   <p style={{ margin: "0 0 4px", fontSize: 15, fontWeight: 700, color: "#2D4A3E" }}>{list.name}</p>
                 )}
                 <p style={{ margin: 0, fontSize: 12, color: "#B8B2A8" }}>
-                  {aantalItems === 0 ? "Leeg" : `${aangevinkt}/${aantalItems} aangevinkt`}
+                  {aantalItems === 0 ? "Leeg"
+                    : isCadeauLijst ? `${gekocht}/${aantalItems} gekocht`
+                    : `${aangevinkt}/${aantalItems} aangevinkt`}
                 </p>
-                {/* Bewerken / verwijder knoppen */}
                 <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 4 }} onClick={e => e.stopPropagation()}>
+                  {/* Omhoog */}
+                  {idx > 0 && (
+                    <button style={{ background: "none", border: "none", cursor: "pointer", padding: 4, fontSize: 12 }}
+                      onClick={() => herschikLijsten(idx, idx - 1)} title="Omhoog">↑</button>
+                  )}
+                  {/* Omlaag */}
+                  {idx < lists.length - 1 && (
+                    <button style={{ background: "none", border: "none", cursor: "pointer", padding: 4, fontSize: 12 }}
+                      onClick={() => herschikLijsten(idx, idx + 1)} title="Omlaag">↓</button>
+                  )}
+                  <button style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }} title="Dupliceren"
+                    onClick={() => dupliceerLijst(list.id)}>
+                    <span style={{ fontSize: 12 }}>⧉</span>
+                  </button>
                   <button style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}
                     onClick={() => { setEditListId(list.id); setEditListNaam(list.name); }}>
                     <Pencil size={13} color="#B8B2A8" />
@@ -664,15 +1325,12 @@ export default function LijstenApp() {
           })}
         </div>
 
-        {/* Nieuwe lijst */}
         {showNieuw ? (
           <div style={{ ...S.card, border: "1px solid #2D4A3E44" }}>
             <p style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 700, color: "#2D4A3E" }}>Nieuwe lijst</p>
-            <input style={{ ...S.inp, marginBottom: 12 }} placeholder="Naam van de lijst (bv. Vakantie Spanje)"
+            <input style={{ ...S.inp, marginBottom: 12 }} placeholder="Naam (bv. Vakantie Spanje)"
               value={nieuwNaam} autoFocus onChange={e => setNieuwNaam(e.target.value)}
               onKeyDown={e => e.key === "Enter" && maakLijst()} />
-
-            {/* Icoon kiezen */}
             <p style={{ fontSize: 12, color: "#8C8576", margin: "0 0 8px" }}>Icoon</p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
               {LIJST_ICONEN.map(ic => (
@@ -682,18 +1340,16 @@ export default function LijstenApp() {
                 </button>
               ))}
             </div>
-
-            {/* Sjabloon kiezen */}
-            <p style={{ fontSize: 12, color: "#8C8576", margin: "0 0 8px" }}>Start met sjabloon</p>
+            <p style={{ fontSize: 12, color: "#8C8576", margin: "0 0 8px" }}>Sjabloon</p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
               {LIJST_SJABLONEN.map(s => (
-                <button key={s.naam} onClick={() => { setNieuwSjabloon(nieuwSjabloon === s.naam ? null : s.naam); setNieuwIcoon(s.icon); setNieuwNaam(nieuwNaam || s.naam); }}
+                <button key={s.naam}
+                  onClick={() => { setNieuwSjabloon(nieuwSjabloon === s.naam ? null : s.naam); setNieuwIcoon(s.icon); if (!nieuwNaam) setNieuwNaam(s.naam); }}
                   style={{ border: nieuwSjabloon === s.naam ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: nieuwSjabloon === s.naam ? "#2D4A3E" : "#FAF6F0", color: nieuwSjabloon === s.naam ? "#FAF6F0" : "#2D2A26", borderRadius: 20, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontWeight: nieuwSjabloon === s.naam ? 700 : 400 }}>
                   {s.icon} {s.naam}
                 </button>
               ))}
             </div>
-
             <div style={{ display: "flex", gap: 10 }}>
               <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1 }} onClick={() => setShowNieuw(false)}>Annuleer</button>
               <button style={{ ...S.btn(), flex: 2 }} onClick={maakLijst}>Aanmaken</button>

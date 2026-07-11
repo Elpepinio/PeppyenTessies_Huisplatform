@@ -23,9 +23,11 @@ const CAT_COL  = {
 };
 
 const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Gezondheid","Kleding","Entertainment","Vakantie","Kinderen","Sparen","Overig"];
-const NOW_MONTH   = "2025-06";
-const NOW_YEAR    = 2025;
-const NOW_Q       = 2;
+// ── Dynamische datum (altijd actueel) ────────────────────────────────────────
+const _now       = new Date();
+const NOW_MONTH  = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}`;
+const NOW_YEAR   = _now.getFullYear();
+const NOW_Q      = Math.ceil((_now.getMonth() + 1) / 3);
 
 // ── Rabobank CSV parser ───────────────────────────────────────────────────────
 function parseRabobankCSV(text, rekeningMap) {
@@ -262,7 +264,7 @@ function makeS(C) {
   return {
     inp: { background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 11px", color:C.text, fontSize:13, width:"100%", boxSizing:"border-box" },
     btn: (col=C.accent, tc=C.bg) => ({ background:col, color:tc, border:"none", borderRadius:8, padding:"8px 16px", fontWeight:700, fontSize:13, cursor:"pointer" }),
-    tabBtn: active => ({ padding:"6px 13px", borderRadius:7, border:"none", cursor:"pointer", fontWeight:600, fontSize:12, background:active?C.accent:"transparent", color:active?C.bg:C.muted, transition:"all .15s" }),
+    tabBtn: active => ({ padding:"10px 14px", borderRadius:8, border:"none", cursor:"pointer", fontWeight:600, fontSize:13, background:active?C.accent:"transparent", color:active?C.bg:C.muted, transition:"all .15s", whiteSpace:"nowrap" }),
     badge: (color) => ({ background:`${color}22`, color, border:`1px solid ${color}55`, padding:"1px 7px", borderRadius:20, fontSize:10, fontWeight:700, whiteSpace:"nowrap" }),
   };
 }
@@ -272,6 +274,7 @@ function makeS(C) {
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function BudgetApp() {
   const [loading, setLoading] = useState(true);
+  const [verbindingsFout, setVerbindingsFout] = useState(false);
   const [themeName, setThemeNameState] = useState("dark");
   const [names,        setNamesState]        = useState({ p1:"Partner 1", p2:"Partner 2" });
   const [incomes,      setIncomesState]      = useState({ p1:0, p2:0, bijdrage_p1:0, bijdrage_p2:0, kinderbijslag:0 });
@@ -349,8 +352,10 @@ export default function BudgetApp() {
         setTasksState(data.tasks || []);
         setBijstState(data.bijst || []);
         setLoading(false);
+        setVerbindingsFout(false);
       } else if (active) {
         setLoading(false);
+        setVerbindingsFout(true);
       }
     };
 
@@ -366,16 +371,18 @@ export default function BudgetApp() {
   const [tab,          setTab]          = useState("dashboard");
   const [quickAdd,     setQuickAdd]     = useState(false);
   const [activeAcc,    setActiveAcc]    = useState("alle");
+  const [selectedMonth, setSelectedMonth] = useState(NOW_MONTH); // maand-selector
   const [csvImport,    setCsvImport]    = useState(null);
   const [csvError,     setCsvError]     = useState("");
   const [ibanMap,      setIbanMap]      = useState({});
   const [toast,        setToast]        = useState(null);
   const [toastColor,   setToastColor]   = useState(null);
-  const [expForm,      setExpForm]      = useState({ name:"", amount:"", category:CATEGORIES[0], account:"p1", month:NOW_MONTH, fixed:false });
+  const [expForm,      setExpForm]      = useState({ name:"", amount:"", category:CATEGORIES[0], account:"p1", month:NOW_MONTH, fixed:false, recurring:false, note:"" });
   const [bForm,        setBForm]        = useState({ category:"Kleding", period:"kwartaal", amount:"", account:"alle", note:"" });
   const [showBForm,    setShowBForm]    = useState(false);
   const [drillCat,     setDrillCat]     = useState(null);
-  const [cmpMonth,     setCmpMonth]     = useState("2025-05");
+  const _prevMonth = prevMonth(NOW_MONTH);
+  const [cmpMonth,     setCmpMonth]     = useState(_prevMonth);
   const [editNote,     setEditNote]     = useState(null);
   const [goalForm,     setGoalForm]     = useState({name:"",target:"",current:"0",deadline:"",account:"gezamenlijk",icon:"🎯"});
   const [taskForm,     setTaskForm]     = useState({title:"",due:"",account:"alle",priority:"middel"});
@@ -395,9 +402,9 @@ export default function BudgetApp() {
 
   const totalByAccount = useMemo(() => {
     const t = { gezamenlijk:0, p1:0, p2:0 };
-    expenses.filter(e => e.month === NOW_MONTH).forEach(e => { t[e.account] = (t[e.account]||0) + e.amount; });
+    expenses.filter(e => e.month === selectedMonth).forEach(e => { t[e.account] = (t[e.account]||0) + e.amount; });
     return t;
-  }, [expenses]);
+  }, [expenses, selectedMonth]);
 
   const filteredExpenses = useMemo(() =>
     activeAcc === "alle" ? expenses : expenses.filter(e => e.account === activeAcc),
@@ -405,9 +412,9 @@ export default function BudgetApp() {
 
   const byCat = useMemo(() => {
     const m = {};
-    expenses.filter(e => e.month === NOW_MONTH).forEach(e => { m[e.category] = (m[e.category]||0) + e.amount; });
+    expenses.filter(e => e.month === selectedMonth).forEach(e => { m[e.category] = (m[e.category]||0) + e.amount; });
     return Object.entries(m).map(([name,value]) => ({name,value})).sort((a,b) => b.value - a.value);
-  }, [expenses]);
+  }, [expenses, selectedMonth]);
 
   const byCatPrev = useMemo(() => {
     const m = {};
@@ -428,6 +435,48 @@ export default function BudgetApp() {
   // ── Toast ─────────────────────────────────────────────────────────────────
   function showToast(msg, col=null) { setToast(msg); setToastColor(col); setTimeout(() => { setToast(null); setToastColor(null); }, 2800); }
 
+  // ── Terugkerende uitgaven automatisch toevoegen ───────────────────────────
+  useEffect(() => {
+    if (!expenses.length) return;
+    const recurring = expenses.filter(e => e.recurring && e.month !== NOW_MONTH);
+    if (!recurring.length) return;
+    // Groepeer per naam+account+category — neem de meest recente versie
+    const byKey = {};
+    recurring.forEach(e => {
+      const k = `${e.name}|${e.account}|${e.category}`;
+      if (!byKey[k] || e.month > byKey[k].month) byKey[k] = e;
+    });
+    const nieuweItems = Object.values(byKey).filter(e =>
+      !expenses.some(x => x.name === e.name && x.account === e.account && x.category === e.category && x.month === NOW_MONTH)
+    );
+    if (!nieuweItems.length) return;
+    setExpenses(prev => [
+      ...prev,
+      ...nieuweItems.map(e => ({ ...e, id: uid(), month: NOW_MONTH, fromBank: false })),
+    ]);
+  }, []);  // eslint-disable-line — alleen bij mount
+
+  // ── CSV-export ────────────────────────────────────────────────────────────
+  function exporteerCSV() {
+    const header = ["Datum","Naam","Bedrag","Categorie","Rekening","Vast","Terugkerend","Notitie"];
+    const rows = expenses
+      .sort((a,b) => b.month.localeCompare(a.month))
+      .map(e => [
+        e.month, e.name, e.amount.toFixed(2).replace(".",","),
+        e.category, e.account,
+        e.fixed ? "Ja" : "Nee",
+        e.recurring ? "Ja" : "Nee",
+        e.note || "",
+      ]);
+    const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(";")).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `budget-export-${NOW_MONTH}.csv`; a.click();
+    URL.revokeObjectURL(url);
+    showToast("✅ CSV geëxporteerd");
+  }
+
   // ── Mutations ─────────────────────────────────────────────────────────────
   function addExpense() {
     if (!expForm.name.trim() || !expForm.amount) return;
@@ -436,7 +485,24 @@ export default function BudgetApp() {
     showToast("✅ Uitgave toegevoegd");
   }
 
-  function delExpense(id) { setExpenses(prev => prev.filter(e => e.id !== id)); }
+  function delExpense(id) {
+    const item = expenses.find(e => e.id === id);
+    setExpenses(prev => prev.filter(e => e.id !== id));
+    if (item) {
+      showToast(`🗑 ${item.name} verwijderd — `, "undo");
+      // Bewaar voor undo
+      window._undoExp = { item, timer: setTimeout(() => { window._undoExp = null; setToast(null); }, 5000) };
+    }
+  }
+
+  function undoDelExpense() {
+    if (!window._undoExp) return;
+    clearTimeout(window._undoExp.timer);
+    setExpenses(prev => [...prev, window._undoExp.item]);
+    window._undoExp = null;
+    setToast(null);
+    showToast("✅ Teruggezet");
+  }
 
   function addBudget() {
     if (!bForm.amount) return;
@@ -497,8 +563,25 @@ export default function BudgetApp() {
 
   // ── Loading screen ────────────────────────────────────────────────────────
   if (loading) return (
-    <div style={{ minHeight:"100vh", background:C.bg, display:"flex", alignItems:"center", justifyContent:"center" }}>
-      <div style={{ color:C.muted, fontSize:14 }}>Gegevens laden…</div>
+    <div style={{ minHeight:"100vh", background:C.bg, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:16 }}>
+      <div style={{ fontSize:28 }}>💰</div>
+      <div style={{ display:"flex", gap:6 }}>
+        {[0,1,2].map(i => (
+          <div key={i} style={{ width:7, height:7, borderRadius:"50%", background:C.accent, opacity:0.3, animation:`pulse 1.2s ease-in-out ${i*0.2}s infinite` }} />
+        ))}
+      </div>
+      <style>{`@keyframes pulse{0%,100%{opacity:.3;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}`}</style>
+    </div>
+  );
+
+  if (verbindingsFout) return (
+    <div style={{ minHeight:"100vh", background:C.bg, color:C.text, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16, padding:"0 32px", textAlign:"center" }}>
+      <div style={{ fontSize:40 }}>⚠️</div>
+      <p style={{ fontWeight:700, fontSize:17, color:C.text, margin:0 }}>Geen verbinding</p>
+      <p style={{ fontSize:14, color:C.muted, margin:0 }}>Controleer je internetverbinding en probeer het opnieuw.</p>
+      <button style={{ background:C.accent, color:C.bg, border:"none", borderRadius:10, padding:"12px 28px", fontSize:15, fontWeight:700, cursor:"pointer" }} onClick={() => { setVerbindingsFout(false); setLoading(true); window.location.reload(); }}>
+        Opnieuw proberen
+      </button>
     </div>
   );
 
@@ -580,8 +663,19 @@ export default function BudgetApp() {
   return (
     <div style={{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"system-ui,-apple-system,sans-serif", padding:"16px 14px" }}>
       {toast && (
-        <div style={{ position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", background:C.green, color:C.bg, padding:"9px 20px", borderRadius:10, fontWeight:700, zIndex:999, fontSize:13, boxShadow:"0 4px 24px rgba(0,224,150,.35)", whiteSpace:"nowrap" }}>
-          {toast}
+        <div style={{ position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", background:C.green, color:C.bg, padding:"9px 16px", borderRadius:10, fontWeight:700, zIndex:999, fontSize:13, boxShadow:"0 4px 24px rgba(0,224,150,.35)", whiteSpace:"nowrap", display:"flex", alignItems:"center", gap:10 }}>
+          <span>{toast}</span>
+          {window._undoExp && (
+            <button onClick={undoDelExpense} style={{ background:C.yellow, color:C.bg, border:"none", borderRadius:7, padding:"3px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>
+              Ongedaan maken
+            </button>
+          )}
+        </div>
+      )}
+
+      {!navigator.onLine && (
+        <div style={{ background:C.orange, color:C.bg, padding:"7px 16px", fontSize:12, fontWeight:600, textAlign:"center" }}>
+          📡 Geen verbinding — wijzigingen worden opgeslagen zodra je weer online bent
         </div>
       )}
 
@@ -597,9 +691,14 @@ export default function BudgetApp() {
             </div>
           </div>
           <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+            {/* Maand-selector */}
+            <input type="month" value={selectedMonth} max={NOW_MONTH}
+              onChange={e => setSelectedMonth(e.target.value)}
+              style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.text, fontSize:12, cursor:"pointer" }} />
             {alerts.filter(a=>a.level==="rood").length > 0 && <span style={{ background:`${C.red}22`, color:C.red, border:`1px solid ${C.red}44`, padding:"3px 9px", borderRadius:20, fontSize:11, fontWeight:700, cursor:"pointer" }} onClick={()=>setTab("meldingen")}>🚨 {alerts.filter(a=>a.level==="rood").length}</span>}
             {alerts.filter(a=>a.level==="oranje").length > 0 && <span style={{ background:`${C.yellow}22`, color:C.yellow, border:`1px solid ${C.yellow}44`, padding:"3px 9px", borderRadius:20, fontSize:11, fontWeight:700, cursor:"pointer" }} onClick={()=>setTab("meldingen")}>⚠️ {alerts.filter(a=>a.level==="oranje").length}</span>}
-            <button onClick={() => csvRef.current?.click()} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:12 }}>📂 CSV</button>
+            <button onClick={exporteerCSV} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:12 }}>⬇️ CSV</button>
+            <button onClick={() => csvRef.current?.click()} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:12 }}>📂 Bank</button>
             <input ref={csvRef} type="file" accept=".csv" style={{ display:"none" }} onChange={e => handleCSV(e.target.files[0])}/>
             <button onClick={() => setThemeName(t => t==="dark" ? "light" : "dark")} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:14 }}>{themeName==="dark" ? "☀️" : "🌙"}</button>
             <button onClick={() => setSetupDone(false)} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:14 }}>⚙️</button>
@@ -755,7 +854,7 @@ export default function BudgetApp() {
             </div>
             {drillCat === null ? (
               <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:16 }}>
-                <h3 style={{ margin:"0 0 12px", fontSize:14, fontWeight:700 }}>{fmtM(NOW_MONTH)} vs {fmtM(cmpMonth)}</h3>
+                <h3 style={{ margin:"0 0 12px", fontSize:14, fontWeight:700 }}>{fmtM(selectedMonth)} vs {fmtM(cmpMonth)}</h3>
                 <ResponsiveContainer width="100%" height={210}>
                   <BarChart data={byCat.map(c=>({name:c.name.length>7?c.name.slice(0,7)+"…":c.name,Huidig:c.value,Vorig:byCatPrev[c.name]||0}))} barGap={3} barCategoryGap="25%">
                     <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
@@ -772,13 +871,13 @@ export default function BudgetApp() {
                 </div>
               </div>
             ) : (()=>{
-              const catExp = expenses.filter(e=>e.category===drillCat&&e.month===NOW_MONTH).sort((a,b)=>b.amount-a.amount);
+              const catExp = expenses.filter(e=>e.category===drillCat&&e.month===selectedMonth).sort((a,b)=>b.amount-a.amount);
               const months = Array.from({length:6},(_,i)=>{const d=new Date(NOW_YEAR,+NOW_MONTH.split("-")[1]-1-i,1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;}).reverse();
               const trendData = months.map(m=>({label:fmtM(m),total:expenses.filter(e=>e.category===drillCat&&e.month===m).reduce((s,e)=>s+e.amount,0)}));
               return <>
                 <div style={{ background:C.surf, borderRadius:13, border:`2px solid ${CAT_COL[drillCat]||C.accent}44`, overflow:"hidden" }}>
                   <div style={{ background:C.card, padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                    <span style={{ fontWeight:700, fontSize:14 }}>{CAT_ICON[drillCat]} {drillCat} — {fmtM(NOW_MONTH)}</span>
+                    <span style={{ fontWeight:700, fontSize:14 }}>{CAT_ICON[drillCat]} {drillCat} — {fmtM(selectedMonth)}</span>
                     <span style={{ fontWeight:800, color:CAT_COL[drillCat]||C.accent }}>{euro(byCat.find(c=>c.name===drillCat)?.value||0)}</span>
                   </div>
                   {catExp.map(e=>(
@@ -793,7 +892,7 @@ export default function BudgetApp() {
                       <button onClick={()=>setEditNote({id:e.id,note:e.note||""})} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:5, padding:"2px 6px", cursor:"pointer", color:C.muted, fontSize:11 }}>📝</button>
                     </div>
                   ))}
-                  {catExp.length===0 && <div style={{ padding:"18px 14px", textAlign:"center", color:C.muted, fontSize:12 }}>Geen uitgaven in {fmtM(NOW_MONTH)}</div>}
+                  {catExp.length===0 && <div style={{ padding:"18px 14px", textAlign:"center", color:C.muted, fontSize:12 }}>Geen uitgaven in {fmtM(selectedMonth)}</div>}
                 </div>
                 <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:16 }}>
                   <h3 style={{ margin:"0 0 12px", fontSize:14, fontWeight:700 }}>6-maanden trend: {drillCat}</h3>
@@ -1021,6 +1120,42 @@ export default function BudgetApp() {
         {tab === "dashboard" && (
           <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
 
+            {/* 6-maanden trend grafiek */}
+            {(() => {
+              const maanden = Array.from({length:6}, (_,i) => {
+                const d = new Date(_now.getFullYear(), _now.getMonth() - i, 1);
+                return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+              }).reverse();
+              const trendData = maanden.map(m => ({
+                label: fmtM(m),
+                totaal: expenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
+                inkomen: incomes.p1 + incomes.p2,
+              }));
+              const maxVal = Math.max(...trendData.map(d => d.totaal), incomes.p1+incomes.p2, 1);
+              return (
+                <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                    <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📈 Uitgaven afgelopen 6 maanden</h3>
+                    <span style={{ fontSize:11, color:C.muted }}>— inkomen</span>
+                  </div>
+                  <ResponsiveContainer width="100%" height={140}>
+                    <LineChart data={trendData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
+                      <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false}/>
+                      <YAxis tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`€${v}`}/>
+                      <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v,n)=>[`€${v}`,n==="totaal"?"Uitgaven":"Inkomen"]}/>
+                      <ReferenceLine y={incomes.p1+incomes.p2} stroke={C.green} strokeDasharray="4 2" strokeWidth={1.5}/>
+                      <Line type="monotone" dataKey="totaal" stroke={C.accent} strokeWidth={2.5} dot={{r:4,fill:C.accent,stroke:C.bg,strokeWidth:2}}/>
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <div style={{ display:"flex", gap:16, marginTop:6, fontSize:11, color:C.muted, justifyContent:"center" }}>
+                    <span><span style={{display:"inline-block",width:12,height:3,borderRadius:2,background:C.accent,marginRight:5,verticalAlign:"middle"}}/>Uitgaven</span>
+                    <span><span style={{display:"inline-block",width:12,height:2,borderBottom:`2px dashed ${C.green}`,marginRight:5,verticalAlign:"middle"}}/>Inkomen</span>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Rekening-kaarten */}
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))", gap:10 }}>
               {[{id:"p1",label:`👤 ${names.p1}`,income:incomes.p1,bijdrage:incomes.bijdrage_p1||0},
@@ -1062,13 +1197,13 @@ export default function BudgetApp() {
 
             {/* Vaste lasten */}
             {(() => {
-              const vast = expenses.filter(e => e.fixed && e.month === NOW_MONTH);
+              const vast = expenses.filter(e => e.fixed && e.month === selectedMonth);
               const vastTot = vast.reduce((s,e) => s+e.amount, 0);
               const variabel = (incomes.p1+incomes.p2) - vastTot - (incomes.bijdrage_p1||0) - (incomes.bijdrage_p2||0);
               return (
                 <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-                    <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📌 Vaste lasten {fmtM(NOW_MONTH)}</h3>
+                    <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📌 Vaste lasten {fmtM(selectedMonth)}</h3>
                     <div style={{ textAlign:"right" }}>
                       <div style={{ fontWeight:800, fontSize:15, color:C.red }}>{euro(vastTot)}</div>
                       <div style={{ fontSize:10, color:C.muted }}>Vrij te besteden: <strong style={{ color:C.green }}>{euro(Math.max(0,variabel))}</strong></div>
@@ -1113,7 +1248,7 @@ export default function BudgetApp() {
             {/* Budget overzicht */}
             <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-                <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>🎯 Budgetten {fmtM(NOW_MONTH)}</h3>
+                <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>🎯 Budgetten {fmtM(selectedMonth)}</h3>
                 <button style={{ ...S.btn(C.accent), fontSize:11, padding:"4px 9px" }} onClick={()=>setTab("budgetten")}>Beheer →</button>
               </div>
               {budgetsWithSpent.filter(b=>b.period==="maand").length === 0
@@ -1208,9 +1343,13 @@ export default function BudgetApp() {
                 <div><Label C={C}>Maand</Label><input style={S.inp} type="month" value={expForm.month} onChange={e=>setExpForm(p=>({...p,month:e.target.value}))}/></div>
                 <button style={S.btn()} onClick={addExpense}>+</button>
               </div>
-              <div style={{ marginTop:7, display:"flex", alignItems:"center", gap:8 }}>
+              <input style={{...S.inp, marginTop:8, fontSize:13}} placeholder="📝 Notitie (optioneel)" value={expForm.note||""} onChange={e=>setExpForm(p=>({...p,note:e.target.value}))}/>
+              <div style={{ marginTop:7, display:"flex", alignItems:"center", gap:16, flexWrap:"wrap" }}>
                 <label style={{ fontSize:12, color:C.muted, display:"flex", alignItems:"center", gap:5, cursor:"pointer" }}>
                   <input type="checkbox" checked={expForm.fixed} onChange={e=>setExpForm(p=>({...p,fixed:e.target.checked}))}/> Vaste last
+                </label>
+                <label style={{ fontSize:12, color:C.muted, display:"flex", alignItems:"center", gap:5, cursor:"pointer" }}>
+                  <input type="checkbox" checked={expForm.recurring||false} onChange={e=>setExpForm(p=>({...p,recurring:e.target.checked}))}/> Elke maand herhalen 🔁
                 </label>
               </div>
             </div>
@@ -1225,13 +1364,17 @@ export default function BudgetApp() {
                     <span style={{ fontWeight:700, fontSize:13 }}>{euro(ae.reduce((s,e)=>s+e.amount,0))}</span>
                   </div>
                   {ae.map(e => (
-                    <div key={e.id} style={{ padding:"8px 14px", display:"flex", alignItems:"center", gap:8, borderTop:`1px solid ${C.border}` }}>
-                      <span style={{ width:9, height:9, borderRadius:"50%", background:CAT_COL[e.category]||C.muted, flexShrink:0 }}/>
-                      <span style={{ flex:1, fontSize:13 }}>{e.name}</span>
+                    <div key={e.id} style={{ padding:"8px 14px", display:"flex", alignItems:"flex-start", gap:8, borderTop:`1px solid ${C.border}` }}>
+                      <span style={{ width:9, height:9, borderRadius:"50%", background:CAT_COL[e.category]||C.muted, flexShrink:0, marginTop:4 }}/>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <span style={{ fontSize:13 }}>{e.name}</span>
+                        {e.note && <div style={{ fontSize:11, color:C.muted, fontStyle:"italic", marginTop:2 }}>📝 {e.note}</div>}
+                      </div>
                       <span style={{ fontSize:11, color:C.muted }}>{e.category}</span>
                       <span style={{ fontSize:11, color:C.muted }}>{fmtM(e.month)}</span>
-                      {e.fixed    && <span style={{ fontSize:10, background:`${C.accent}22`, color:C.accent, padding:"1px 6px", borderRadius:8 }}>vast</span>}
-                      {e.fromBank && <span style={{ fontSize:10, background:`${C.green}22`,  color:C.green,  padding:"1px 6px", borderRadius:8 }}>bank</span>}
+                      {e.fixed     && <span style={{ fontSize:10, background:`${C.accent}22`, color:C.accent, padding:"1px 6px", borderRadius:8 }}>vast</span>}
+                      {e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>🔁</span>}
+                      {e.fromBank  && <span style={{ fontSize:10, background:`${C.green}22`,  color:C.green,  padding:"1px 6px", borderRadius:8 }}>bank</span>}
                       <span style={{ fontWeight:700, fontSize:13 }}>{euro(e.amount)}</span>
                       <button onClick={()=>delExpense(e.id)} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:13 }}>×</button>
                     </div>
@@ -1350,7 +1493,7 @@ export default function BudgetApp() {
           return (
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
               <div>
-                <h2 style={{ margin:0, fontSize:15, fontWeight:800, color:C.text }}>📅 Maandafsluiting {fmtM(NOW_MONTH)}</h2>
+                <h2 style={{ margin:0, fontSize:15, fontWeight:800, color:C.text }}>📅 Maandafsluiting {fmtM(selectedMonth)}</h2>
                 <p style={{ margin:"4px 0 0", fontSize:12, color:C.muted }}>Hoe was deze maand?</p>
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
@@ -1416,7 +1559,7 @@ export default function BudgetApp() {
 
       {/* ── Snelle invoer floating button ── */}
       <button onClick={() => setQuickAdd(true)}
-        style={{ position:"fixed", bottom:28, right:28, width:58, height:58, borderRadius:29,
+        style={{ position:"fixed", bottom:88, right:20, width:52, height:52, borderRadius:16,
           background:`linear-gradient(135deg,${C.accent},${C.purple})`, border:"none",
           fontSize:28, cursor:"pointer", boxShadow:"0 4px 24px rgba(0,0,0,.4)",
           display:"flex", alignItems:"center", justifyContent:"center", zIndex:100, color:C.bg, fontWeight:300 }}>
