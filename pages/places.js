@@ -565,7 +565,13 @@ export default function PlacesApp() {
       {showForm && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.6)", zIndex:200, display:"flex", alignItems:"flex-end" }} onClick={() => { setShowForm(false); if (!bewerkModus) resetForm(); setBewerkModus(false); }}>
           <div style={{ background:"#FFF", width:"100%", maxHeight:"92vh", overflowY:"auto", padding:"20px 20px 40px", borderTopLeftRadius:24, borderTopRightRadius:24, boxSizing:"border-box" }} onClick={e => e.stopPropagation()}>
-            <p style={{ margin:"0 0 16px", fontWeight:700, fontSize:16, color:C.blue }}>{bewerkModus ? "✏️ Plek bewerken" : "📍 Nieuwe plek"}</p>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.blue }}>{bewerkModus ? "✏️ Plek bewerken" : "📍 Nieuwe plek"}</p>
+              <button onClick={() => { setShowForm(false); if (!bewerkModus) resetForm(); setBewerkModus(false); }} aria-label="Sluiten"
+                style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={20} color={C.muted} />
+              </button>
+            </div>
 
             {/* Naam */}
             <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam van de plek" value={form.naam} autoFocus

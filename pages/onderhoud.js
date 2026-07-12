@@ -211,7 +211,13 @@ export default function OnderhoudApp() {
         {showLogForm && (
           <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => setShowLogForm(false)}>
             <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
-              <p style={{ margin:"0 0 14px", fontWeight:700, fontSize:15, color:C.purple }}>✅ Onderhoud registreren</p>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+                <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>✅ Onderhoud registreren</p>
+                <button onClick={() => setShowLogForm(false)} aria-label="Sluiten"
+                  style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                  <X size={18} color={C.muted} />
+                </button>
+              </div>
               <p style={{ margin:"0 0 10px", fontSize:13, color:C.muted }}>{taken.find(t=>t.id===logTaakId)?.naam}</p>
               <input style={{ ...S.inp, marginBottom:10 }} type="date" value={logForm.datum} onChange={e=>setLogForm(f=>({...f,datum:e.target.value}))} />
               <input style={{ ...S.inp, marginBottom:10 }} placeholder="Kosten (€)" type="number" value={logForm.kosten} onChange={e=>setLogForm(f=>({...f,kosten:e.target.value}))} />
@@ -229,7 +235,13 @@ export default function OnderhoudApp() {
         {showTaakForm && (
           <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => setShowTaakForm(false)}>
             <div style={{ background:"#FFF", width:"100%", maxHeight:"85vh", overflowY:"auto", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20, boxSizing:"border-box" }} onClick={e => e.stopPropagation()}>
-              <p style={{ margin:"0 0 14px", fontWeight:700, fontSize:15, color:C.purple }}>+ Nieuwe onderhoudstaak</p>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+                <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>+ Nieuwe onderhoudstaak</p>
+                <button onClick={() => setShowTaakForm(false)} aria-label="Sluiten"
+                  style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                  <X size={18} color={C.muted} />
+                </button>
+              </div>
               <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam (bv. CV-ketel onderhoud)" value={taakForm.naam} onChange={e=>setTaakForm(f=>({...f,naam:e.target.value}))} autoFocus />
               <div style={{ marginBottom:10 }}>
                 <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Herhaalinterval</label>
@@ -358,7 +370,13 @@ export default function OnderhoudApp() {
       {showObjectForm && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => setShowObjectForm(false)}>
           <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
-            <p style={{ margin:"0 0 14px", fontWeight:700, fontSize:15, color:C.purple }}>+ Nieuw object</p>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>+ Nieuw object</p>
+              <button onClick={() => setShowObjectForm(false)} aria-label="Sluiten"
+                style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={18} color={C.muted} />
+              </button>
+            </div>
             <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam (bv. Woning, Camper, Auto)" value={objectForm.naam} onChange={e=>setObjectForm(f=>({...f,naam:e.target.value}))} autoFocus />
             <p style={{ fontSize:11, color:C.muted, margin:"0 0 8px" }}>Icoon</p>
             <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 }}>

@@ -1145,7 +1145,11 @@ export default function BudgetApp() {
         {editNote && (
           <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.6)", zIndex:999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setEditNote(null)}>
             <div style={{ background:C.surf, borderRadius:14, border:`1px solid ${C.border}`, padding:22, width:"100%", maxWidth:380 }} onClick={e=>e.stopPropagation()}>
-              <h3 style={{ margin:"0 0 12px", fontSize:15 }}>📝 Notitie</h3>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                <h3 style={{ margin:0, fontSize:15 }}>📝 Notitie</h3>
+                <button onClick={()=>setEditNote(null)} aria-label="Sluiten"
+                  style={{ background:"none", border:"none", cursor:"pointer", fontSize:22, lineHeight:1, color:C.muted, padding:4 }}>×</button>
+              </div>
               <textarea value={editNote.note} onChange={e=>setEditNote(n=>({...n,note:e.target.value}))}
                 style={{ ...S.inp, height:80, resize:"vertical" }} placeholder="Voeg een notitie toe…"/>
               <div style={{ display:"flex", gap:8, marginTop:10 }}>
@@ -1648,7 +1652,11 @@ export default function BudgetApp() {
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.65)", zIndex:200, display:"flex", alignItems:"flex-end", justifyContent:"center" }} onClick={() => setQuickAdd(false)}>
           <div style={{ background:C.surf, borderRadius:"16px 16px 0 0", border:`1px solid ${C.border}`, padding:"20px 20px 36px", width:"100%", maxWidth:560 }} onClick={e => e.stopPropagation()}>
             <div style={{ width:36, height:4, background:C.dim, borderRadius:2, margin:"0 auto 16px" }}/>
-            <h3 style={{ margin:"0 0 14px", fontSize:16, fontWeight:800, color:C.text }}>⚡ Snelle invoer</h3>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <h3 style={{ margin:0, fontSize:16, fontWeight:800, color:C.text }}>⚡ Snelle invoer</h3>
+              <button onClick={() => setQuickAdd(false)} aria-label="Sluiten"
+                style={{ background:"none", border:"none", cursor:"pointer", fontSize:22, lineHeight:1, color:C.muted, padding:4 }}>×</button>
+            </div>
             <div style={{ textAlign:"center", marginBottom:14 }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
                 <span style={{ fontSize:32, fontWeight:300, color:C.muted }}>€</span>

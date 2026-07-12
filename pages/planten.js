@@ -504,7 +504,13 @@ Maximaal 300 woorden, praktisch en informatief.`
         {showOnderhoud && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setShowOnderhoud(false)}>
             <div style={{ background: "#FFFFFF", width: "100%", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20 }} onClick={e => e.stopPropagation()}>
-              <p style={{ margin: "0 0 14px", fontWeight: 700, fontSize: 15 }}>Onderhoud loggen</p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <p style={{ margin: 0, fontWeight: 700, fontSize: 15 }}>Onderhoud loggen</p>
+                <button onClick={() => setShowOnderhoud(false)} aria-label="Sluiten"
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                  <X size={18} color={C.muted} />
+                </button>
+              </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
                 {ONDERHOUD_TYPES.map(t => (
                   <button key={t.id}
@@ -672,7 +678,13 @@ Maximaal 300 woorden, praktisch en informatief.`
       {showForm && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setShowForm(false)}>
           <div style={{ background: "#FFFFFF", width: "100%", maxHeight: "90vh", overflowY: "auto", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20, boxSizing: "border-box" }} onClick={e => e.stopPropagation()}>
-            <p style={{ margin: "0 0 14px", fontWeight: 700, fontSize: 16, color: C.green }}>🌱 Nieuwe plant</p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <p style={{ margin: 0, fontWeight: 700, fontSize: 16, color: C.green }}>🌱 Nieuwe plant</p>
+              <button onClick={() => setShowForm(false)} aria-label="Sluiten"
+                style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                <X size={20} color={C.muted} />
+              </button>
+            </div>
             <input style={{ ...S.inp, marginBottom: 10 }} placeholder="Naam (bv. Tomaat, Monstera)" value={formPlant.naam} onChange={e => setFormPlant(f => ({ ...f, naam: e.target.value }))} autoFocus />
             <input style={{ ...S.inp, marginBottom: 10 }} placeholder="Soort / variëteit (optioneel)" value={formPlant.soort} onChange={e => setFormPlant(f => ({ ...f, soort: e.target.value }))} />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>

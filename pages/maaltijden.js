@@ -678,8 +678,14 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
       {showPlanOverlay && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => { setShowPlanOverlay(false); setPlanZoek(""); }}>
           <div style={{ background:"#FFF", width:"100%", maxHeight:"80vh", overflowY:"auto", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20, boxSizing:"border-box" }} onClick={e => e.stopPropagation()}>
-            <p style={{ margin:"0 0 4px", fontWeight:700, fontSize:15, color:C.orange }}>📅 {planDag} — {planMoment}</p>
-            <input autoFocus style={{ ...S.inp, marginBottom:12, fontSize:14 }} placeholder="🔍 Zoek recept…"
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.orange }}>📅 {planDag} — {planMoment}</p>
+              <button onClick={() => { setShowPlanOverlay(false); setPlanZoek(""); }} aria-label="Sluiten"
+                style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={18} color={C.muted} />
+              </button>
+            </div>
+            <input autoFocus style={{ ...S.inp, marginBottom:12, fontSize:14, marginTop: 8 }} placeholder="🔍 Zoek recept…"
               value={planZoek} onChange={e => setPlanZoek(e.target.value)} />
             {weekmenu[weekKey(planDag,planMoment)] && !planZoek && (
               <button style={{ ...S.btn(C.card, C.red), border:`1px solid ${C.red}`, width:"100%", marginBottom:10 }}
@@ -707,7 +713,13 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
       {showReceptForm && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => setShowReceptForm(false)}>
           <div style={{ background:"#FFF", width:"100%", maxHeight:"90vh", overflowY:"auto", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20, boxSizing:"border-box" }} onClick={e => e.stopPropagation()}>
-            <p style={{ margin:"0 0 14px", fontWeight:700, fontSize:16, color:C.orange }}>🍽️ Nieuw recept</p>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.orange }}>🍽️ Nieuw recept</p>
+              <button onClick={() => setShowReceptForm(false)} aria-label="Sluiten"
+                style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={18} color={C.muted} />
+              </button>
+            </div>
             <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam van het recept" value={receptForm.naam} onChange={e => setReceptForm(f=>({...f,naam:e.target.value}))} autoFocus />
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
               <select style={S.inp} value={receptForm.keuken} onChange={e => setReceptForm(f=>({...f,keuken:e.target.value}))}>

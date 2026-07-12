@@ -318,7 +318,7 @@ const S = {
   btn: (bg="#2D4A3E", col="#FAF6F0") => ({ background: bg, color: col, border: "none", borderRadius: 12, padding: "12px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer" }),
   fab: { width: 52, height: 52, minWidth: 52, borderRadius: 16, background: "#2D4A3E", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 6px 16px rgba(45,74,62,0.25)" },
   footer: { position: "fixed", bottom: 0, left: 0, right: 0, padding: "14px 20px 28px", background: "linear-gradient(180deg, rgba(250,246,240,0) 0%, #FAF6F0 40%)", display: "flex", gap: 12 },
-  checkbox: { WebkitAppearance: "none", appearance: "none", boxSizing: "border-box", width: 20, height: 20, minWidth: 20, flexShrink: 0, borderRadius: 6, border: "2px solid #D8D0BF", background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 },
+  checkbox: { boxSizing: "border-box", width: 20, height: 20, minWidth: 20, flexShrink: 0, borderRadius: 6, border: "2px solid #D8D0BF", background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" },
   checkboxOn: { background: "#2D4A3E", borderColor: "#2D4A3E" },
   itemRow: { display: "flex", alignItems: "center", padding: "7px 12px", borderBottom: "1px solid #F3EEE3", gap: 8 },
   itemMain: { flex: 1, display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
@@ -995,7 +995,13 @@ export default function LijstenApp() {
         {editNoteId && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setEditNoteId(null)}>
             <div style={{ background: "#FFFFFF", width: "100%", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20 }} onClick={e => e.stopPropagation()}>
-              <p style={{ margin: "0 0 10px", fontWeight: 700, fontSize: 15 }}>📝 Notitie</p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <p style={{ margin: 0, fontWeight: 700, fontSize: 15 }}>📝 Notitie</p>
+                <button onClick={() => setEditNoteId(null)} aria-label="Sluiten"
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                  <X size={18} color="#B8B2A8" />
+                </button>
+              </div>
               <textarea autoFocus style={{ ...S.inp, height: 80, resize: "none" }} value={editNoteText}
                 onChange={e => setEditNoteText(e.target.value)} placeholder="Voeg een notitie toe…" />
               <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
@@ -1010,7 +1016,13 @@ export default function LijstenApp() {
         {wijzigCatItemId && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setWijzigCatItemId(null)}>
             <div style={{ background: "#FFFFFF", width: "100%", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20 }} onClick={e => e.stopPropagation()}>
-              <p style={{ margin: "0 0 14px", fontWeight: 700, fontSize: 15 }}>Verplaats naar categorie</p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <p style={{ margin: 0, fontWeight: 700, fontSize: 15 }}>Verplaats naar categorie</p>
+                <button onClick={() => setWijzigCatItemId(null)} aria-label="Sluiten"
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                  <X size={18} color="#B8B2A8" />
+                </button>
+              </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {activeList.categories.map(cat => {
                   const huidig = activeList.items.find(i => i.id === wijzigCatItemId)?.category === cat.id;
@@ -1031,7 +1043,13 @@ export default function LijstenApp() {
         {showVorigeLijst && (activeList.archief?.length > 0) && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setShowVorigeLijst(false)}>
             <div style={{ background: "#FFFFFF", width: "100%", maxHeight: "75vh", overflowY: "auto", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20, boxSizing: "border-box" }} onClick={e => e.stopPropagation()}>
-              <p style={{ margin: "0 0 14px", fontWeight: 700, fontSize: 15 }}>📅 Vorige rondes</p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <p style={{ margin: 0, fontWeight: 700, fontSize: 15 }}>📅 Vorige rondes</p>
+                <button onClick={() => setShowVorigeLijst(false)} aria-label="Sluiten"
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                  <X size={18} color="#B8B2A8" />
+                </button>
+              </div>
               {activeList.archief.map((ronde, idx) => (
                 <div key={idx} style={{ border: "1px solid #EFE9DC", borderRadius: 14, padding: 14, marginBottom: 12 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -1179,10 +1197,12 @@ export default function LijstenApp() {
                   <ul style={S.itemList}>
                     {items.map(item => (
                   <li key={item.id} style={S.itemRow}>
-                    <button style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}) }}
-                      onClick={() => toggleCheck(item.id)}>
+                    <span role="checkbox" aria-checked={item.checked} tabIndex={0}
+                      style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}) }}
+                      onClick={() => toggleCheck(item.id)}
+                      onKeyDown={e => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleCheck(item.id))}>
                       {item.checked && <Check size={12} color="#FAF6F0" strokeWidth={3} />}
-                    </button>
+                    </span>
                     <div style={S.itemMain}>
                       {editingId === item.id ? (
                         <input autoFocus style={S.editInput} value={editName}
@@ -1267,10 +1287,12 @@ export default function LijstenApp() {
               <ul style={S.itemList}>
                 {uncategorized.map(item => (
                   <li key={item.id} style={S.itemRow}>
-                    <button style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}) }}
-                      onClick={() => toggleCheck(item.id)}>
+                    <span role="checkbox" aria-checked={item.checked} tabIndex={0}
+                      style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}) }}
+                      onClick={() => toggleCheck(item.id)}
+                      onKeyDown={e => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleCheck(item.id))}>
                       {item.checked && <Check size={14} color="#FAF6F0" strokeWidth={3} />}
-                    </button>
+                    </span>
                     <div style={S.itemMain}>
                       <span style={{ ...S.itemName, ...(item.checked ? S.itemNameChecked : {}) }}>{item.name}</span>
                     </div>
@@ -1286,7 +1308,16 @@ export default function LijstenApp() {
 
         {/* Toevoegen paneel */}
         {showAdd && (
-          <div style={S.addSheet}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.4)", zIndex: 9, display: "flex", alignItems: "flex-end" }}
+            onClick={() => setShowAdd(false)}>
+          <div style={S.addSheet} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#2D2A26" }}>Item toevoegen</h3>
+              <button onClick={() => setShowAdd(false)} aria-label="Sluiten"
+                style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                <X size={20} color="#B8B2A8" />
+              </button>
+            </div>
             <div style={S.addTabs}>
               {["typen", "favorieten"].map(t => (
                 <button key={t} style={S.addTabBtn(addTab === t)} onClick={() => setAddTab(t)}>
@@ -1370,6 +1401,7 @@ export default function LijstenApp() {
                 <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), width: "100%" }} onClick={() => setShowAdd(false)}>Sluiten</button>
               </>
             )}
+          </div>
           </div>
         )}
 
