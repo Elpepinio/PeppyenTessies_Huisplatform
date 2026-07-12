@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { Plus, Check, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift } from "lucide-react";
+import { Plus, Check, CheckCheck, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift } from "lucide-react";
 
 // ---- Constanten ----
 const UNITS = ["stuks", "g", "kg", "ml", "l", "pak"];
@@ -318,7 +318,7 @@ const S = {
   btn: (bg="#2D4A3E", col="#FAF6F0") => ({ background: bg, color: col, border: "none", borderRadius: 12, padding: "12px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer" }),
   fab: { width: 52, height: 52, minWidth: 52, borderRadius: 16, background: "#2D4A3E", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 6px 16px rgba(45,74,62,0.25)" },
   footer: { position: "fixed", bottom: 0, left: 0, right: 0, padding: "14px 20px 28px", background: "linear-gradient(180deg, rgba(250,246,240,0) 0%, #FAF6F0 40%)", display: "flex", gap: 12 },
-  checkbox: { width: 20, height: 20, minWidth: 20, borderRadius: 6, border: "2px solid #D8D0BF", background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 },
+  checkbox: { WebkitAppearance: "none", appearance: "none", boxSizing: "border-box", width: 20, height: 20, minWidth: 20, flexShrink: 0, borderRadius: 6, border: "2px solid #D8D0BF", background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 },
   checkboxOn: { background: "#2D4A3E", borderColor: "#2D4A3E" },
   itemRow: { display: "flex", alignItems: "center", padding: "7px 12px", borderBottom: "1px solid #F3EEE3", gap: 8 },
   itemMain: { flex: 1, display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
@@ -396,6 +396,7 @@ export default function LijstenApp() {
   const [zoekterm, setZoekterm] = useState("");
   const [showZoek, setShowZoek] = useState(false);
   const [ingeklapteCategorieen, setIngeklapteCategorieen] = useState({}); // catId -> bool
+  const [ingeklaptePakkenCats, setIngeklaptePakkenCats] = useState({}); // catId -> bool, apart voor pakken-modus
 
   // Pakken-modus keuze
   const [showPakkenKeuze, setShowPakkenKeuze] = useState(false);
@@ -587,6 +588,20 @@ export default function LijstenApp() {
         ? { ...i, checked: !i.checked, lastActionBy: huidigeGebruiker, lastActionAt: Date.now() }
         : i),
     }));
+  }
+
+  // Vinkt alle op dit moment zichtbare items (rekening houdend met eventueel
+  // actieve zoekfilter) in één keer aan, of allemaal uit als ze al allemaal
+  // aangevinkt zijn.
+  function toggleAlles(zichtbareIds) {
+    updateList(activeListId, l => {
+      const alleAangevinkt = zichtbareIds.every(id => l.items.find(i => i.id === id)?.checked);
+      return {
+        ...l, items: l.items.map(i => zichtbareIds.includes(i.id)
+          ? { ...i, checked: !alleAangevinkt, lastActionBy: huidigeGebruiker, lastActionAt: Date.now() }
+          : i),
+      };
+    });
   }
 
   function toggleInCart(itemId) {
@@ -792,40 +807,66 @@ export default function LijstenApp() {
             </div>
           ) : (
             <>
-              {grouped.map(({ cat, items }) => (
-                <section key={cat.id} style={{ marginBottom: 24 }}>
-                  <div style={S.catHeading}>{cat.icon} {cat.label}</div>
-                  <ul style={S.itemList}>
-                    {items.map(item => (
-                      <li key={item.id} style={S.shopRow} onClick={() => toggleInCart(item.id)}>
-                        <span style={S.shopCheckbox(item.inCart)}>
-                          {item.inCart && <Check size={15} color="#FAF6F0" strokeWidth={3} />}
-                        </span>
-                        <span style={S.shopItemName(item.inCart)}>
-                          {item.name}
-                          <span style={S.shopItemAmount}>{item.amount ?? 1} {item.unit || "stuks"}</span>
-                          {item.note && <span style={{ ...S.shopItemAmount, fontStyle: "italic" }}>📝 {item.note}</span>}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              ))}
-              {uncategorized.length > 0 && (
-                <section style={{ marginBottom: 24 }}>
-                  <div style={S.catHeading}>📦 Overig</div>
-                  <ul style={S.itemList}>
-                    {uncategorized.map(item => (
-                      <li key={item.id} style={S.shopRow} onClick={() => toggleInCart(item.id)}>
-                        <span style={S.shopCheckbox(item.inCart)}>
-                          {item.inCart && <Check size={15} color="#FAF6F0" strokeWidth={3} />}
-                        </span>
-                        <span style={S.shopItemName(item.inCart)}>{item.name}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              )}
+              {grouped.map(({ cat, items }) => {
+                const ingeklapt = !!ingeklaptePakkenCats[cat.id];
+                const klaar = items.filter(i => i.inCart).length;
+                return (
+                  <section key={cat.id} style={{ marginBottom: 24 }}>
+                    <div style={{ ...S.catHeading, marginBottom: ingeklapt ? 0 : 6 }}
+                      onClick={() => setIngeklaptePakkenCats(prev => ({ ...prev, [cat.id]: !ingeklapt }))}>
+                      <span>{cat.icon} {cat.label}</span>
+                      <span style={{ fontSize: 11, color: "#B8B2A8", fontWeight: 400, marginLeft: "auto" }}>
+                        {klaar}/{items.length}
+                      </span>
+                      <span style={{ fontSize: 14, color: "#B8B2A8", marginLeft: 4 }}>{ingeklapt ? "▸" : "▾"}</span>
+                    </div>
+                    {!ingeklapt && (
+                      <ul style={S.itemList}>
+                        {items.map(item => (
+                          <li key={item.id} style={S.shopRow} onClick={() => toggleInCart(item.id)}>
+                            <span style={S.shopCheckbox(item.inCart)}>
+                              {item.inCart && <Check size={15} color="#FAF6F0" strokeWidth={3} />}
+                            </span>
+                            <span style={S.shopItemName(item.inCart)}>
+                              {item.name}
+                              <span style={S.shopItemAmount}>{item.amount ?? 1} {item.unit || "stuks"}</span>
+                              {item.note && <span style={{ ...S.shopItemAmount, fontStyle: "italic" }}>📝 {item.note}</span>}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
+              {uncategorized.length > 0 && (() => {
+                const ingeklapt = !!ingeklaptePakkenCats._overig;
+                const klaar = uncategorized.filter(i => i.inCart).length;
+                return (
+                  <section style={{ marginBottom: 24 }}>
+                    <div style={{ ...S.catHeading, marginBottom: ingeklapt ? 0 : 6 }}
+                      onClick={() => setIngeklaptePakkenCats(prev => ({ ...prev, _overig: !ingeklapt }))}>
+                      <span>📦 Overig</span>
+                      <span style={{ fontSize: 11, color: "#B8B2A8", fontWeight: 400, marginLeft: "auto" }}>
+                        {klaar}/{uncategorized.length}
+                      </span>
+                      <span style={{ fontSize: 14, color: "#B8B2A8", marginLeft: 4 }}>{ingeklapt ? "▸" : "▾"}</span>
+                    </div>
+                    {!ingeklapt && (
+                      <ul style={S.itemList}>
+                        {uncategorized.map(item => (
+                          <li key={item.id} style={S.shopRow} onClick={() => toggleInCart(item.id)}>
+                            <span style={S.shopCheckbox(item.inCart)}>
+                              {item.inCart && <Check size={15} color="#FAF6F0" strokeWidth={3} />}
+                            </span>
+                            <span style={S.shopItemName(item.inCart)}>{item.name}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })()}
             </>
           )}
         </main>
@@ -1044,6 +1085,13 @@ export default function LijstenApp() {
               onClick={() => setVerbergAfgevinkt(v => !v)} title={verbergAfgevinkt ? "Toon afgevinkt" : "Verberg afgevinkt"}>
               {verbergAfgevinkt ? <Eye size={16} color="#2D4A3E" /> : <EyeOff size={16} color="#8C8576" />}
             </button>
+            {gefilterd.length > 0 && (
+              <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
+                onClick={() => toggleAlles(gefilterd.map(i => i.id))}
+                title={gefilterd.every(i => i.checked) ? "Alles deselecteren" : "Alles selecteren"}>
+                <CheckCheck size={16} color={gefilterd.every(i => i.checked) ? "#2D4A3E" : "#8C8576"} />
+              </button>
+            )}
             <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
               onClick={() => setMode("instellingen")} title="Categorieën beheren">
               <Settings size={16} color="#8C8576" />
