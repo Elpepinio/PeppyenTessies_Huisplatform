@@ -371,6 +371,8 @@ export default function LijstenApp() {
   // Lijstbewerking
   const [editListId, setEditListId] = useState(null);
   const [editListNaam, setEditListNaam] = useState("");
+  const [editCatId, setEditCatId] = useState(null);
+  const [editCatLabel, setEditCatLabel] = useState("");
 
   // Toevoegen
   const [showAdd, setShowAdd] = useState(false);
@@ -522,6 +524,22 @@ export default function LijstenApp() {
       ? { ...l, categories: [...l.categories, newCat] } : l));
     setNewCatLabel(""); setNewCatIcon("📌");
     showToast(`✅ Categorie "${newCat.label}" toegevoegd`);
+  }
+
+  function hernoemCat(catId, naam) {
+    setEditCatId(null);
+    if (!naam.trim() || !activeListId) return;
+    persistLists(lists.map(l => l.id === activeListId
+      ? { ...l, categories: l.categories.map(c => c.id === catId ? { ...c, label: naam.trim() } : c) }
+      : l));
+    showToast("✅ Categorie hernoemd");
+  }
+
+  function wijzigCatIcoon(catId, icoon) {
+    if (!activeListId) return;
+    persistLists(lists.map(l => l.id === activeListId
+      ? { ...l, categories: l.categories.map(c => c.id === catId ? { ...c, icon: icoon } : c) }
+      : l));
   }
 
   function verwijderCat(catId) {
@@ -898,12 +916,43 @@ export default function LijstenApp() {
         <main style={S.main}>
           <ul style={{ ...S.itemList, marginBottom: 16 }}>
             {activeList.categories.map(cat => (
-              <li key={cat.id} style={{ ...S.itemRow, alignItems: "center" }}>
-                <span style={{ fontSize: 20, marginRight: 4 }}>{cat.icon}</span>
-                <span style={{ flex: 1, fontSize: 15 }}>{cat.label}</span>
-                <button style={S.iconBtn} onClick={() => verwijderCat(cat.id)}>
-                  <Trash2 size={15} color="#B8B2A8" />
-                </button>
+              <li key={cat.id} style={{ ...S.itemRow, alignItems: editCatId === cat.id ? "flex-start" : "center", flexDirection: editCatId === cat.id ? "column" : "row", gap: editCatId === cat.id ? 10 : 8 }}>
+                {editCatId === cat.id ? (
+                  <div style={{ width: "100%" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <span style={{ fontSize: 20 }}>{cat.icon}</span>
+                      <input autoFocus style={{ ...S.inp, flex: 1 }} value={editCatLabel}
+                        onChange={e => setEditCatLabel(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && hernoemCat(cat.id, editCatLabel)} />
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                      {CAT_ICONEN.map(ic => (
+                        <button key={ic} onClick={() => wijzigCatIcoon(cat.id, ic)}
+                          style={{ width: 32, height: 32, borderRadius: 8, border: cat.icon === ic ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: cat.icon === ic ? "#FFFFFF" : "#FAF6F0", fontSize: 15, cursor: "pointer" }}>
+                          {ic}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, width: "100%" }}>
+                      <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1 }} onClick={() => setEditCatId(null)}>Annuleer</button>
+                      <button style={{ ...S.btn(), flex: 1 }} onClick={() => hernoemCat(cat.id, editCatLabel)}>Opslaan</button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <span style={{ fontSize: 20, marginRight: 4 }}>{cat.icon}</span>
+                    <span style={{ flex: 1, fontSize: 15, cursor: "pointer" }}
+                      onClick={() => { setEditCatId(cat.id); setEditCatLabel(cat.label); }}>
+                      {cat.label}
+                    </span>
+                    <button style={S.iconBtn} onClick={() => { setEditCatId(cat.id); setEditCatLabel(cat.label); }}>
+                      <Pencil size={14} color="#B8B2A8" />
+                    </button>
+                    <button style={S.iconBtn} onClick={() => verwijderCat(cat.id)}>
+                      <Trash2 size={15} color="#B8B2A8" />
+                    </button>
+                  </>
+                )}
               </li>
             ))}
           </ul>
