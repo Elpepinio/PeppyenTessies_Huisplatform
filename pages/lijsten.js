@@ -323,7 +323,7 @@ const S = {
   itemRow: { display: "flex", alignItems: "center", padding: "7px 12px", borderBottom: "1px solid #F3EEE3", gap: 8 },
   itemMain: { flex: 1, display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
   itemName: { fontSize: 14, color: "#2D2A26", lineHeight: 1.3 },
-  itemNameChecked: { color: "#2D4A3E", textDecoration: "line-through", opacity: 0.7 },
+  itemNameChecked: { color: "#2D4A3E", fontWeight: 600 },
   itemNote: { fontSize: 11, color: "#B8B2A8", fontStyle: "italic" },
   amountRow: { display: "flex", alignItems: "center", gap: 4 },
   amountBtn: { width: 20, height: 20, minWidth: 20, borderRadius: 6, border: "1px solid #E4DCCB", background: "#FAF6F0", fontSize: 13, color: "#2D4A3E", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
