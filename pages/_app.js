@@ -11,6 +11,9 @@ export default function App({ Component, pageProps }) {
         <meta name="apple-mobile-web-app-title" content="Ons Huishouden" />
         <link rel="manifest" href="/manifest.json" />
         <title>Ons Huishouden</title>
+        {/* Leaflet CSS preloaden voor snellere kaartweergave */}
+        <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" as="style" crossOrigin="anonymous" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" crossOrigin="anonymous" />
       </Head>
       <Component {...pageProps} />
     </>

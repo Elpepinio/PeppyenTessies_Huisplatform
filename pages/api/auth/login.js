@@ -40,7 +40,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { password } = req.body || {};
+    const { password, user } = req.body || {};
     if (!password) {
       return res.status(400).json({ error: "Vul een wachtwoord in" });
     }
@@ -51,7 +51,7 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: "Wachtwoord onjuist" });
     }
 
-    const token = await createSession();
+    const token = await createSession(user);
     res.setHeader("Set-Cookie", sessionCookieHeader(token));
     return res.status(200).json({ ok: true });
   } catch (e) {

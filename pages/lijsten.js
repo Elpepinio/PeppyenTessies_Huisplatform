@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/router";
 import { Plus, Check, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift } from "lucide-react";
 
 // ---- Constanten ----
@@ -267,6 +268,27 @@ const LIJST_SJABLONEN = [
 // ---- Helpers ----
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+// "Wie heeft wat gedaan"-badge: toont het initiaal van wie een item als laatste
+// heeft toegevoegd/afgevinkt/gewijzigd, maar alleen als dat recent was (24u).
+const WIE_BADGE_VENSTER_MS = 24 * 60 * 60 * 1000;
+function WieBadge({ persoon, tijdstip }) {
+  if (!persoon || !tijdstip) return null;
+  if (Date.now() - tijdstip > WIE_BADGE_VENSTER_MS) return null;
+  return (
+    <span
+      title={`Laatst gewijzigd door ${persoon}`}
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        width: 16, height: 16, borderRadius: "50%",
+        background: persoon === "Pepijn" ? "#2D4A3E" : "#C86E4A",
+        color: "#FAF6F0", fontSize: 9, fontWeight: 700, marginLeft: 6, flexShrink: 0,
+      }}
+    >
+      {persoon.charAt(0)}
+    </span>
+  );
+}
+
 async function loadData() {
   try {
     const res = await fetch("/api/lijsten");
@@ -296,17 +318,17 @@ const S = {
   btn: (bg="#2D4A3E", col="#FAF6F0") => ({ background: bg, color: col, border: "none", borderRadius: 12, padding: "12px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer" }),
   fab: { width: 52, height: 52, minWidth: 52, borderRadius: 16, background: "#2D4A3E", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 6px 16px rgba(45,74,62,0.25)" },
   footer: { position: "fixed", bottom: 0, left: 0, right: 0, padding: "14px 20px 28px", background: "linear-gradient(180deg, rgba(250,246,240,0) 0%, #FAF6F0 40%)", display: "flex", gap: 12 },
-  checkbox: { width: 24, height: 24, minWidth: 24, borderRadius: 8, border: "2px solid #D8D0BF", background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 },
+  checkbox: { width: 20, height: 20, minWidth: 20, borderRadius: 6, border: "2px solid #D8D0BF", background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 },
   checkboxOn: { background: "#2D4A3E", borderColor: "#2D4A3E" },
-  itemRow: { display: "flex", alignItems: "flex-start", padding: "13px 14px", borderBottom: "1px solid #F3EEE3", gap: 10 },
-  itemMain: { flex: 1, display: "flex", flexDirection: "column", gap: 5, minWidth: 0 },
-  itemName: { fontSize: 16, color: "#2D2A26" },
-  itemNameChecked: { color: "#B8B2A8", textDecoration: "line-through" },
-  itemNote: { fontSize: 12, color: "#B8B2A8", fontStyle: "italic" },
-  amountRow: { display: "flex", alignItems: "center", gap: 6 },
-  amountBtn: { width: 24, height: 24, minWidth: 24, borderRadius: 7, border: "1px solid #E4DCCB", background: "#FAF6F0", fontSize: 15, color: "#2D4A3E", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
-  unitSelect: { fontSize: 12, color: "#8C8576", border: "1px solid #E4DCCB", borderRadius: 7, background: "#FAF6F0", padding: "3px 6px", marginLeft: 4 },
-  catHeading: { fontSize: 13, fontWeight: 700, color: "#2D4A3E", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8, paddingLeft: 2 },
+  itemRow: { display: "flex", alignItems: "center", padding: "7px 12px", borderBottom: "1px solid #F3EEE3", gap: 8 },
+  itemMain: { flex: 1, display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
+  itemName: { fontSize: 14, color: "#2D2A26", lineHeight: 1.3 },
+  itemNameChecked: { color: "#2D4A3E", textDecoration: "line-through", opacity: 0.7 },
+  itemNote: { fontSize: 11, color: "#B8B2A8", fontStyle: "italic" },
+  amountRow: { display: "flex", alignItems: "center", gap: 4 },
+  amountBtn: { width: 20, height: 20, minWidth: 20, borderRadius: 6, border: "1px solid #E4DCCB", background: "#FAF6F0", fontSize: 13, color: "#2D4A3E", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
+  unitSelect: { fontSize: 11, color: "#8C8576", border: "1px solid #E4DCCB", borderRadius: 6, background: "#FAF6F0", padding: "2px 4px", marginLeft: 2 },
+  catHeading: { fontSize: 12, fontWeight: 700, color: "#2D4A3E", textTransform: "uppercase", letterSpacing: "0.04em", paddingLeft: 2, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" },
   itemList: { listStyle: "none", margin: 0, padding: 0, background: "#FFFFFF", borderRadius: 14, overflow: "hidden", border: "1px solid #EFE9DC" },
   addSheet: { position: "fixed", bottom: 0, left: 0, right: 0, background: "#FFFFFF", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: "22px 20px 32px", boxShadow: "0 -8px 30px rgba(45,42,38,0.12)", zIndex: 10, maxHeight: "85vh", overflowY: "auto", boxSizing: "border-box" },
   addTabs: { display: "flex", gap: 6, marginBottom: 16, background: "#F3EEE3", borderRadius: 12, padding: 4 },
@@ -328,12 +350,15 @@ const S = {
 // HOOFD APP
 // ════════════════════════════════════════════════════════
 export default function LijstenApp() {
+  const router = useRouter();
   const [lists, setListsState] = useState([]);
   const [loading, setLoading] = useState(true);
   const [verbindingsFout, setVerbindingsFout] = useState(false);
   const [offline, setOffline] = useState(false);
+  const [laatstBijgewerkt, setLaatstBijgewerkt] = useState(null);
   const [activeListId, setActiveListId] = useState(null);
   const [mode, setMode] = useState("lijst"); // lijst | pakken | instellingen
+  const deepLinkVerwerkt = useRef(false);
   const lastWriteRef = useRef(0);
   const pollRef = useRef(null);
 
@@ -370,6 +395,7 @@ export default function LijstenApp() {
   const [wijzigCatItemId, setWijzigCatItemId] = useState(null);
   const [zoekterm, setZoekterm] = useState("");
   const [showZoek, setShowZoek] = useState(false);
+  const [ingeklapteCategorieen, setIngeklapteCategorieen] = useState({}); // catId -> bool
 
   // Pakken-modus keuze
   const [showPakkenKeuze, setShowPakkenKeuze] = useState(false);
@@ -383,6 +409,14 @@ export default function LijstenApp() {
 
   const [toast, setToast] = useState(null);
   const [toastType, setToastType] = useState("success"); // success | undo
+  const [huidigeGebruiker, setHuidigeGebruiker] = useState(null); // "Pepijn" | "Tessa"
+
+  // ── Wie ben ik? (voor "wie heeft wat gedaan"-badges) ──
+  useEffect(() => {
+    fetch("/api/auth/me").then(r => r.json()).then(d => {
+      if (d?.user) setHuidigeGebruiker(d.user);
+    }).catch(() => {});
+  }, []);
 
   // ── Offline detectie ─────────────────────────────────
   useEffect(() => {
@@ -413,6 +447,7 @@ export default function LijstenApp() {
         setListsState(data.lists || []);
         setLoading(false);
         setVerbindingsFout(false);
+        setLaatstBijgewerkt(new Date());
       } else if (active) {
         setLoading(false);
         setVerbindingsFout(true);
@@ -422,6 +457,20 @@ export default function LijstenApp() {
     pollRef.current = setInterval(refresh, 4000);
     return () => { active = false; clearInterval(pollRef.current); };
   }, []);
+
+  // ── Deep-link: open direct een specifieke lijst via ?lijst=ID ──
+  // (gebruikt door bijv. Verjaardagen om rechtstreeks naar een cadeaulijst te linken)
+  useEffect(() => {
+    if (deepLinkVerwerkt.current || loading) return;
+    const doelId = router.query.lijst;
+    if (typeof doelId === "string" && lists.some(l => l.id === doelId)) {
+      setActiveListId(doelId);
+      setMode("lijst");
+      deepLinkVerwerkt.current = true;
+    } else if (router.isReady) {
+      deepLinkVerwerkt.current = true;
+    }
+  }, [loading, lists, router.query.lijst, router.isReady]);
 
   function showToast(msg, type = "success") {
     setToast(msg);
@@ -523,7 +572,8 @@ export default function LijstenApp() {
         amount: amount || 1, unit: unit || "stuks",
         checked: false, inCart: false,
         note: note || "", status: status || null, budget: budget || null,
-        addedAt: Date.now(),
+        addedAt: Date.now(), addedBy: huidigeGebruiker,
+        lastActionBy: huidigeGebruiker, lastActionAt: Date.now(),
       }],
     }));
     setNewProduct(""); setNewAmount(1); setNewUnit("stuks");
@@ -533,7 +583,9 @@ export default function LijstenApp() {
 
   function toggleCheck(itemId) {
     updateList(activeListId, l => ({
-      ...l, items: l.items.map(i => i.id === itemId ? { ...i, checked: !i.checked } : i),
+      ...l, items: l.items.map(i => i.id === itemId
+        ? { ...i, checked: !i.checked, lastActionBy: huidigeGebruiker, lastActionAt: Date.now() }
+        : i),
     }));
   }
 
@@ -846,6 +898,14 @@ export default function LijstenApp() {
       .sort((a, b) => b.count - a.count || b.lastUsed - a.lastUsed)
       .slice(0, 10);
 
+    // Cross-lijst favorieten: favorieten uit andere lijsten die nog niet in suggesties staan
+    const andereListFavs = lists
+      .filter(l => l.id !== activeListId)
+      .flatMap(l => (l.favorites || []).map(f => ({ ...f, vanLijst: l.name })))
+      .filter(f => !activeList.items.some(i => i.name.toLowerCase() === f.name.toLowerCase()))
+      .filter(f => !suggestions.some(s => s.name.toLowerCase() === f.name.toLowerCase()))
+      .slice(0, 5);
+
     const checkedCount = activeList.items.filter(i => i.checked).length;
 
     // Zoekfilter
@@ -863,9 +923,7 @@ export default function LijstenApp() {
     const grouped = activeList.categories
       .map(cat => ({
         cat,
-        items: gefilterd
-          .filter(i => i.category === cat.id)
-          .sort((a, b) => (a.checked === b.checked ? 0 : a.checked ? 1 : -1)),
+        items: gefilterd.filter(i => i.category === cat.id),
       }))
       .filter(g => g.items.length > 0);
 
@@ -965,6 +1023,11 @@ export default function LijstenApp() {
               ← Alle lijsten
             </button>
             <h1 style={S.title}>{activeList.icon} {activeList.name}</h1>
+            {laatstBijgewerkt && (
+              <p style={{ margin: 0, fontSize: 10, color: "#C8C0B4", marginTop: 2 }}>
+                bijgewerkt {laatstBijgewerkt.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}
+              </p>
+            )}
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
             <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
@@ -998,23 +1061,40 @@ export default function LijstenApp() {
 
         <main style={S.main}>
           {/* Suggesties */}
-          {suggestions.length > 0 && !showAdd && !zoekActief && (
+          {(suggestions.length > 0 || andereListFavs.length > 0) && !showAdd && !zoekActief && (
             <section style={{ marginBottom: 22 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "#C86E4A", marginBottom: 10 }}>
-                <Sparkles size={15} color="#C86E4A" />
-                Vaak gebruikt — toevoegen?
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {suggestions.map(s => {
-                  const cat = activeList.categories.find(c => c.id === s.category);
-                  return (
-                    <button key={s.name} style={S.suggestChip}
-                      onClick={() => addItem(s.name, s.category, s.amount || 1, s.unit || "stuks")}>
-                      {cat?.icon || "📦"} {s.name}
-                    </button>
-                  );
-                })}
-              </div>
+              {suggestions.length > 0 && (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "#C86E4A", marginBottom: 10 }}>
+                    <Sparkles size={15} color="#C86E4A" />
+                    Vaak gebruikt — toevoegen?
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: andereListFavs.length > 0 ? 12 : 0 }}>
+                    {suggestions.map(s => {
+                      const cat = activeList.categories.find(c => c.id === s.category);
+                      return (
+                        <button key={s.name} style={S.suggestChip}
+                          onClick={() => addItem(s.name, s.category, s.amount || 1, s.unit || "stuks")}>
+                          {cat?.icon || "📦"} {s.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+              {andereListFavs.length > 0 && (
+                <>
+                  <div style={{ fontSize: 12, color: "#B8B2A8", fontWeight: 600, marginBottom: 8 }}>⭐ Favorieten uit andere lijsten</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {andereListFavs.map(f => (
+                      <button key={f.name} style={{ ...S.suggestChip, borderColor: "#D4C8F0", background: "#F5F0FF" }}
+                        onClick={() => addItem(f.name, activeList.categories[0]?.id, 1, "stuks")}>
+                        ⭐ {f.name}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </section>
           )}
 
@@ -1034,15 +1114,26 @@ export default function LijstenApp() {
           )}
 
           {/* Items per categorie */}
-          {grouped.map(({ cat, items }) => (
-            <section key={cat.id} style={{ marginBottom: 24 }}>
-              <div style={S.catHeading}>{cat.icon} {cat.label}</div>
-              <ul style={S.itemList}>
-                {items.map(item => (
+          {grouped.map(({ cat, items }) => {
+            const ingeklapt = !!ingeklapteCategorieen[cat.id];
+            const aangevinkt = items.filter(i => i.checked).length;
+            return (
+              <section key={cat.id} style={{ marginBottom: 16 }}>
+                <div style={{ ...S.catHeading, marginBottom: ingeklapt ? 0 : 6 }}
+                  onClick={() => setIngeklapteCategorieen(prev => ({ ...prev, [cat.id]: !ingeklapt }))}>
+                  <span>{cat.icon} {cat.label}</span>
+                  <span style={{ fontSize: 11, color: "#B8B2A8", fontWeight: 400, marginLeft: "auto" }}>
+                    {aangevinkt}/{items.length}
+                  </span>
+                  <span style={{ fontSize: 14, color: "#B8B2A8", marginLeft: 4 }}>{ingeklapt ? "▸" : "▾"}</span>
+                </div>
+                {!ingeklapt && (
+                  <ul style={S.itemList}>
+                    {items.map(item => (
                   <li key={item.id} style={S.itemRow}>
-                    <button style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}), marginTop: 2 }}
+                    <button style={{ ...S.checkbox, ...(item.checked ? S.checkboxOn : {}) }}
                       onClick={() => toggleCheck(item.id)}>
-                      {item.checked && <Check size={14} color="#FAF6F0" strokeWidth={3} />}
+                      {item.checked && <Check size={12} color="#FAF6F0" strokeWidth={3} />}
                     </button>
                     <div style={S.itemMain}>
                       {editingId === item.id ? (
@@ -1051,9 +1142,10 @@ export default function LijstenApp() {
                           onBlur={saveEditName}
                           onKeyDown={e => e.key === "Enter" && saveEditName()} />
                       ) : (
-                        <span style={{ ...S.itemName, ...(item.checked ? S.itemNameChecked : {}) }}
+                        <span style={{ ...S.itemName, ...(item.checked ? S.itemNameChecked : {}), display: "inline-flex", alignItems: "center" }}
                           onClick={() => { setEditingId(item.id); setEditName(item.name); }}>
                           {item.name}
+                          <WieBadge persoon={item.lastActionBy} tijdstip={item.lastActionAt} />
                         </span>
                       )}
 
@@ -1070,7 +1162,7 @@ export default function LijstenApp() {
                         <div style={S.amountRow}>
                           <button style={S.amountBtn} onClick={() => changeAmount(item.id, -1)}>−</button>
                           <input
-                            style={{ fontSize: 13, color: "#8C8576", border: "1px solid #E4DCCB", borderRadius: 6, padding: "2px 4px", width: 44, textAlign: "center", background: "#FAF6F0" }}
+                            style={{ fontSize: 12, color: "#8C8576", border: "1px solid #E4DCCB", borderRadius: 5, padding: "1px 3px", width: 36, textAlign: "center", background: "#FAF6F0" }}
                             value={item.amount ?? 1}
                             onChange={e => updateItem(item.id, { amount: e.target.value })}
                             onBlur={e => setAmountDirect(item.id, e.target.value)}
@@ -1116,8 +1208,10 @@ export default function LijstenApp() {
                   </li>
                 ))}
               </ul>
+                )}
             </section>
-          ))}
+            );
+          })}
 
           {uncategorized.length > 0 && (
             <section style={{ marginBottom: 24 }}>

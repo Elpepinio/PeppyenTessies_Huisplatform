@@ -7,21 +7,65 @@ const TOOLS = [
     href: "/lijsten",
     label: "Lijsten",
     description: "Boodschappen, paklijsten, klussenlijsten en meer",
-    icon: List,
+    emoji: "📋",
     color: "#2D4A3E",
   },
   {
     href: "/budget",
     label: "Budget",
     description: "Huishouduitgaven, budgetten en spaardoelen",
-    icon: Wallet,
+    emoji: "💰",
     color: "#C86E4A",
+  },
+  {
+    href: "/planten",
+    label: "Planten & Tuin",
+    description: "Verzorging, seizoensadvies en AI-analyse",
+    emoji: "🌿",
+    color: "#2D6A4F",
+  },
+  {
+    href: "/maaltijden",
+    label: "Maaltijden",
+    description: "Recepten, weekmenu en boodschappenlijst",
+    emoji: "🍽️",
+    color: "#8B4513",
+  },
+  {
+    href: "/onderhoud",
+    label: "Onderhoud",
+    description: "Woning, camper en auto onderhoud bijhouden",
+    emoji: "🔧",
+    color: "#5B3FA6",
+  },
+  {
+    href: "/places",
+    label: "Places",
+    description: "Plekken bewaren die je wil bezoeken of al bezocht hebt",
+    emoji: "🗺️",
+    color: "#2C5F9E",
+  },
+  {
+    href: "/voorraad",
+    label: "Voorraad",
+    description: "Wat er in huis is, met bijna-op waarschuwingen",
+    emoji: "📦",
+    color: "#B8722E",
+  },
+  {
+    href: "/verjaardagen",
+    label: "Verjaardagen",
+    description: "Wie er jarig is en cadeau-ideeën bijhouden",
+    emoji: "🎂",
+    color: "#D6336C",
   },
 ];
 
 export default function Platform() {
   const [status, setStatus]               = useState("laden");
   const [name, setName]                   = useState("");
+  const [wieBenJij, setWieBenJij]         = useState(null); // "Pepijn" | "Tessa"
+  const [ingelogdAls, setIngelogdAls]     = useState(null);
   const [password, setPassword]           = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPw, setShowPw]               = useState(false);
@@ -35,6 +79,46 @@ export default function Platform() {
   const [pwMsg, setPwMsg]                 = useState(null); // { ok, tekst }
   const [pwBusy, setPwBusy]               = useState(false);
 
+  // ── Volgorde tools (gedeeld via Redis) ───────────────
+  const [toolVolgorde, setToolVolgorde] = useState(TOOLS.map(t => t.href));
+  const [bewerkVolgorde, setBewerkVolgorde] = useState(false);
+
+  useEffect(() => {
+    // Laad gedeelde volgorde zodra we ingelogd zijn
+    if (status !== "overzicht") return;
+    (async () => {
+      try {
+        const res = await fetch("/api/instellingen");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.toolVolgorde) {
+          const opgeslagen = data.toolVolgorde;
+          const nieuw = TOOLS.map(t => t.href).filter(h => !opgeslagen.includes(h));
+          setToolVolgorde([...opgeslagen, ...nieuw]);
+        }
+      } catch {}
+    })();
+  }, [status]);
+
+  async function verschuifTool(idx, richting) {
+    const next = [...toolVolgorde];
+    const naarIdx = idx + richting;
+    if (naarIdx < 0 || naarIdx >= next.length) return;
+    [next[idx], next[naarIdx]] = [next[naarIdx], next[idx]];
+    setToolVolgorde(next);
+    try {
+      await fetch("/api/instellingen", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolVolgorde: next }),
+      });
+    } catch {}
+  }
+
+  const gesorteerdeTools = toolVolgorde
+    .map(href => TOOLS.find(t => t.href === href))
+    .filter(Boolean);
+
   useEffect(() => {
     (async () => {
       try {
@@ -42,7 +126,7 @@ export default function Platform() {
         if (!res.ok) throw new Error("server");
         const data = await res.json();
         if (!data.accountExists) setStatus("setup");
-        else if (data.loggedIn)  setStatus("overzicht");
+        else if (data.loggedIn)  { setIngelogdAls(data.user || null); setStatus("overzicht"); }
         else                     setStatus("login");
       } catch (e) {
         setStatus("fout");
@@ -71,12 +155,13 @@ export default function Platform() {
   async function handleLogin(e) {
     e.preventDefault();
     setError("");
+    if (!wieBenJij) { setError("Kies eerst wie je bent"); return; }
     setBusy(true);
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, user: wieBenJij }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || "Wachtwoord onjuist"); setBusy(false); return; }
@@ -177,7 +262,29 @@ export default function Platform() {
           <Lock size={24} color="#FAF6F0" strokeWidth={1.8} />
         </div>
         <h1 style={S.authTitle}>Welkom terug</h1>
-        <p style={S.authBody}>Vul het huishoudwachtwoord in om verder te gaan.</p>
+        <p style={S.authBody}>Wie ben jij, en vul het huishoudwachtwoord in om verder te gaan.</p>
+        <div style={{ display: "flex", gap: 8, width: "100%", maxWidth: 320, marginBottom: 4 }}>
+          {["Pepijn", "Tessa"].map((naam) => (
+            <button
+              key={naam}
+              type="button"
+              onClick={() => setWieBenJij(naam)}
+              style={{
+                flex: 1,
+                padding: "12px 0",
+                borderRadius: 12,
+                border: wieBenJij === naam ? "2px solid #2D4A3E" : "1px solid #E4DCCB",
+                background: wieBenJij === naam ? "#2D4A3E" : "#FFFFFF",
+                color: wieBenJij === naam ? "#FAF6F0" : "#2D2A26",
+                fontSize: 15,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              {naam}
+            </button>
+          ))}
+        </div>
         <div style={{ position: "relative", width: "100%", maxWidth: 320 }}>
           <input style={{ ...S.authInput, marginBottom: 0, paddingRight: 44 }} placeholder="Wachtwoord" type={showPw ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} autoFocus />
           <button type="button" onClick={() => setShowPw(v => !v)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 4 }}>
@@ -197,10 +304,14 @@ export default function Platform() {
     <div style={S.appBg}>
       <header style={S.header}>
         <div>
-          <p style={S.eyebrow}>Huishouden</p>
+          <p style={S.eyebrow}>{ingelogdAls ? `Ingelogd als ${ingelogdAls}` : "Huishouden"}</p>
           <h1 style={S.title}>Onze tools</h1>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ ...S.iconBtn, background: bewerkVolgorde ? "#2D4A3E" : "#FFFFFF", border: bewerkVolgorde ? "none" : "1px solid #EFE9DC" }}
+            onClick={() => setBewerkVolgorde(v => !v)} title="Volgorde aanpassen">
+            <span style={{ fontSize: 16, color: bewerkVolgorde ? "#FAF6F0" : "#8C8576" }}>⇅</span>
+          </button>
           <button style={S.iconBtn} onClick={() => setShowInstellingen(v => !v)} aria-label="Instellingen">
             <Settings size={18} color="#8C8576" />
           </button>
@@ -209,6 +320,14 @@ export default function Platform() {
           </button>
         </div>
       </header>
+
+      {bewerkVolgorde && (
+        <div style={{ margin: "0 20px 12px", background: "#2D4A3E", borderRadius: 14, padding: "10px 14px" }}>
+          <p style={{ margin: 0, fontSize: 13, color: "#FAF6F0", opacity: 0.9 }}>
+            ⇅ Gebruik de pijltjes op de tegels om de volgorde aan te passen
+          </p>
+        </div>
+      )}
 
       {/* Instellingen-paneel */}
       {showInstellingen && (
@@ -227,18 +346,36 @@ export default function Platform() {
       )}
 
       <main style={S.grid}>
-        {TOOLS.map((tool) => {
-          const Icon = tool.icon;
-          return (
-            <Link key={tool.href} href={tool.href} style={S.tile}>
-              <div style={{ ...S.tileIcon, background: tool.color }}>
-                <Icon size={24} color="#FAF6F0" strokeWidth={1.8} />
+        {gesorteerdeTools.map((tool, idx) => (
+          <div key={tool.href} style={{ position: "relative" }}>
+            {bewerkVolgorde ? (
+              <div style={{ ...S.tile, cursor: "default", opacity: 1 }}>
+                <div style={{ ...S.tileIcon, background: tool.color }}>
+                  <span style={{ fontSize: 22 }}>{tool.emoji}</span>
+                </div>
+                <p style={S.tileLabel}>{tool.label}</p>
+                <p style={S.tileDesc}>{tool.description}</p>
+                {/* Pijltjes */}
+                <div style={{ position: "absolute", top: 8, right: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                  <button
+                    style={{ background: idx === 0 ? "#E4DCCB" : "#2D4A3E", color: idx === 0 ? "#B8B2A8" : "#FAF6F0", border: "none", borderRadius: 7, width: 26, height: 26, fontSize: 13, cursor: idx === 0 ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    onClick={() => verschuifTool(idx, -1)} disabled={idx === 0}>↑</button>
+                  <button
+                    style={{ background: idx === gesorteerdeTools.length - 1 ? "#E4DCCB" : "#2D4A3E", color: idx === gesorteerdeTools.length - 1 ? "#B8B2A8" : "#FAF6F0", border: "none", borderRadius: 7, width: 26, height: 26, fontSize: 13, cursor: idx === gesorteerdeTools.length - 1 ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    onClick={() => verschuifTool(idx, 1)} disabled={idx === gesorteerdeTools.length - 1}>↓</button>
+                </div>
               </div>
-              <p style={S.tileLabel}>{tool.label}</p>
-              <p style={S.tileDesc}>{tool.description}</p>
-            </Link>
-          );
-        })}
+            ) : (
+              <Link href={tool.href} style={S.tile}>
+                <div style={{ ...S.tileIcon, background: tool.color }}>
+                  <span style={{ fontSize: 22 }}>{tool.emoji}</span>
+                </div>
+                <p style={S.tileLabel}>{tool.label}</p>
+                <p style={S.tileDesc}>{tool.description}</p>
+              </Link>
+            )}
+          </div>
+        ))}
       </main>
     </div>
   );

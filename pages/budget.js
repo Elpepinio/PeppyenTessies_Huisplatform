@@ -5,7 +5,7 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from "react"
 import Link from "next/link";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, BarChart, Bar, Cell,
+  CartesianGrid, BarChart, Bar, Cell, ReferenceLine,
 } from "recharts";
 
 const THEMES = {
@@ -145,39 +145,62 @@ const fmtM = ym => { const [y,m] = ym.split("-"); return `${["Jan","Feb","Mrt","
 const euro  = n  => `€${(+n).toLocaleString("nl-NL",{minimumFractionDigits:0,maximumFractionDigits:0})}`;
 const uid   = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+// "Wie heeft wat gedaan"-badge: toont het initiaal van wie de uitgave heeft
+// toegevoegd, maar alleen als dat recent was (24u).
+const WIE_BADGE_VENSTER_MS = 24 * 60 * 60 * 1000;
+function WieBadge({ persoon, tijdstip }) {
+  if (!persoon || !tijdstip) return null;
+  if (Date.now() - tijdstip > WIE_BADGE_VENSTER_MS) return null;
+  return (
+    <span
+      title={`Toegevoegd door ${persoon}`}
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        width: 15, height: 15, borderRadius: "50%",
+        background: persoon === "Pepijn" ? "#2D4A3E" : "#C86E4A",
+        color: "#FAF6F0", fontSize: 8, fontWeight: 700, flexShrink: 0,
+      }}
+    >
+      {persoon.charAt(0)}
+    </span>
+  );
+}
+
 const getQ = m => Math.ceil(+m.split("-")[1] / 3);
 const getY = m => +m.split("-")[0];
 
-function computeSpent(budget, expenses) {
+function computeSpent(budget, expenses, maand = NOW_MONTH) {
+  const mYear = getY(maand), mQ = getQ(maand);
   return expenses.filter(e => {
     if (e.category !== budget.category) return false;
     if (budget.account !== "alle" && e.account !== budget.account) return false;
     const y = getY(e.month), q = getQ(e.month);
-    if (budget.period === "maand")    return e.month === NOW_MONTH;
-    if (budget.period === "kwartaal") return y === NOW_YEAR && q === NOW_Q;
-    if (budget.period === "jaar")     return y === NOW_YEAR;
+    if (budget.period === "maand")    return e.month === maand;
+    if (budget.period === "kwartaal") return y === mYear && q === mQ;
+    if (budget.period === "jaar")     return y === mYear;
     return false;
   }).reduce((s, e) => s + e.amount, 0);
 }
 
-function periodLabel(p) {
-  if (p === "maand")    return fmtM(NOW_MONTH);
-  if (p === "kwartaal") return `Q${NOW_Q} ${NOW_YEAR}`;
-  return `${NOW_YEAR}`;
+function periodLabel(p, maand = NOW_MONTH) {
+  const mYear = getY(maand), mQ = getQ(maand);
+  if (p === "maand")    return fmtM(maand);
+  if (p === "kwartaal") return `Q${mQ} ${mYear}`;
+  return `${mYear}`;
 }
 
-function buildAlerts(expenses, budgets, savingsGoals, incomes) {
+function buildAlerts(expenses, budgets, savingsGoals, incomes, maand = NOW_MONTH) {
   const alerts = [];
   const totalIncome = incomes.p1+incomes.p2;
   budgets.forEach(b => {
-    const spent = computeSpent(b, expenses);
+    const spent = computeSpent(b, expenses, maand);
     const pct = b.amount > 0 ? spent/b.amount : 0;
     if (spent > b.amount) alerts.push({id:`over-${b.id}`,level:"rood",icon:"🚨",title:`Budget overschreden: ${b.category}`,body:`${euro(spent-b.amount)} meer dan budget van ${euro(b.amount)}.`,tab:"budgetten"});
     else if (pct > 0.8) alerts.push({id:`warn-${b.id}`,level:"oranje",icon:"⚠️",title:`${b.category} ${Math.round(pct*100)}% vol`,body:`Nog ${euro(b.amount-spent)} resterend.`,tab:"budgetten"});
   });
-  const PREV = prevMonth(NOW_MONTH);
+  const PREV = prevMonth(maand);
   const catNow={}, catPrev={};
-  expenses.filter(e=>e.month===NOW_MONTH).forEach(e=>{catNow[e.category]=(catNow[e.category]||0)+e.amount;});
+  expenses.filter(e=>e.month===maand).forEach(e=>{catNow[e.category]=(catNow[e.category]||0)+e.amount;});
   expenses.filter(e=>e.month===PREV).forEach(e=>{catPrev[e.category]=(catPrev[e.category]||0)+e.amount;});
   Object.keys(catNow).forEach(cat => {
     const rise = catPrev[cat]>0 ? (catNow[cat]-catPrev[cat])/catPrev[cat] : 0;
@@ -186,7 +209,7 @@ function buildAlerts(expenses, budgets, savingsGoals, incomes) {
   if (savingsGoals) savingsGoals.forEach(g => {
     if (!g.deadline) return;
     const [ty,tm]=g.deadline.split("-").map(Number);
-    const [ny,nm]=NOW_MONTH.split("-").map(Number);
+    const [ny,nm]=maand.split("-").map(Number);
     const ml=(ty-ny)*12+(tm-nm); const needed=g.target-g.current;
     if (ml>0 && needed>0) { const monthly=needed/ml; if(monthly>totalIncome*0.3) alerts.push({id:`goal-${g.id}`,level:"oranje",icon:"🎯",title:`${g.name}: tempo verhogen`,body:`Je hebt ${euro(monthly)}/mnd nodig.`,tab:"doelen"}); }
   });
@@ -285,6 +308,14 @@ export default function BudgetApp() {
   const [tasks,        setTasksState]        = useState([]);
   const [bijst,        setBijstState]        = useState([]);
   const [setupDone,    setSetupDoneState]    = useState(false);
+  const [huidigeGebruiker, setHuidigeGebruiker] = useState(null); // "Pepijn" | "Tessa"
+
+  // ── Wie ben ik? (voor "wie heeft wat gedaan"-badges) ──
+  useEffect(() => {
+    fetch("/api/auth/me").then(r => r.json()).then(d => {
+      if (d?.user) setHuidigeGebruiker(d.user);
+    }).catch(() => {});
+  }, []);
 
   const C = THEMES[themeName] || THEMES.dark;
   const S = useMemo(() => makeS(C), [themeName]);
@@ -398,7 +429,7 @@ export default function BudgetApp() {
 
   const gezBudget = (incomes.bijdrage_p1||0) + (incomes.bijdrage_p2||0)
     + (incomes.kinderbijslag||0)
-    + (bijst||[]).filter(b => b.datum?.startsWith(NOW_MONTH)).reduce((s,b) => s+b.bedrag, 0);
+    + (bijst||[]).filter(b => b.datum?.startsWith(selectedMonth)).reduce((s,b) => s+b.bedrag, 0);
 
   const totalByAccount = useMemo(() => {
     const t = { gezamenlijk:0, p1:0, p2:0 };
@@ -423,14 +454,14 @@ export default function BudgetApp() {
   }, [expenses, cmpMonth]);
 
   const alerts = useMemo(() =>
-    buildAlerts(expenses, budgets, savingsGoals || [], incomes),
-  [expenses, budgets, savingsGoals, incomes]);
+    buildAlerts(expenses, budgets, savingsGoals || [], incomes, selectedMonth),
+  [expenses, budgets, savingsGoals, incomes, selectedMonth]);
 
   const recurring = useMemo(() => detectRecurring(expenses), [expenses]);
 
   const budgetsWithSpent = useMemo(() =>
-    budgets.map(b => ({ ...b, spent: computeSpent(b, expenses), pLabel: periodLabel(b.period) })),
-  [budgets, expenses]);
+    budgets.map(b => ({ ...b, spent: computeSpent(b, expenses, selectedMonth), pLabel: periodLabel(b.period, selectedMonth) })),
+  [budgets, expenses, selectedMonth]);
 
   // ── Toast ─────────────────────────────────────────────────────────────────
   function showToast(msg, col=null) { setToast(msg); setToastColor(col); setTimeout(() => { setToast(null); setToastColor(null); }, 2800); }
@@ -458,21 +489,27 @@ export default function BudgetApp() {
 
   // ── CSV-export ────────────────────────────────────────────────────────────
   function exporteerCSV() {
-    const header = ["Datum","Naam","Bedrag","Categorie","Rekening","Vast","Terugkerend","Notitie"];
+    const header = ["Datum","Naam","Bedrag (€)","Categorie","Rekening","Vast","Terugkerend","Notitie"];
     const rows = expenses
       .sort((a,b) => b.month.localeCompare(a.month))
       .map(e => [
-        e.month, e.name, e.amount.toFixed(2).replace(".",","),
-        e.category, e.account,
+        e.month,
+        e.name,
+        `€ ${e.amount.toFixed(2).replace(".",",")}`,
+        e.category,
+        e.account === "p1" ? names.p1 : e.account === "p2" ? names.p2 : "Gezamenlijk",
         e.fixed ? "Ja" : "Nee",
         e.recurring ? "Ja" : "Nee",
         e.note || "",
       ]);
+    // Totaalregel onderaan
+    const totaal = expenses.reduce((s,e) => s+e.amount, 0);
+    rows.push(["TOTAAL","","€ "+totaal.toFixed(2).replace(".",","),"","","","",""]);
     const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(";")).join("\n");
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = `budget-export-${NOW_MONTH}.csv`; a.click();
+    a.href = url; a.download = `budget-export-${selectedMonth}.csv`; a.click();
     URL.revokeObjectURL(url);
     showToast("✅ CSV geëxporteerd");
   }
@@ -480,7 +517,10 @@ export default function BudgetApp() {
   // ── Mutations ─────────────────────────────────────────────────────────────
   function addExpense() {
     if (!expForm.name.trim() || !expForm.amount) return;
-    setExpenses(prev => [...prev, { ...expForm, id: uid(), amount: +expForm.amount }]);
+    setExpenses(prev => [...prev, {
+      ...expForm, id: uid(), amount: +expForm.amount,
+      addedBy: huidigeGebruiker, addedAt: Date.now(),
+    }]);
     setExpForm(f => ({ ...f, name:"", amount:"" }));
     showToast("✅ Uitgave toegevoegd");
   }
@@ -932,7 +972,7 @@ export default function BudgetApp() {
             {(savingsGoals||[]).map(g=>{
               const pct = g.target>0 ? Math.min(100,Math.round(g.current/g.target*100)) : 0;
               const [ty,tm] = g.deadline ? g.deadline.split("-").map(Number) : [NOW_YEAR+1,1];
-              const [ny,nm] = NOW_MONTH.split("-").map(Number);
+              const [ny,nm] = selectedMonth.split("-").map(Number);
               const ml = Math.max(0,(ty-ny)*12+(tm-nm));
               const needed = g.target-g.current;
               const monthly = ml>0 ? Math.round(needed/ml) : needed;
@@ -1151,6 +1191,42 @@ export default function BudgetApp() {
                   <div style={{ display:"flex", gap:16, marginTop:6, fontSize:11, color:C.muted, justifyContent:"center" }}>
                     <span><span style={{display:"inline-block",width:12,height:3,borderRadius:2,background:C.accent,marginRight:5,verticalAlign:"middle"}}/>Uitgaven</span>
                     <span><span style={{display:"inline-block",width:12,height:2,borderBottom:`2px dashed ${C.green}`,marginRight:5,verticalAlign:"middle"}}/>Inkomen</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Jaaroverzicht: 12-maanden staafgrafiek */}
+            {(() => {
+              const jaarMaanden = Array.from({length:12}, (_,i) => {
+                const d = new Date(_now.getFullYear(), _now.getMonth() - 11 + i, 1);
+                return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+              });
+              const jaarData = jaarMaanden.map(m => ({
+                label: fmtM(m),
+                totaal: expenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
+              }));
+              const jaarTotaal = jaarData.reduce((s,d) => s+d.totaal, 0);
+              const gemiddeld = jaarTotaal / jaarData.length;
+              return (
+                <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                    <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📊 Jaaroverzicht (laatste 12 maanden)</h3>
+                    <span style={{ fontSize:11, color:C.muted }}>gem. {euro(gemiddeld)}/maand</span>
+                  </div>
+                  <ResponsiveContainer width="100%" height={160}>
+                    <BarChart data={jaarData} barCategoryGap="20%">
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
+                      <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false}/>
+                      <YAxis tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`€${v}`}/>
+                      <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v)=>[`€${v}`,"Uitgaven"]}/>
+                      <ReferenceLine y={gemiddeld} stroke={C.green} strokeDasharray="4 2" strokeWidth={1.5}/>
+                      <Bar dataKey="totaal" fill={C.accent} radius={[4,4,0,0]}/>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginTop:6, fontSize:11, color:C.muted }}>
+                    <span>Totaal 12 maanden: <strong style={{color:C.text}}>{euro(jaarTotaal)}</strong></span>
+                    <span><span style={{display:"inline-block",width:12,height:2,borderBottom:`2px dashed ${C.green}`,marginRight:5,verticalAlign:"middle"}}/>Gemiddelde</span>
                   </div>
                 </div>
               );
@@ -1375,6 +1451,7 @@ export default function BudgetApp() {
                       {e.fixed     && <span style={{ fontSize:10, background:`${C.accent}22`, color:C.accent, padding:"1px 6px", borderRadius:8 }}>vast</span>}
                       {e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>🔁</span>}
                       {e.fromBank  && <span style={{ fontSize:10, background:`${C.green}22`,  color:C.green,  padding:"1px 6px", borderRadius:8 }}>bank</span>}
+                      <WieBadge persoon={e.addedBy} tijdstip={e.addedAt} />
                       <span style={{ fontWeight:700, fontSize:13 }}>{euro(e.amount)}</span>
                       <button onClick={()=>delExpense(e.id)} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:13 }}>×</button>
                     </div>
@@ -1632,7 +1709,7 @@ function BijstortKnop({ bijst, setBijst, names, C, S }) {
   const [bedrag,  setBedrag]  = useState("");
   const [door,    setDoor]    = useState("p1");
 
-  const dezeMaand = (bijst||[]).filter(b => b.datum?.startsWith(NOW_MONTH));
+  const dezeMaand = (bijst||[]).filter(b => b.datum?.startsWith(selectedMonth));
   const totaal    = dezeMaand.reduce((s,b) => s+b.bedrag, 0);
 
   function stort() {

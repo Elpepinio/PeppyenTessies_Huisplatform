@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 
 const SESSION_COOKIE = "huis_session";
 
@@ -6,7 +7,16 @@ const SESSION_COOKIE = "huis_session";
 // de hoofdpagina (regelt zelf setup/login/overzicht) en de auth-API's.
 const PUBLIC_PATHS = ["/", "/api/auth/setup", "/api/auth/login", "/api/auth/me", "/api/auth/logout"];
 
-export function middleware(req) {
+// @upstash/redis gebruikt de fetch-based REST API, dus dit werkt ook in de
+// Edge runtime van de middleware (i.t.t. bijv. bcryptjs, dat Node-specifieke
+// crypto nodig heeft en daarom niet hier maar in de API-routes wordt gebruikt).
+const redis = Redis.fromEnv();
+
+function sessionKey(token) {
+  return `sessie:${token}`;
+}
+
+export async function middleware(req) {
   const { pathname } = req.nextUrl;
 
   const isPublic =
@@ -20,22 +30,33 @@ export function middleware(req) {
     return NextResponse.next();
   }
 
-  const hasCookie = req.cookies.has(SESSION_COOKIE);
+  const token = req.cookies.get(SESSION_COOKIE)?.value;
 
-  if (!hasCookie) {
-    // API-routes krijgen een nette JSON-foutmelding, tool-pagina's worden naar het
-    // platform-hoofdscherm gestuurd, dat zelf het inlogformulier toont.
+  const unauthorized = () => {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Niet ingelogd" }, { status: 401 });
     }
     const homeUrl = new URL("/", req.url);
     return NextResponse.redirect(homeUrl);
+  };
+
+  if (!token) {
+    return unauthorized();
   }
 
-  // Let op: de middleware checkt hier alleen of het cookie ÚÚberhaupt bestaat.
-  // De echte geldigheid (bestaat de sessie nog in Redis?) wordt gecontroleerd
-  // in de API-routes zelf, zodat een verlopen of verwijderde sessie alsnog
-  // wordt afgewezen zelfs als het cookie nog in de browser staat.
+  // Echte validatie: bestaat de sessie nog in Redis, of is het cookie verlopen/
+  // verwijderd (bijv. na wachtwoordwijziging of handmatig gewiste sessie)?
+  try {
+    const result = await redis.get(sessionKey(token));
+    if (!result) {
+      return unauthorized();
+    }
+  } catch (err) {
+    // Als Redis zelf niet bereikbaar is, laten we het verzoek doorgaan naar de
+    // API-route i.p.v. iedereen uit te loggen door een tijdelijke storing.
+    console.error("Middleware sessie-check mislukt:", err);
+  }
+
   return NextResponse.next();
 }
 
