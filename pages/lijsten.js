@@ -267,6 +267,7 @@ const LIJST_SJABLONEN = [
 
 // ---- Helpers ----
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const CAT_ICONEN = ["📌","🥦","🧀","🐟","💐","🥛","🥩","🥐","🥫","🧊","🧴","🧽","🧃","🛒","👕","🏊","📄","🔌","💊","📦","🏠","🌳","👤","👨‍👩‍👧","👫","🎁","🔧","📚","🍽️"];
 
 // "Wie heeft wat gedaan"-badge: toont het initiaal van wie een item als laatste
 // heeft toegevoegd/afgevinkt/gewijzigd, maar alleen als dat recent was (24u).
@@ -903,7 +904,6 @@ export default function LijstenApp() {
   // INSTELLINGEN
   // ════════════════════════════
   if (activeList && mode === "instellingen") {
-    const CAT_ICONEN = ["📌","🥦","🧀","🐟","💐","🥛","🥩","🥐","🥫","🧊","🧴","🧽","🧃","🛒","👕","🏊","📄","🔌","💊","📦","🏠","🌳","👤","👨‍👩‍👧","👫","🎁","🔧","📚","🍽️"];
     return (
       <div style={S.appBg}>
         <header style={{ ...S.header, alignItems: "center" }}>
@@ -1125,7 +1125,7 @@ export default function LijstenApp() {
           </div>
         )}
 
-        <header style={S.header}>
+        <header style={{ ...S.header, flexWrap: "wrap", rowGap: 10 }}>
           <div>
             <button style={S.switchBtn} onClick={() => { setActiveListId(null); setMode("lijst"); setShowAdd(false); setShowZoek(false); setZoekterm(""); }}>
               ← Alle lijsten
@@ -1137,7 +1137,7 @@ export default function LijstenApp() {
               </p>
             )}
           </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8, marginLeft: "auto", flexWrap: "wrap", justifyContent: "flex-end" }}>
             <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
               onClick={() => { setShowZoek(v => !v); if (showZoek) setZoekterm(""); }} title="Zoeken">
               <span style={{ fontSize: 15 }}>🔍</span>
@@ -1234,14 +1234,41 @@ export default function LijstenApp() {
             const aangevinkt = items.filter(i => i.checked).length;
             return (
               <section key={cat.id} style={{ marginBottom: 16 }}>
-                <div style={{ ...S.catHeading, marginBottom: ingeklapt ? 0 : 6 }}
-                  onClick={() => setIngeklapteCategorieen(prev => ({ ...prev, [cat.id]: !ingeklapt }))}>
-                  <span>{cat.icon} {cat.label}</span>
-                  <span style={{ fontSize: 11, color: "#B8B2A8", fontWeight: 400, marginLeft: "auto" }}>
-                    {aangevinkt}/{items.length}
-                  </span>
-                  <span style={{ fontSize: 14, color: "#B8B2A8", marginLeft: 4 }}>{ingeklapt ? "▸" : "▾"}</span>
-                </div>
+                {editCatId === cat.id ? (
+                  <div style={{ background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 12, padding: 12, marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <span style={{ fontSize: 18 }}>{cat.icon}</span>
+                      <input autoFocus style={{ ...S.inp, flex: 1, padding: "8px 12px", fontSize: 14 }} value={editCatLabel}
+                        onChange={e => setEditCatLabel(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && hernoemCat(cat.id, editCatLabel)} />
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                      {CAT_ICONEN.map(ic => (
+                        <button key={ic} onClick={() => wijzigCatIcoon(cat.id, ic)}
+                          style={{ width: 30, height: 30, borderRadius: 8, border: cat.icon === ic ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: cat.icon === ic ? "#FAF6F0" : "#FFFFFF", fontSize: 14, cursor: "pointer" }}>
+                          {ic}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1, padding: "8px 0", fontSize: 13 }} onClick={() => setEditCatId(null)}>Annuleer</button>
+                      <button style={{ ...S.btn(), flex: 1, padding: "8px 0", fontSize: 13 }} onClick={() => hernoemCat(cat.id, editCatLabel)}>Opslaan</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ ...S.catHeading, marginBottom: ingeklapt ? 0 : 6 }}
+                    onClick={() => setIngeklapteCategorieen(prev => ({ ...prev, [cat.id]: !ingeklapt }))}>
+                    <span>{cat.icon} {cat.label}</span>
+                    <button onClick={e => { e.stopPropagation(); setEditCatId(cat.id); setEditCatLabel(cat.label); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex", opacity: 0.6 }} title="Categorie hernoemen">
+                      <Pencil size={11} color="#8C8576" />
+                    </button>
+                    <span style={{ fontSize: 11, color: "#B8B2A8", fontWeight: 400, marginLeft: "auto" }}>
+                      {aangevinkt}/{items.length}
+                    </span>
+                    <span style={{ fontSize: 14, color: "#B8B2A8", marginLeft: 4 }}>{ingeklapt ? "▸" : "▾"}</span>
+                  </div>
+                )}
                 {!ingeklapt && (
                   <ul style={S.itemList}>
                     {items.map(item => (
