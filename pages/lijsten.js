@@ -267,7 +267,19 @@ const LIJST_SJABLONEN = [
 
 // ---- Helpers ----
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const CAT_ICONEN = ["📌","🥦","🧀","🐟","💐","🥛","🥩","🥐","🥫","🧊","🧴","🧽","🧃","🛒","👕","🏊","📄","🔌","💊","📦","🏠","🌳","👤","👨‍👩‍👧","👫","🎁","🔧","📚","🍽️"];
+const CAT_ICONEN = [
+  "📌","🥦","🧀","🐟","💐","🥛","🥩","🥐","🥫","🧊","🧴","🧽","🧃","🛒","👕","🏊","📄","🔌","💊","📦","🏠","🌳","👤","👨‍👩‍👧","👫","🎁","🔧","📚","🍽️","🫒","🥓",
+  // Eten & drinken
+  "🍞","🥚","🍎","🌶️","🧂","🍚","🥜","🍫","☕","🍷","🍺",
+  // Baby & huisdieren
+  "🍼","🐾",
+  // Kamperen & vakantie
+  "🚐","⛺","🎒",
+  // Huishouden
+  "🧻","🔋","💡","🕯️",
+  // Overig
+  "💻","🎨","🚲",
+];
 
 // "Wie heeft wat gedaan"-badge: toont het initiaal van wie een item als laatste
 // heeft toegevoegd/afgevinkt/gewijzigd, maar alleen als dat recent was (24u).

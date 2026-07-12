@@ -5,9 +5,19 @@ import { Plus, X, ChevronLeft, Search, ShoppingCart, Clock, Users, Flame } from 
 // ── Constanten ─────────────────────────────────────────
 const DAGEN = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"];
 const MAALTIJDMOMENTEN = ["Ontbijt","Lunch","Diner"];
-const KEUKENS = ["Nederlands","Italiaans","Aziatisch","Mediterraan","Mexicaans","Frans","Indisch","Overig"];
+const KEUKENS = ["Nederlands","Italiaans","Aziatisch","Mediterraan","Mexicaans","Frans","Indisch","Kamado","Overig"];
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+// Gemiddelde van de per-persoon beoordelingen van een recept, voor gebruik in
+// lijstweergaves. Alleen personen die daadwerkelijk beoordeeld hebben tellen mee.
+function weergaveReceptBeoordeling(recept) {
+  const b = recept.beoordelingen;
+  if (!b) return 0;
+  const scores = [b.Pepijn, b.Tessa].filter(n => n > 0);
+  if (scores.length === 0) return 0;
+  return Math.round((scores.reduce((s, n) => s + n, 0) / scores.length) * 10) / 10;
+}
 
 function huidigeMaandag() {
   const nu = new Date();
@@ -120,6 +130,14 @@ export default function MaaltijdApp() {
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiResultaat, setAiResultaat] = useState(null);
   const [zoekterm, setZoekterm] = useState("");
+  const [ingeklapteKeukens, setIngeklapteKeukens] = useState({});
+  const [huidigeGebruiker, setHuidigeGebruiker] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/auth/me").then(r => r.json()).then(d => {
+      if (d?.user) setHuidigeGebruiker(d.user);
+    }).catch(() => {});
+  }, []);
   const [importTab, setImportTab] = useState("ai"); // ai | foto | link
   const [importUrl, setImportUrl] = useState("");
   const [importFotoLoading, setImportFotoLoading] = useState(false);
@@ -487,6 +505,15 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
     ? recepten.filter(r => r.naam.toLowerCase().includes(zoekterm.toLowerCase()) || r.keuken?.toLowerCase().includes(zoekterm.toLowerCase()))
     : recepten;
 
+  // Groepeer op keuken (leidende categorie), in de vaste KEUKENS-volgorde;
+  // onbekende/legacy keuken-waardes komen als eigen groep achteraan.
+  const bekendeKeukens = KEUKENS.filter(k => gefilterd.some(r => (r.keuken || "Overig") === k));
+  const onbekendeKeukens = [...new Set(gefilterd.map(r => r.keuken || "Overig").filter(k => !KEUKENS.includes(k)))].sort();
+  const receptenPerKeuken = [...bekendeKeukens, ...onbekendeKeukens].map(keuken => ({
+    keuken,
+    recepten: gefilterd.filter(r => (r.keuken || "Overig") === keuken),
+  }));
+
   // ════════════════════════
   // RECEPT DETAIL
   // ════════════════════════
@@ -561,6 +588,23 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
               {actieefRecept.beschrijving && <p style={{ fontSize: 14, color: C.muted, marginBottom: 14 }}>{actieefRecept.beschrijving}</p>}
             </>
           )}
+
+          {/* Beoordeling per persoon */}
+          <div style={S.card}>
+            {["Pepijn","Tessa"].map(naam => (
+              <div key={naam} style={{ display:"flex", alignItems:"center", gap:10, marginBottom: naam==="Pepijn" ? 8 : 0 }}>
+                <span style={{ fontSize:13, color:C.muted, width:56 }}>{naam}</span>
+                <div style={{ display:"flex", gap:2 }}>
+                  {[1,2,3,4,5].map(n => (
+                    <button key={n} style={{ background:"none", border:"none", cursor:"pointer", fontSize:20, padding:2 }}
+                      onClick={() => updateRecept(actieefRecept.id, { beoordelingen: { ...(actieefRecept.beoordelingen||{Pepijn:0,Tessa:0}), [naam]: n === ((actieefRecept.beoordelingen?.[naam])||0) ? 0 : n } })}>
+                      {n <= ((actieefRecept.beoordelingen?.[naam])||0) ? "⭐" : "☆"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
 
           {/* Porties schuif (alleen leesmodus) */}
           {!bewerkModus && (
@@ -837,22 +881,36 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
                 <p style={{ fontSize:14, color:C.muted, margin:0 }}>Tik + of gebruik de AI-kok</p>
               </div>
             )}
-            {gefilterd.map(r => (
-              <div key={r.id} style={{ ...S.card, cursor:"pointer", display:"flex", gap:12, alignItems:"center" }}
-                onClick={() => setActieefReceptId(r.id)}>
-                <div style={{ width:52, height:52, borderRadius:12, background:C.card, display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🍽️</div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <p style={{ margin:"0 0 3px", fontWeight:700, fontSize:15 }}>{r.naam}</p>
-                  <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-                    <span style={{ fontSize:12, color:C.muted }}>⏱ {r.bereidingstijd}min</span>
-                    <span style={{ fontSize:12, color:C.muted }}>👥 {r.porties}p</span>
-                    <span style={{ fontSize:12, color:C.muted }}>{r.keuken}</span>
-                    {r.kcal ? <span style={{ fontSize:12, color:C.muted }}>🔥{r.kcal}kcal</span> : null}
+            {receptenPerKeuken.map(({ keuken, recepten: keukenRecepten }) => {
+              const ingeklapt = !!ingeklapteKeukens[keuken];
+              return (
+                <section key={keuken} style={{ marginBottom:16 }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"pointer", padding:"4px 2px", marginBottom: ingeklapt ? 0 : 8 }}
+                    onClick={() => setIngeklapteKeukens(prev => ({ ...prev, [keuken]: !ingeklapt }))}>
+                    <span style={{ fontSize:12, fontWeight:700, color:C.orange, textTransform:"uppercase", letterSpacing:"0.04em" }}>
+                      🍽️ {keuken} ({keukenRecepten.length})
+                    </span>
+                    <span style={{ fontSize:14, color:C.muted }}>{ingeklapt ? "▸" : "▾"}</span>
                   </div>
-                </div>
-                <ChevronLeft size={16} color={C.muted} style={{ transform:"rotate(180deg)" }} />
-              </div>
-            ))}
+                  {!ingeklapt && keukenRecepten.map(r => (
+                    <div key={r.id} style={{ ...S.card, cursor:"pointer", display:"flex", gap:12, alignItems:"center" }}
+                      onClick={() => setActieefReceptId(r.id)}>
+                      <div style={{ width:52, height:52, borderRadius:12, background:C.card, display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🍽️</div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <p style={{ margin:"0 0 3px", fontWeight:700, fontSize:15 }}>{r.naam}</p>
+                        <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" }}>
+                          <span style={{ fontSize:12, color:C.muted }}>⏱ {r.bereidingstijd}min</span>
+                          <span style={{ fontSize:12, color:C.muted }}>👥 {r.porties}p</span>
+                          {r.kcal ? <span style={{ fontSize:12, color:C.muted }}>🔥{r.kcal}kcal</span> : null}
+                          {weergaveReceptBeoordeling(r) > 0 && <span style={{ fontSize:11 }}>{"⭐".repeat(Math.round(weergaveReceptBeoordeling(r)))}</span>}
+                        </div>
+                      </div>
+                      <ChevronLeft size={16} color={C.muted} style={{ transform:"rotate(180deg)" }} />
+                    </div>
+                  ))}
+                </section>
+              );
+            })}
           </>
         )}
 
@@ -919,7 +977,7 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
                     </div>
                   )}
                 </div>
-                <input ref={fotoImportRef} type="file" accept="image/*" capture="environment" style={{ display:"none" }}
+                <input ref={fotoImportRef} type="file" accept="image/*" style={{ display:"none" }}
                   onChange={e => importeerViaFoto(e.target.files[0])} />
                 <p style={{ fontSize:12, color:C.muted, textAlign:"center", marginTop:8 }}>
                   Zorg voor goede belichting en houd de camera recht boven de pagina

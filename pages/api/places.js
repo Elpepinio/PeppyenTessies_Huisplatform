@@ -14,7 +14,7 @@ export default async function handler(req, res) {
   if (req.method === "GET") {
     try {
       const meta = await redis.get(META_KEY);
-      if (!meta) return res.status(200).json({ places: [] });
+      if (!meta) return res.status(200).json({ places: [], trips: [] });
       const parsed = typeof meta === "string" ? JSON.parse(meta) : meta;
       const places = parsed.places || [];
 
@@ -29,13 +29,13 @@ export default async function handler(req, res) {
         })
       );
 
-      return res.status(200).json({ places: placesMetFotos });
+      return res.status(200).json({ places: placesMetFotos, trips: parsed.trips || [] });
     } catch (e) { return res.status(500).json({ error: "Laden mislukt" }); }
   }
 
   if (req.method === "POST") {
     try {
-      const { places = [] } = req.body;
+      const { places = [], trips = [] } = req.body;
 
       // Sla foto's apart op, bewaar metadata zonder foto-data
       const placesMeta = await Promise.all(
@@ -52,7 +52,7 @@ export default async function handler(req, res) {
         })
       );
 
-      await redis.set(META_KEY, JSON.stringify({ places: placesMeta }));
+      await redis.set(META_KEY, JSON.stringify({ places: placesMeta, trips }));
       return res.status(200).json({ ok: true });
     } catch (e) { return res.status(500).json({ error: "Opslaan mislukt: " + e.message }); }
   }
