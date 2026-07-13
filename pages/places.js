@@ -58,7 +58,7 @@ async function callAI(prompt, imageBase64 = null, imageType = "image/jpeg") {
   const res = await fetch("/api/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, imageBase64, imageType, maxTokens: 400 }),
+    body: JSON.stringify({ prompt, imageBase64, imageType, maxTokens: 400, bron: "places-foto-herkenning" }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "AI mislukt");
@@ -313,6 +313,17 @@ export default function PlacesApp() {
   const [places, setPlacesState] = useState([]);
   const [trips, setTripsState] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [aiKostenMaand, setAiKostenMaand] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/ai-gebruik").then(r => r.json()).then(d => {
+      const nu = new Date();
+      const maandStr = `${nu.getFullYear()}-${String(nu.getMonth()+1).padStart(2,"0")}`;
+      const usd = (d.log||[]).filter(e => e.bron?.startsWith("places-") && e.datum.startsWith(maandStr))
+        .reduce((s,e) => s + (e.kostenUsd||0), 0);
+      setAiKostenMaand(usd * 0.92);
+    }).catch(() => {});
+  }, []);
   const [activePlaceId, setActivePlaceId] = useState(null);
   const [activeTripId, setActiveTripId] = useState(null);
   const [tab, setTab] = useState("kaart"); // kaart | lijst | buurt | trips
@@ -1457,10 +1468,18 @@ export default function PlacesApp() {
             <input ref={fotoRef} type="file" accept="image/*" style={{ display:"none" }}
               onChange={e => voegFotoToe(e.target.files[0])} />
             {(form.fotos||[]).length > 0 && (
-              <button style={{ ...S.btn(C.card, C.blue), border:`1px solid ${C.border}`, width:"100%", marginBottom:12, fontSize:13 }}
-                onClick={() => herkenFotoAI(form.fotos[0])} disabled={aiFotoLoading}>
-                {aiFotoLoading ? "🤖 Herkennen…" : "✨ Naam & categorie herkennen met AI"}
-              </button>
+              <>
+                <button style={{ ...S.btn(C.card, C.blue), border:`1px solid ${C.border}`, width:"100%", fontSize:13 }}
+                  onClick={() => herkenFotoAI(form.fotos[0])} disabled={aiFotoLoading}>
+                  {aiFotoLoading ? "🤖 Herkennen…" : "✨ Naam & categorie herkennen met AI"}
+                </button>
+                {aiKostenMaand != null && aiKostenMaand > 0 && (
+                  <Link href="/ai-kosten" style={{ display: "block", textAlign: "center", fontSize: 10, color: C.muted, textDecoration: "none", marginTop: 4, marginBottom: 12 }}>
+                    💰 €{aiKostenMaand.toFixed(2)} deze maand aan AI-herkenning
+                  </Link>
+                )}
+                {(aiKostenMaand == null || aiKostenMaand === 0) && <div style={{ marginBottom: 12 }} />}
+              </>
             )}
 
             <div style={{ display:"flex", gap:10, marginTop:8 }}>

@@ -84,11 +84,11 @@ async function saveData(data) {
   } catch (e) { console.error("Opslaan mislukt", e); }
 }
 
-async function callAI(prompt, imageBase64 = null, imageType = "image/jpeg") {
+async function callAI(prompt, imageBase64 = null, imageType = "image/jpeg", bron = "planten-overig") {
   const res = await fetch("/api/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, imageBase64, imageType, maxTokens: 1200 }),
+    body: JSON.stringify({ prompt, imageBase64, imageType, maxTokens: 1200, bron }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "AI mislukt");
@@ -123,6 +123,17 @@ export default function PlantenApp() {
   const [planten, setPlantenState] = useState([]);
   const [onderhoudLog, setOnderhoudLogState] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [aiKostenMaand, setAiKostenMaand] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/ai-gebruik").then(r => r.json()).then(d => {
+      const nu = new Date();
+      const maandStr = `${nu.getFullYear()}-${String(nu.getMonth()+1).padStart(2,"0")}`;
+      const usd = (d.log||[]).filter(e => e.bron?.startsWith("planten-") && e.datum.startsWith(maandStr))
+        .reduce((s,e) => s + (e.kostenUsd||0), 0);
+      setAiKostenMaand(usd * 0.92);
+    }).catch(() => {});
+  }, []);
   const [activePlantId, setActivePlantId] = useState(null);
   const [tab, setTab] = useState("overzicht"); // overzicht | kalender | log
   const lastWriteRef = useRef(0);
@@ -240,7 +251,7 @@ export default function PlantenApp() {
 3. **Problemen**: (ziektes, plagen, gebreken die je ziet)
 4. **Directe actie**: (wat nu te doen)
 Wees concreet en praktisch.`,
-        base64, type
+        base64, type, "planten-foto-analyse"
       );
       setAiResultaat(tekst);
       // Sla foto op bij actieve plant
@@ -267,7 +278,8 @@ Geef:
 3. **Komende maand**: waar alvast rekening mee houden
 4. **Tips** voor deze specifieke plant
 
-Kort en praktisch, maximaal 200 woorden.`
+Kort en praktisch, maximaal 200 woorden.`,
+        null, "image/jpeg", "planten-advies"
       );
       setAiResultaat(tekst);
     } catch (e) { setAiResultaat(`❌ ${e.message}`); }
@@ -287,7 +299,8 @@ Kort en praktisch, maximaal 200 woorden.`
 5. **Veelgemaakte fouten**: en hoe te vermijden
 6. **Leuk feitje**: iets interessants
 
-Maximaal 300 woorden, praktisch en informatief.`
+Maximaal 300 woorden, praktisch en informatief.`,
+        null, "image/jpeg", "planten-info"
       );
       setAiResultaat(tekst);
     } catch (e) { setAiResultaat(`❌ ${e.message}`); }
@@ -440,7 +453,14 @@ Maximaal 300 woorden, praktisch en informatief.`
 
           {/* AI knoppen */}
           <div style={{ ...S.card }}>
-            <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 700, color: C.green }}>🤖 AI Assistent</h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.green }}>🤖 AI Assistent</h3>
+              {aiKostenMaand != null && aiKostenMaand > 0 && (
+                <Link href="/ai-kosten" style={{ fontSize: 10, color: C.muted, textDecoration: "none" }}>
+                  💰 €{aiKostenMaand.toFixed(2)} deze maand
+                </Link>
+              )}
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ display: "flex", gap: 8 }}>
                 <button style={{ ...S.btn(C.accent), flex: 1, fontSize: 13, padding: "10px 0" }}

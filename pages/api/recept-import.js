@@ -1,4 +1,5 @@
-import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
+import { isValidSession, getSessionTokenFromReq, getSessionUser } from "../../lib/auth";
+import { logAiGebruik } from "../../lib/ai-usage";
 
 export const config = { api: { bodyParser: { sizeLimit: "2mb" } } };
 
@@ -90,6 +91,16 @@ Als er geen recept op de pagina staat, geef dan: {"fout": "Geen recept gevonden 
     const aiTekst = aiData.content?.find(b => b.type === "text")?.text || "";
     const clean = aiTekst.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
+
+    if (aiData.usage) {
+      const gebruiker = await getSessionUser(token);
+      logAiGebruik({
+        bron: "maaltijden-link-import",
+        inputTokens: aiData.usage.input_tokens || 0,
+        outputTokens: aiData.usage.output_tokens || 0,
+        gebruiker,
+      });
+    }
 
     if (parsed.fout) {
       return res.status(400).json({ error: parsed.fout });

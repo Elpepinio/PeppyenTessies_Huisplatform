@@ -59,6 +59,20 @@ const TOOLS = [
     emoji: "🎂",
     color: "#D6336C",
   },
+  {
+    href: "/kijklijst",
+    label: "Kijklijst",
+    description: "Films en series die we willen kijken, met IMDb-score",
+    emoji: "🎬",
+    color: "#7A2E3B",
+  },
+  {
+    href: "/ai-kosten",
+    label: "AI-kosten",
+    description: "Wat de AI-functies in de tools ons kosten",
+    emoji: "💰",
+    color: "#3D3A34",
+  },
 ];
 
 export default function Platform() {

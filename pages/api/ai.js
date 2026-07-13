@@ -1,4 +1,5 @@
-import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
+import { isValidSession, getSessionTokenFromReq, getSessionUser } from "../../lib/auth";
+import { logAiGebruik } from "../../lib/ai-usage";
 
 export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
 
@@ -12,7 +13,7 @@ export default async function handler(req, res) {
   if (!apiKey) return res.status(500).json({ error: "ANTHROPIC_API_KEY niet ingesteld in Vercel environment variables" });
 
   try {
-    const { prompt, imageBase64, imageType, maxTokens = 1024 } = req.body;
+    const { prompt, imageBase64, imageType, maxTokens = 1024, bron = "onbekend" } = req.body;
 
     const content = [];
     if (imageBase64) {
@@ -36,6 +37,14 @@ export default async function handler(req, res) {
 
     const data = await response.json();
     const text = data.content?.find(b => b.type === "text")?.text || "";
+
+    if (data.usage) {
+      const gebruiker = await getSessionUser(token);
+      logAiGebruik({
+        bron, inputTokens: data.usage.input_tokens || 0, outputTokens: data.usage.output_tokens || 0, gebruiker,
+      });
+    }
+
     return res.status(200).json({ text });
   } catch (e) {
     return res.status(500).json({ error: "AI-analyse mislukt: " + e.message });

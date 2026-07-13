@@ -6,8 +6,16 @@ import { Plus, X, ChevronLeft, Search, ShoppingCart, Clock, Users, Flame } from 
 const DAGEN = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"];
 const MAALTIJDMOMENTEN = ["Ontbijt","Lunch","Diner"];
 const KEUKENS = ["Nederlands","Italiaans","Aziatisch","Mediterraan","Mexicaans","Frans","Indisch","Kamado","Overig"];
+const DIEET_TAGS = ["Vegetarisch","Veganistisch","Glutenvrij","Lactosevrij"];
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+// Zoekt de eerste tijdsaanduiding in een bereidingsstap (bv. "20 minuten" of
+// "15 min") zodat Kookmodus daar automatisch een timer voor kan voorstellen.
+function minutenUitStap(tekst) {
+  const match = tekst.match(/(\d+)\s*(minuten|minuut|min)\b/i);
+  return match ? parseInt(match[1], 10) : null;
+}
 
 // Gemiddelde van de per-persoon beoordelingen van een recept, voor gebruik in
 // lijstweergaves. Alleen personen die daadwerkelijk beoordeeld hebben tellen mee.
@@ -64,11 +72,11 @@ async function saveData(data) {
   } catch (e) { console.error("Opslaan mislukt", e); }
 }
 
-async function callAI(prompt) {
+async function callAI(prompt, bron = "maaltijden-overig") {
   const res = await fetch("/api/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, maxTokens: 1500 }),
+    body: JSON.stringify({ prompt, maxTokens: 1500, bron }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "AI mislukt");
@@ -102,6 +110,17 @@ const S = {
 export default function MaaltijdApp() {
   const [recepten, setReceptenState] = useState([]);
   const [weekmenu, setWeekmenuState] = useState({});
+  const [aiKostenMaand, setAiKostenMaand] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/ai-gebruik").then(r => r.json()).then(d => {
+      const nu = new Date();
+      const maandStr = `${nu.getFullYear()}-${String(nu.getMonth()+1).padStart(2,"0")}`;
+      const usd = (d.log||[]).filter(e => e.bron?.startsWith("maaltijden-") && e.datum.startsWith(maandStr))
+        .reduce((s,e) => s + (e.kostenUsd||0), 0);
+      setAiKostenMaand(usd * 0.92);
+    }).catch(() => {});
+  }, []);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("week"); // week | recepten | ai
   const [actieefReceptId, setActieefReceptId] = useState(null);
@@ -114,7 +133,7 @@ export default function MaaltijdApp() {
     naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4",
     beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "",
     ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }],
-    stappen: [""],
+    stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" },
   });
 
   // Weekmenu plannen
@@ -131,6 +150,7 @@ export default function MaaltijdApp() {
   const [aiResultaat, setAiResultaat] = useState(null);
   const [zoekterm, setZoekterm] = useState("");
   const [ingeklapteKeukens, setIngeklapteKeukens] = useState({});
+  const [dieetFilter, setDieetFilter] = useState(null);
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null);
 
   useEffect(() => {
@@ -148,6 +168,31 @@ export default function MaaltijdApp() {
   const [porties, setPorties] = useState({});
   const [bewerkReceptId, setBewerkReceptId] = useState(null); // recept-id -> porties override
   const [toast, setToast] = useState(null);
+  const [kookModusActief, setKookModusActief] = useState(false);
+  const [kookStapIndex, setKookStapIndex] = useState(0);
+  const [kookTimerSec, setKookTimerSec] = useState(0);
+  const [kookTimerLopend, setKookTimerLopend] = useState(false);
+  const [showDagboekForm, setShowDagboekForm] = useState(false);
+  const [dagboekNotitie, setDagboekNotitie] = useState("");
+  const [showWeekSuggestie, setShowWeekSuggestie] = useState(false);
+  const [weekSuggestieLoading, setWeekSuggestieLoading] = useState(false);
+
+  // Timer-countdown voor Kookmodus
+  useEffect(() => {
+    if (!kookTimerLopend || kookTimerSec <= 0) return;
+    const interval = setInterval(() => {
+      setKookTimerSec(s => {
+        if (s <= 1) {
+          setKookTimerLopend(false);
+          if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+          showToast("⏰ Timer afgelopen!");
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [kookTimerLopend]);
 
   // ── Data ─────────────────────────────────────────────
   const persistData = useCallback((nextRecepten, nextWeekmenu) => {
@@ -189,7 +234,7 @@ export default function MaaltijdApp() {
       aangemaaktOp: Date.now(),
     };
     persistData([...recepten, nieuw], weekmenu);
-    setReceptForm({ naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""] });
+    setReceptForm({ naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" } });
     setShowReceptForm(false);
     showToast(`✅ ${nieuw.naam} toegevoegd`);
   }
@@ -264,7 +309,30 @@ export default function MaaltijdApp() {
       });
     });
 
+    // Check wat er al in Voorraad staat, en trek dat af van wat nog nodig is.
+    let alInVoorraad = 0;
+    try {
+      const voorraadRes = await fetch("/api/voorraad");
+      if (voorraadRes.ok) {
+        const voorraadData = await voorraadRes.json();
+        (voorraadData.items || []).forEach(vItem => {
+          const key = Object.keys(ingredienten).find(k =>
+            k === vItem.naam.toLowerCase().trim() || vItem.naam.toLowerCase().includes(k)
+          );
+          if (!key) return;
+          const nodig = ingredienten[key];
+          if (nodig.eenheid !== vItem.eenheid && !(nodig.eenheid === "stuks" && vItem.eenheid === "stuks")) return;
+          if (vItem.hoeveelheid <= 0) return;
+          const restant = Math.max(0, nodig.hoeveelheid - vItem.hoeveelheid);
+          if (restant < nodig.hoeveelheid) alInVoorraad++;
+          if (restant === 0) delete ingredienten[key];
+          else nodig.hoeveelheid = restant;
+        });
+      }
+    } catch (e) { /* voorraad-check is optioneel, gaat gewoon door zonder */ }
+
     const items = Object.values(ingredienten);
+    if (items.length === 0) { showToast("✅ Alles al in voorraad, niks toe te voegen"); return; }
     // Stuur naar lijsten tool
     try {
       const res = await fetch("/api/lijsten");
@@ -289,7 +357,7 @@ export default function MaaltijdApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lists: updatedLists }),
       });
-      showToast(`✅ ${items.length} ingrediënten naar boodschappenlijst gestuurd`);
+      showToast(`✅ ${items.length} ingrediënten naar boodschappenlijst${alInVoorraad > 0 ? ` (${alInVoorraad} al deels in voorraad, verrekend)` : ""}`);
     } catch (e) { showToast("❌ Kon niet toevoegen aan boodschappenlijst"); }
   }
 
@@ -319,11 +387,51 @@ ${aiPrompt.toLowerCase().includes("recept") || aiPrompt.toLowerCase().includes("
 (alle stappen)
 
 **Tips:** [1-2 handige tips]`
-  : "Geef een helder en praktisch antwoord."}`
+  : "Geef een helder en praktisch antwoord."}`,
+        "maaltijden-ai-kok"
       );
       setAiResultaat(tekst);
     } catch (e) { setAiResultaat(`❌ ${e.message}`); }
     setAiLoading(false);
+  }
+
+  // Stelt op basis van de bestaande receptenbibliotheek een gevarieerd
+  // weekmenu voor (verschillende keukens, niet 3x hetzelfde) en plant dat
+  // meteen in als diner voor de huidige week.
+  async function stelWeekmenuVoor() {
+    if (recepten.length < 3) { showToast("⚠️ Voeg eerst een paar recepten toe voor een zinvolle suggestie"); return; }
+    setWeekSuggestieLoading(true);
+    try {
+      const bibliotheek = recepten.map(r => `${r.naam} (${r.keuken || "Overig"})`).join("\n");
+      const tekst = await callAI(
+        `Hier is een receptenbibliotheek (naam en keukentype):\n${bibliotheek}\n\n` +
+        `Stel een gevarieerd weekmenu voor het diner voor, één recept per dag voor Maandag t/m Zondag, gekozen UIT bovenstaande lijst. ` +
+        `Zorg voor variatie in keukentype (niet meerdere dagen achter elkaar dezelfde keuken). ` +
+        `Geef ALLEEN een JSON-object terug, zonder uitleg of markdown, in dit exacte formaat: ` +
+        `{"Maandag":"receptnaam","Dinsdag":"receptnaam","Woensdag":"receptnaam","Donderdag":"receptnaam","Vrijdag":"receptnaam","Zaterdag":"receptnaam","Zondag":"receptnaam"}. ` +
+        `Gebruik de namen exact zoals ze in de bibliotheek staan.`,
+        "maaltijden-weekmenu-suggestie"
+      );
+      const schoon = tekst.replace(/```json|```/g, "").trim();
+      const suggestie = JSON.parse(schoon);
+      const nieuweWeekmenu = { ...weekmenu };
+      let aantalGepland = 0;
+      DAGEN.forEach(dag => {
+        const naam = suggestie[dag];
+        if (!naam) return;
+        const match = recepten.find(r => r.naam.toLowerCase() === naam.toLowerCase());
+        if (match) {
+          nieuweWeekmenu[`${weekStart}|${dag}|Diner`] = match.id;
+          aantalGepland++;
+        }
+      });
+      persistData(recepten, nieuweWeekmenu);
+      showToast(`✅ ${aantalGepland} dagen ingepland`);
+      setShowWeekSuggestie(false);
+    } catch (e) {
+      showToast("❌ Kon geen weekmenu voorstellen, probeer opnieuw");
+    }
+    setWeekSuggestieLoading(false);
   }
 
   async function importeerAIRecept() {
@@ -343,7 +451,8 @@ Format:
   "beschrijving": "...",
   "ingredienten": [{"naam": "...", "hoeveelheid": "100", "eenheid": "g"}],
   "stappen": ["stap 1", "stap 2"]
-}`
+}`,
+        "maaltijden-ai-kok-import"
       );
       const clean = tekst.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
@@ -351,18 +460,37 @@ Format:
     } catch (e) { showToast("❌ Kon recept niet importeren — kopieer handmatig"); }
   }
 
+  // Zet elke foto (ook HEIC vanaf iPhone-bibliotheek) om naar een gecomprimeerde
+  // JPEG via canvas, zodat de AI-API 'm altijd kan lezen — ongeacht bronformaat.
+  async function comprimeerFoto(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const MAX = 1400;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
+          else { width = Math.round(width * MAX / height); height = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL("image/jpeg", 0.85).split(",")[1]);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Kon foto niet lezen")); };
+      img.src = url;
+    });
+  }
+
   async function importeerViaFoto(file) {
     if (!file) return;
     setImportFotoLoading(true);
     setImportFout(null);
     try {
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = e => resolve(e.target.result.split(",")[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-      const type = file.type || "image/jpeg";
+      const base64 = await comprimeerFoto(file);
+      const type = "image/jpeg";
 
       const res = await fetch("/api/ai", {
         method: "POST",
@@ -386,6 +514,7 @@ Format:
 
 Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
           imageBase64: base64,
+          bron: "maaltijden-foto-import",
           imageType: type,
           maxTokens: 2000,
         }),
@@ -447,6 +576,68 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
     persistData(recepten.map(r => r.id === id ? { ...r, ...fields } : r), weekmenu);
   }
 
+  // ── Voorraad-koppeling ─────────────────────────────────
+  // Trekt de ingrediënten van een gemaakt recept (geschaald naar het aantal
+  // porties) af van de Voorraad-tool, op basis van naam-overeenkomst.
+  async function trekAfVanVoorraad(recept, aantalPorties) {
+    try {
+      const res = await fetch("/api/voorraad");
+      if (!res.ok) return { bijgewerkt: 0 };
+      const data = await res.json();
+      const items = data.items || [];
+      const schaal = aantalPorties / (recept.porties || 4);
+      let bijgewerkt = 0;
+
+      const nieuweItems = items.map(item => {
+        const match = (recept.ingredienten || []).find(ing =>
+          ing.naam.toLowerCase().trim() === item.naam.toLowerCase().trim() ||
+          item.naam.toLowerCase().includes(ing.naam.toLowerCase().trim())
+        );
+        if (!match) return item;
+        const gebruikt = (+match.hoeveelheid || 0) * schaal;
+        // Alleen zinvol aftrekken als de eenheden overeenkomen of het om stuks gaat
+        if (match.eenheid !== item.eenheid && !(match.eenheid === "stuks" && item.eenheid === "stuks")) return item;
+        bijgewerkt++;
+        return { ...item, hoeveelheid: Math.max(0, Math.round((item.hoeveelheid - gebruikt) * 100) / 100), lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
+      });
+
+      if (bijgewerkt > 0) {
+        await fetch("/api/voorraad", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: nieuweItems }),
+        });
+      }
+      return { bijgewerkt };
+    } catch (e) {
+      console.error("Voorraad bijwerken mislukt", e);
+      return { bijgewerkt: 0 };
+    }
+  }
+
+  // Markeert een gepland recept als gemaakt: logt een kookdagboek-aantekening
+  // en trekt de gebruikte ingrediënten af van de Voorraad-tool.
+  async function markeerGemaakt(recept, notitie = "", datum = vandaagStr()) {
+    const p = porties[recept.id] || recept.porties || 4;
+    const entry = { id: uid(), datum, notitie, door: huidigeGebruiker };
+    updateRecept(recept.id, { dagboek: [...(recept.dagboek || []), entry] });
+    const { bijgewerkt } = await trekAfVanVoorraad(recept, p);
+    showToast(bijgewerkt > 0 ? `✅ Gemaakt! ${bijgewerkt} ingrediënt(en) van voorraad afgeboekt` : "✅ Gemaakt! (geen overeenkomende voorraad gevonden)");
+  }
+
+  function verwijderDagboekEntry(receptId, entryId) {
+    const r = recepten.find(x => x.id === receptId);
+    updateRecept(receptId, { dagboek: (r.dagboek || []).filter(e => e.id !== entryId) });
+  }
+
+  // "Vaakst gemaakt" / "lang niet gemaakt" — afgeleid uit het kookdagboek.
+  function receptStats(recept) {
+    const log = recept.dagboek || [];
+    if (log.length === 0) return { aantal: 0, laatste: null, langNietGemaakt: false };
+    const laatste = log.map(e => e.datum).sort().slice(-1)[0];
+    const dagenGeleden = Math.round((new Date(vandaagStr()) - new Date(laatste)) / (1000*60*60*24));
+    return { aantal: log.length, laatste, langNietGemaakt: dagenGeleden > 60 };
+  }
+
   function updateIngredient(receptId, idx, fields) {
     const r = recepten.find(x => x.id === receptId);
     if (!r) return;
@@ -501,9 +692,10 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
   );
 
   const actieefRecept = recepten.find(r => r.id === actieefReceptId);
-  const gefilterd = zoekterm
+  let gefilterd = zoekterm
     ? recepten.filter(r => r.naam.toLowerCase().includes(zoekterm.toLowerCase()) || r.keuken?.toLowerCase().includes(zoekterm.toLowerCase()))
     : recepten;
+  if (dieetFilter) gefilterd = gefilterd.filter(r => (r.dieet||[]).includes(dieetFilter));
 
   // Groepeer op keuken (leidende categorie), in de vaste KEUKENS-volgorde;
   // onbekende/legacy keuken-waardes komen als eigen groep achteraan.
@@ -540,6 +732,19 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
           </button>
         </header>
 
+        {!bewerkModus && (
+          <div style={{ display:"flex", gap:8, padding:"0 20px 12px" }}>
+            <button style={{ ...S.btn(C.orange), flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
+              onClick={() => { setKookStapIndex(0); setKookTimerSec(0); setKookTimerLopend(false); setKookModusActief(true); }}>
+              🍳 Kookmodus
+            </button>
+            <button style={{ ...S.btn(C.card, C.green), border:`1px solid ${C.border}`, flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
+              onClick={() => { setDagboekNotitie(""); setShowDagboekForm(true); }}>
+              ✅ Markeer gemaakt
+            </button>
+          </div>
+        )}
+
         <main style={S.main}>
           {/* Meta — bewerkbaar */}
           {bewerkModus ? (
@@ -571,10 +776,43 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
                 <textarea style={{ ...S.inp, height:56, resize:"none", padding:"8px 10px" }} value={actieefRecept.beschrijving||""}
                   onChange={e => updateRecept(actieefRecept.id, { beschrijving: e.target.value })} />
               </div>
+              <div style={{ gridColumn:"span 2" }}>
+                <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:6 }}>Dieet</label>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {DIEET_TAGS.map(tag => {
+                    const actief = (actieefRecept.dieet||[]).includes(tag);
+                    return (
+                      <button key={tag} style={{ border:`2px solid ${actief?C.green:C.border}`, background:actief?C.green:"transparent", color:actief?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, cursor:"pointer" }}
+                        onClick={() => updateRecept(actieefRecept.id, { dieet: actief ? actieefRecept.dieet.filter(t=>t!==tag) : [...(actieefRecept.dieet||[]), tag] })}>
+                        {tag}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              {actieefRecept.keuken === "Kamado" && (
+                <div style={{ gridColumn:"span 2", background:"#FFF", borderRadius:10, padding:10 }}>
+                  <p style={{ fontSize:12, fontWeight:700, color:C.orange, margin:"0 0 8px" }}>🔥 Kamado-instellingen</p>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+                    <input style={{ ...S.inp, padding:"8px 10px" }} placeholder="Temperatuur (°C)" type="number"
+                      value={actieefRecept.kamado?.temperatuur||""} onChange={e => updateRecept(actieefRecept.id, { kamado:{...(actieefRecept.kamado||{}),temperatuur:e.target.value} })} />
+                    <input style={{ ...S.inp, padding:"8px 10px" }} placeholder="Rooktijd (min)" type="number"
+                      value={actieefRecept.kamado?.rooktijd||""} onChange={e => updateRecept(actieefRecept.id, { kamado:{...(actieefRecept.kamado||{}),rooktijd:e.target.value} })} />
+                  </div>
+                  <div style={{ display:"flex", gap:8 }}>
+                    {["direct","indirect"].map(h => (
+                      <button key={h} style={{ flex:1, border:`2px solid ${actieefRecept.kamado?.hitte===h?C.orange:C.border}`, background:actieefRecept.kamado?.hitte===h?C.orange:"transparent", color:actieefRecept.kamado?.hitte===h?"#FFF":C.muted, borderRadius:10, padding:"7px 0", fontSize:12, fontWeight:600, cursor:"pointer" }}
+                        onClick={() => updateRecept(actieefRecept.id, { kamado:{...(actieefRecept.kamado||{}),hitte:h} })}>
+                        {h === "direct" ? "🔥 Direct" : "🌡️ Indirect"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <>
-              <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 {[
                   { icon: "⏱", val: `${actieefRecept.bereidingstijd} min` },
                   { icon: "🍽️", val: actieefRecept.keuken },
@@ -585,6 +823,20 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
                   </span>
                 ))}
               </div>
+              {(actieefRecept.dieet||[]).length > 0 && (
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+                  {actieefRecept.dieet.map(tag => (
+                    <span key={tag} style={{ background:`${C.green}18`, color:C.green, borderRadius:20, padding:"3px 10px", fontSize:11, fontWeight:700 }}>{tag}</span>
+                  ))}
+                </div>
+              )}
+              {actieefRecept.keuken === "Kamado" && (actieefRecept.kamado?.temperatuur || actieefRecept.kamado?.rooktijd) && (
+                <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10, fontSize:12, color:C.muted }}>
+                  {actieefRecept.kamado?.temperatuur && <span>🌡️ {actieefRecept.kamado.temperatuur}°C</span>}
+                  {actieefRecept.kamado?.hitte && <span>{actieefRecept.kamado.hitte === "direct" ? "🔥 Direct" : "🌡️ Indirect"}</span>}
+                  {actieefRecept.kamado?.rooktijd && <span>💨 {actieefRecept.kamado.rooktijd} min roken</span>}
+                </div>
+              )}
               {actieefRecept.beschrijving && <p style={{ fontSize: 14, color: C.muted, marginBottom: 14 }}>{actieefRecept.beschrijving}</p>}
             </>
           )}
@@ -699,6 +951,37 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
             </div>
           )}
 
+          {/* Kookdagboek */}
+          <div style={S.card}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+              <h3 style={{ margin:0, fontSize:14, fontWeight:700 }}>📔 Kookdagboek</h3>
+              {(() => {
+                const stats = receptStats(actieefRecept);
+                return stats.aantal > 0 ? (
+                  <span style={{ fontSize:11, color:C.muted }}>
+                    {stats.aantal}x gemaakt{stats.langNietGemaakt ? " · 💤 lang niet gemaakt" : ""}
+                  </span>
+                ) : null;
+              })()}
+            </div>
+            {(actieefRecept.dagboek||[]).length === 0 ? (
+              <p style={{ fontSize:12, color:C.muted, margin:0 }}>Nog geen aantekeningen. Tik "Markeer gemaakt" na het koken.</p>
+            ) : [...actieefRecept.dagboek].sort((a,b) => b.datum.localeCompare(a.datum)).map(entry => (
+              <div key={entry.id} style={{ display:"flex", alignItems:"flex-start", gap:8, padding:"8px 0", borderBottom:`1px solid ${C.border}` }}>
+                <div style={{ flex:1 }}>
+                  <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:700, color:C.muted }}>
+                    {entry.datum}{entry.door ? ` · ${entry.door}` : ""}
+                  </p>
+                  {entry.notitie && <p style={{ margin:0, fontSize:13, color:C.text }}>{entry.notitie}</p>}
+                </div>
+                <button onClick={() => verwijderDagboekEntry(actieefRecept.id, entry.id)}
+                  style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, padding:2 }}>
+                  <X size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+
           {/* Verwijder knop onderaan */}
           {bewerkModus && (
             <button style={{ ...S.btn(C.card, C.red), border:`1px solid ${C.red}44`, width:"100%", marginTop:8 }}
@@ -707,6 +990,92 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
             </button>
           )}
         </main>
+
+        {/* Markeer gemaakt — optionele aantekening */}
+        {showDagboekForm && (
+          <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.4)", zIndex:200, display:"flex", alignItems:"flex-end" }}
+            onClick={() => setShowDagboekForm(false)}>
+            <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+                <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.green }}>✅ Markeer als gemaakt</p>
+                <button onClick={() => setShowDagboekForm(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                  <X size={20} color={C.muted} />
+                </button>
+              </div>
+              <p style={{ fontSize:12, color:C.muted, margin:"0 0 8px" }}>
+                Ingrediënten worden (waar mogelijk) van je Voorraad afgeboekt.
+              </p>
+              <textarea style={{ ...S.inp, height:70, resize:"none", marginBottom:16 }} placeholder="Aantekening (optioneel, bv. 'iets te zout, minder zout volgende keer')"
+                value={dagboekNotitie} onChange={e => setDagboekNotitie(e.target.value)} autoFocus />
+              <button style={{ ...S.btn(C.green), width:"100%" }}
+                onClick={() => { markeerGemaakt(actieefRecept, dagboekNotitie); setShowDagboekForm(false); }}>
+                Opslaan
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Kookmodus — stap voor stap met timer */}
+        {kookModusActief && (() => {
+          const stap = actieefRecept.stappen[kookStapIndex];
+          const stapMinuten = minutenUitStap(stap || "");
+          const laatsteStap = kookStapIndex === actieefRecept.stappen.length - 1;
+          return (
+            <div style={{ position:"fixed", inset:0, background:"#1A120A", zIndex:300, display:"flex", flexDirection:"column", color:"#FFF" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"20px 20px 10px" }}>
+                <span style={{ fontSize:13, opacity:0.7 }}>Stap {kookStapIndex + 1} / {actieefRecept.stappen.length}</span>
+                <button onClick={() => { setKookModusActief(false); setKookTimerLopend(false); }} aria-label="Sluiten"
+                  style={{ background:"rgba(255,255,255,.15)", border:"none", borderRadius:"50%", width:32, height:32, cursor:"pointer", color:"#FFF" }}>
+                  <X size={16} color="#FFF" style={{ margin:"auto" }} />
+                </button>
+              </div>
+
+              <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"0 28px", textAlign:"center" }}>
+                <p style={{ fontSize:22, lineHeight:1.5, fontWeight:600, margin:"0 0 24px" }}>{stap}</p>
+
+                {stapMinuten && (
+                  <div style={{ marginTop:8 }}>
+                    {kookTimerSec > 0 ? (
+                      <>
+                        <p style={{ fontSize:44, fontWeight:800, margin:"0 0 12px", fontVariantNumeric:"tabular-nums" }}>
+                          {String(Math.floor(kookTimerSec/60)).padStart(2,"0")}:{String(kookTimerSec%60).padStart(2,"0")}
+                        </p>
+                        <button style={{ ...S.btn(kookTimerLopend ? "#8B4513" : C.orange), padding:"10px 24px" }}
+                          onClick={() => setKookTimerLopend(l => !l)}>
+                          {kookTimerLopend ? "⏸ Pauzeer" : "▶️ Hervat"}
+                        </button>
+                      </>
+                    ) : (
+                      <button style={{ ...S.btn(C.orange), padding:"12px 28px", fontSize:15 }}
+                        onClick={() => { setKookTimerSec(stapMinuten * 60); setKookTimerLopend(true); }}>
+                        ⏱ Start timer ({stapMinuten} min)
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display:"flex", gap:10, padding:20 }}>
+                <button style={{ ...S.btn("rgba(255,255,255,.12)", "#FFF"), flex:1, opacity: kookStapIndex===0 ? 0.4 : 1 }}
+                  disabled={kookStapIndex===0}
+                  onClick={() => { setKookStapIndex(i => i-1); setKookTimerSec(0); setKookTimerLopend(false); }}>
+                  ← Vorige
+                </button>
+                {laatsteStap ? (
+                  <button style={{ ...S.btn(C.green), flex:1 }}
+                    onClick={() => { setKookModusActief(false); setKookTimerLopend(false); setDagboekNotitie(""); setShowDagboekForm(true); }}>
+                    ✅ Klaar!
+                  </button>
+                ) : (
+                  <button style={{ ...S.btn(C.orange), flex:1 }}
+                    onClick={() => { setKookStapIndex(i => i+1); setKookTimerSec(0); setKookTimerLopend(false); }}>
+                    Volgende →
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     );
   }
@@ -753,6 +1122,30 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
         </div>
       )}
 
+      {/* AI weekmenu-suggestie */}
+      {showWeekSuggestie && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:100, display:"flex", alignItems:"flex-end" }}
+          onClick={() => !weekSuggestieLoading && setShowWeekSuggestie(false)}>
+          <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.orange }}>✨ Weekmenu-suggestie</p>
+              {!weekSuggestieLoading && (
+                <button onClick={() => setShowWeekSuggestie(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                  <X size={20} color={C.muted} />
+                </button>
+              )}
+            </div>
+            <p style={{ fontSize:13, color:C.muted, margin:"0 0 16px", lineHeight:1.6 }}>
+              De AI-kok kiest 7 gevarieerde diners uit je eigen receptenbibliotheek (verschillende keukens) en plant ze in als diner voor Maandag t/m Zondag van de huidige week.
+              Bestaande diner-planningen voor deze week worden overschreven.
+            </p>
+            <button style={{ ...S.btn(C.orange), width:"100%" }} onClick={stelWeekmenuVoor} disabled={weekSuggestieLoading}>
+              {weekSuggestieLoading ? "🤖 Menu wordt bedacht…" : "✨ Weekmenu voorstellen en inplannen"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Recept toevoegen overlay */}
       {showReceptForm && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => setShowReceptForm(false)}>
@@ -778,6 +1171,41 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
               <input style={S.inp} placeholder="Eiwit g" type="number" value={receptForm.eiwitten} onChange={e=>setReceptForm(f=>({...f,eiwitten:e.target.value}))} />
             </div>
             <textarea style={{ ...S.inp, height:60, resize:"none", marginBottom:12 }} placeholder="Korte beschrijving (optioneel)" value={receptForm.beschrijving} onChange={e=>setReceptForm(f=>({...f,beschrijving:e.target.value}))} />
+
+            {/* Dieet-tags */}
+            <p style={{ fontSize:11, color:C.muted, margin:"0 0 6px" }}>Dieet (optioneel)</p>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 }}>
+              {DIEET_TAGS.map(tag => {
+                const actief = (receptForm.dieet||[]).includes(tag);
+                return (
+                  <button key={tag} style={{ border:`2px solid ${actief?C.green:C.border}`, background:actief?C.green:"transparent", color:actief?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, cursor:"pointer", fontWeight:actief?700:400 }}
+                    onClick={() => setReceptForm(f => ({ ...f, dieet: actief ? f.dieet.filter(t=>t!==tag) : [...(f.dieet||[]), tag] }))}>
+                    {tag}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Kamado-specifieke velden */}
+            {receptForm.keuken === "Kamado" && (
+              <div style={{ background:C.card, borderRadius:12, padding:12, marginBottom:12 }}>
+                <p style={{ fontSize:12, fontWeight:700, color:C.orange, margin:"0 0 8px" }}>🔥 Kamado-instellingen</p>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+                  <input style={{ ...S.inp, padding:"8px 10px" }} placeholder="Temperatuur (°C)" type="number"
+                    value={receptForm.kamado?.temperatuur||""} onChange={e => setReceptForm(f=>({...f,kamado:{...(f.kamado||{}),temperatuur:e.target.value}}))} />
+                  <input style={{ ...S.inp, padding:"8px 10px" }} placeholder="Rooktijd (min)" type="number"
+                    value={receptForm.kamado?.rooktijd||""} onChange={e => setReceptForm(f=>({...f,kamado:{...(f.kamado||{}),rooktijd:e.target.value}}))} />
+                </div>
+                <div style={{ display:"flex", gap:8 }}>
+                  {["direct","indirect"].map(h => (
+                    <button key={h} style={{ flex:1, border:`2px solid ${receptForm.kamado?.hitte===h?C.orange:C.border}`, background:receptForm.kamado?.hitte===h?C.orange:"transparent", color:receptForm.kamado?.hitte===h?"#FFF":C.muted, borderRadius:10, padding:"7px 0", fontSize:12, fontWeight:600, cursor:"pointer", textTransform:"capitalize" }}
+                      onClick={() => setReceptForm(f=>({...f,kamado:{...(f.kamado||{}),hitte:h}}))}>
+                      {h === "direct" ? "🔥 Directe hitte" : "🌡️ Indirecte hitte"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <p style={{ fontSize:13, fontWeight:700, margin:"0 0 8px" }}>Ingrediënten</p>
             {receptForm.ingredienten.map((ing, i) => (
               <div key={i} style={{ display:"flex", gap:6, marginBottom:6 }}>
@@ -847,14 +1275,24 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
                   {MAALTIJDMOMENTEN.map(moment => {
                     const key = weekKey(dag, moment);
                     const recept = recepten.find(r => r.id === weekmenu[key]);
+                    const alGemaaktVandaag = recept && (recept.dagboek || []).some(e => e.datum === dagDatumStr);
                     return (
-                      <div key={moment} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderTop:`1px solid ${C.border}` }}
-                        onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>
-                        <span style={{ fontSize:12, color:C.muted, width:56 }}>{moment}</span>
+                      <div key={moment} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
+                        <span style={{ fontSize:12, color:C.muted, width:56, cursor:"pointer" }}
+                          onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>{moment}</span>
                         {recept
-                          ? <span style={{ flex:1, fontSize:13, fontWeight:600, color:C.text, cursor:"pointer" }}>{recept.naam}</span>
-                          : <span style={{ flex:1, fontSize:13, color:C.muted, cursor:"pointer", fontStyle:"italic" }}>+ Plannen</span>}
+                          ? <span style={{ flex:1, fontSize:13, fontWeight:600, color:C.text, cursor:"pointer" }}
+                              onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>{recept.naam}</span>
+                          : <span style={{ flex:1, fontSize:13, color:C.muted, cursor:"pointer", fontStyle:"italic" }}
+                              onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>+ Plannen</span>}
                         {recept && <span style={{ fontSize:11, color:C.muted }}>⏱{recept.bereidingstijd}m</span>}
+                        {recept && (
+                          <button onClick={() => markeerGemaakt(recept, "", dagDatumStr)} disabled={alGemaaktVandaag}
+                            title={alGemaaktVandaag ? "Al gemaakt op deze dag" : "Markeer als gemaakt"}
+                            style={{ background:"none", border:"none", cursor: alGemaaktVandaag ? "default" : "pointer", fontSize:16, padding:2, opacity: alGemaaktVandaag ? 1 : 0.4 }}>
+                            {alGemaaktVandaag ? "✅" : "⬜"}
+                          </button>
+                        )}
                       </div>
                     );
                   })}
@@ -862,6 +1300,10 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
               );
             })}
 
+            <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, width:"100%", marginTop:8, display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}
+              onClick={() => setShowWeekSuggestie(true)}>
+              ✨ Stel weekmenu voor met AI
+            </button>
             <button style={{ ...S.btn(), width:"100%", marginTop:8, display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}
               onClick={genereerBoodschappen}>
               <ShoppingCart size={16} color="#FFF" />
@@ -873,11 +1315,21 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
         {/* ── RECEPTEN ── */}
         {tab === "recepten" && (
           <>
-            <input style={{ ...S.inp, marginBottom:14 }} placeholder="🔍 Zoek recept…" value={zoekterm} onChange={e=>setZoekterm(e.target.value)} />
+            <input style={{ ...S.inp, marginBottom:10 }} placeholder="🔍 Zoek recept…" value={zoekterm} onChange={e=>setZoekterm(e.target.value)} />
+            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:14, paddingBottom:2 }}>
+              <button style={{ border:`1px solid ${!dieetFilter?C.orange:C.border}`, background:!dieetFilter?C.orange:"#FFF", color:!dieetFilter?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                onClick={() => setDieetFilter(null)}>Alles</button>
+              {DIEET_TAGS.map(tag => (
+                <button key={tag} style={{ border:`1px solid ${dieetFilter===tag?C.green:C.border}`, background:dieetFilter===tag?C.green:"#FFF", color:dieetFilter===tag?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                  onClick={() => setDieetFilter(dieetFilter===tag?null:tag)}>{tag}</button>
+              ))}
+            </div>
             {gefilterd.length === 0 && (
               <div style={{ textAlign:"center", padding:"50px 20px" }}>
                 <div style={{ fontSize:48, marginBottom:12 }}>🍳</div>
-                <p style={{ fontWeight:700, fontSize:16, color:C.orange, margin:"0 0 6px" }}>Nog geen recepten</p>
+                <p style={{ fontWeight:700, fontSize:16, color:C.orange, margin:"0 0 6px" }}>
+                  {dieetFilter ? "Geen recepten met dit dieet-label" : "Nog geen recepten"}
+                </p>
                 <p style={{ fontSize:14, color:C.muted, margin:0 }}>Tik + of gebruik de AI-kok</p>
               </div>
             )}
@@ -892,7 +1344,10 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
                     </span>
                     <span style={{ fontSize:14, color:C.muted }}>{ingeklapt ? "▸" : "▾"}</span>
                   </div>
-                  {!ingeklapt && keukenRecepten.map(r => (
+                  {!ingeklapt && keukenRecepten.map(r => {
+                    const stats = receptStats(r);
+                    const veelGemaakt = stats.aantal >= 3;
+                    return (
                     <div key={r.id} style={{ ...S.card, cursor:"pointer", display:"flex", gap:12, alignItems:"center" }}
                       onClick={() => setActieefReceptId(r.id)}>
                       <div style={{ width:52, height:52, borderRadius:12, background:C.card, display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🍽️</div>
@@ -903,11 +1358,14 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
                           <span style={{ fontSize:12, color:C.muted }}>👥 {r.porties}p</span>
                           {r.kcal ? <span style={{ fontSize:12, color:C.muted }}>🔥{r.kcal}kcal</span> : null}
                           {weergaveReceptBeoordeling(r) > 0 && <span style={{ fontSize:11 }}>{"⭐".repeat(Math.round(weergaveReceptBeoordeling(r)))}</span>}
+                          {veelGemaakt && <span title="Vaak gemaakt" style={{ fontSize:11 }}>🔥 favoriet</span>}
+                          {stats.langNietGemaakt && <span title="Lang niet gemaakt" style={{ fontSize:11 }}>💤</span>}
                         </div>
                       </div>
                       <ChevronLeft size={16} color={C.muted} style={{ transform:"rotate(180deg)" }} />
                     </div>
-                  ))}
+                    );
+                  })}
                 </section>
               );
             })}
@@ -917,6 +1375,11 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
         {/* ── AI KOK ── */}
         {tab === "ai" && (
           <div>
+            {aiKostenMaand != null && aiKostenMaand > 0 && (
+              <Link href="/ai-kosten" style={{ display: "block", textAlign: "right", fontSize: 10, color: C.muted, textDecoration: "none", marginBottom: 6 }}>
+                💰 €{aiKostenMaand.toFixed(2)} deze maand
+              </Link>
+            )}
             {/* Sub-tabs */}
             <div style={{ display:"flex", gap:4, background:"#FFFFFF", borderRadius:12, marginBottom:16, border:`1px solid ${C.border}`, padding:"4px" }}>
               {[["ai","🤖 AI Kok"],["foto","📷 Foto"],["link","🔗 Link"]].map(([t,l]) => (
