@@ -1,6 +1,15 @@
 import Head from "next/head";
+import { useEffect } from "react";
 
 export default function App({ Component, pageProps }) {
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch((err) => {
+        console.error("Service worker registreren mislukt", err);
+      });
+    }
+  }, []);
+
   return (
     <>
       <Head>

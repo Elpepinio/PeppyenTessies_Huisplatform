@@ -298,6 +298,7 @@ function makeS(C) {
 export default function BudgetApp() {
   const [loading, setLoading] = useState(true);
   const [verbindingsFout, setVerbindingsFout] = useState(false);
+  const [offline, setOffline] = useState(false);
   const [themeName, setThemeNameState] = useState("dark");
   const [names,        setNamesState]        = useState({ p1:"Partner 1", p2:"Partner 2" });
   const [incomes,      setIncomesState]      = useState({ p1:0, p2:0, bijdrage_p1:0, bijdrage_p2:0, kinderbijslag:0 });
@@ -395,6 +396,19 @@ export default function BudgetApp() {
     return () => {
       active = false;
       clearInterval(pollRef.current);
+    };
+  }, []);
+
+  // ── Offline detectie ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const onOnline  = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    setOffline(!navigator.onLine);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
     };
   }, []);
 
@@ -616,9 +630,13 @@ export default function BudgetApp() {
 
   if (verbindingsFout) return (
     <div style={{ minHeight:"100vh", background:C.bg, color:C.text, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16, padding:"0 32px", textAlign:"center" }}>
-      <div style={{ fontSize:40 }}>⚠️</div>
-      <p style={{ fontWeight:700, fontSize:17, color:C.text, margin:0 }}>Geen verbinding</p>
-      <p style={{ fontSize:14, color:C.muted, margin:0 }}>Controleer je internetverbinding en probeer het opnieuw.</p>
+      <div style={{ fontSize:40 }}>{offline ? "📡" : "⚠️"}</div>
+      <p style={{ fontWeight:700, fontSize:17, color:C.text, margin:0 }}>{offline ? "Geen verbinding" : "Kon niet laden"}</p>
+      <p style={{ fontSize:14, color:C.muted, margin:0 }}>
+        {offline
+          ? "Er zijn nog geen eerder opgehaalde gegevens om te tonen. Zodra je weer online bent, laadt alles vanzelf."
+          : "Controleer je internetverbinding en probeer het opnieuw."}
+      </p>
       <button style={{ background:C.accent, color:C.bg, border:"none", borderRadius:10, padding:"12px 28px", fontSize:15, fontWeight:700, cursor:"pointer" }} onClick={() => { setVerbindingsFout(false); setLoading(true); window.location.reload(); }}>
         Opnieuw proberen
       </button>
@@ -702,6 +720,11 @@ export default function BudgetApp() {
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div style={{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"system-ui,-apple-system,sans-serif", padding:"16px 14px" }}>
+      {offline && (
+        <div style={{ background:"#C86E4A", color:"#FFF", padding:"7px 14px", borderRadius:10, fontSize:12, fontWeight:600, textAlign:"center", marginBottom:12 }}>
+          📡 Geen verbinding — je ziet de laatst opgehaalde gegevens. Wijzigen kan pas weer zodra je online bent.
+        </div>
+      )}
       {toast && (
         <div style={{ position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", background:C.green, color:C.bg, padding:"9px 16px", borderRadius:10, fontWeight:700, zIndex:999, fontSize:13, boxShadow:"0 4px 24px rgba(0,224,150,.35)", whiteSpace:"nowrap", display:"flex", alignItems:"center", gap:10 }}>
           <span>{toast}</span>

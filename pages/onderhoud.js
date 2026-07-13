@@ -57,6 +57,7 @@ export default function OnderhoudApp() {
   const [objecten, setObjectenState] = useState([]);
   const [taken, setTakenState] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [offline, setOffline] = useState(false);
   const [actieefObjectId, setActieefObjectId] = useState(null);
   const lastWriteRef = useRef(0);
 
@@ -93,6 +94,19 @@ export default function OnderhoudApp() {
     refresh();
     const poll = setInterval(refresh, 8000);
     return () => { active = false; clearInterval(poll); };
+  }, []);
+
+  // ── Offline detectie ──────────────────────────────────
+  useEffect(() => {
+    const onOnline  = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    setOffline(!navigator.onLine);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
   }, []);
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
@@ -365,6 +379,11 @@ export default function OnderhoudApp() {
   return (
     <div style={S.appBg}>
       {toast && <div style={{ position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", background:C.purple, color:"#FFF", padding:"9px 20px", borderRadius:10, fontWeight:700, zIndex:999, fontSize:13 }}>{toast}</div>}
+      {offline && (
+        <div style={{ background:"#C86E4A", color:"#FFF", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center" }}>
+          📡 Geen verbinding — je ziet de laatst opgehaalde gegevens. Wijzigen kan pas weer zodra je online bent.
+        </div>
+      )}
 
       {/* Object toevoegen overlay */}
       {showObjectForm && (

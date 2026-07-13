@@ -1048,7 +1048,7 @@ export default function LijstenApp() {
         {/* Offline banner */}
         {offline && (
           <div style={{ background: "#C86E4A", color: "#FAF6F0", padding: "8px 16px", fontSize: 12, fontWeight: 600, textAlign: "center" }}>
-            📡 Geen verbinding — wijzigingen worden opgeslagen zodra je weer online bent
+            📡 Geen verbinding — je ziet de laatst opgehaalde gegevens. Wijzigen kan pas weer zodra je online bent.
           </div>
         )}
 

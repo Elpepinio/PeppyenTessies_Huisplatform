@@ -130,6 +130,7 @@ const S = {
 export default function VerjaardagenApp() {
   const [personen, setPersonenState] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [offline, setOffline] = useState(false);
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null);
   const lastWriteRef = useRef(0);
 
@@ -166,6 +167,19 @@ export default function VerjaardagenApp() {
     refresh();
     const poll = setInterval(refresh, 8000);
     return () => { active = false; clearInterval(poll); };
+  }, []);
+
+  // ── Offline detectie ──────────────────────────────────
+  useEffect(() => {
+    const onOnline  = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    setOffline(!navigator.onLine);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
   }, []);
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
@@ -236,6 +250,11 @@ export default function VerjaardagenApp() {
 
   return (
     <div style={S.appBg}>
+      {offline && (
+        <div style={{ background:"#C86E4A", color:"#FFF", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center" }}>
+          📡 Geen verbinding — je ziet de laatst opgehaalde gegevens. Wijzigen kan pas weer zodra je online bent.
+        </div>
+      )}
       <header style={S.header}>
         <div>
           <Link href="/" style={S.switchBtn}><ChevronLeft size={13} style={{ verticalAlign: "middle" }} /> Terug</Link>

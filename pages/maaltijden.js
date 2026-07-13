@@ -122,6 +122,7 @@ export default function MaaltijdApp() {
     }).catch(() => {});
   }, []);
   const [loading, setLoading] = useState(true);
+  const [offline, setOffline] = useState(false);
   const [tab, setTab] = useState("week"); // week | recepten | ai
   const [actieefReceptId, setActieefReceptId] = useState(null);
   const [weekStart, setWeekStart] = useState(huidigeMaandag());
@@ -220,6 +221,19 @@ export default function MaaltijdApp() {
     refresh();
     const poll = setInterval(refresh, 8000);
     return () => { active = false; clearInterval(poll); };
+  }, []);
+
+  // ── Offline detectie ──────────────────────────────────
+  useEffect(() => {
+    const onOnline  = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    setOffline(!navigator.onLine);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
   }, []);
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
@@ -1222,6 +1236,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   return (
     <div style={S.appBg}>
       {toast && <div style={{ position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", background:C.orange, color:"#FFF", padding:"9px 20px", borderRadius:10, fontWeight:700, zIndex:999, fontSize:13 }}>{toast}</div>}
+      {offline && (
+        <div style={{ background:"#C86E4A", color:"#FFF", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center" }}>
+          📡 Geen verbinding — je ziet de laatst opgehaalde gegevens. Wijzigen kan pas weer zodra je online bent.
+        </div>
+      )}
 
       {/* Plan-overlay */}
       {showPlanOverlay && (
