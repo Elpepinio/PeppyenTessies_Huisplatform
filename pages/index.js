@@ -409,9 +409,11 @@ const S = {
   eyebrow: { margin: 0, fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase", color: "#B8B2A8", fontWeight: 600 },
   title: { margin: "4px 0 0", fontSize: 28, fontWeight: 700, color: "#2D4A3E", letterSpacing: "-0.01em" },
   iconBtn: { width: 38, height: 38, borderRadius: 12, border: "1px solid #EFE9DC", background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" },
-  grid: { padding: "16px 20px 40px", display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 },
-  tile: { display: "block", background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 18, padding: "18px 16px", textDecoration: "none", color: "#2D2A26" },
-  tileIcon: { width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12 },
+  grid: { padding: "16px 20px 40px", display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14, alignItems: "stretch" },
+  tile: { display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box", background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 18, padding: "18px 16px", textDecoration: "none", color: "#2D2A26" },
+  tileIcon: { width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12, flexShrink: 0 },
   tileLabel: { margin: "0 0 4px", fontSize: 15, fontWeight: 700, color: "#2D4A3E" },
-  tileDesc: { margin: 0, fontSize: 12, color: "#8C8576", lineHeight: 1.4 },
+  // Vaste hoogte voor precies 3 regels (12px lettergrootte × 1.4 regelhoogte),
+  // zodat elke tegel exact even hoog is, ongeacht of de omschrijving 1, 2 of 3 regels beslaat.
+  tileDesc: { margin: 0, fontSize: 12, color: "#8C8576", lineHeight: 1.4, minHeight: "50px" },
 };

@@ -8,6 +8,7 @@ import {
 // ---- Labels per bron, zodat de ruwe interne bron-code leesbaar wordt ----
 const BRON_LABELS = {
   "planten-foto-analyse": { emoji: "🌱", label: "Planten — Foto analyseren" },
+  "planten-foto-herkenning-nieuw": { emoji: "🌱", label: "Planten — Nieuwe plant herkennen" },
   "planten-advies": { emoji: "🌱", label: "Planten — Advies" },
   "planten-info": { emoji: "🌱", label: "Planten — Plant-informatie" },
   "planten-overig": { emoji: "🌱", label: "Planten — Overig" },

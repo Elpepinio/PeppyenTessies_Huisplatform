@@ -157,6 +157,8 @@ export default function PlantenApp() {
 
   const [toast, setToast] = useState(null);
   const fileRef = useRef();
+  const nieuweFotoRef = useRef();
+  const [nieuweHerkenLoading, setNieuweHerkenLoading] = useState(false);
   const cameraRef = useRef();
 
   const nu = new Date();
@@ -321,18 +323,17 @@ Maximaal 300 woorden, praktisch en informatief.`,
     setAiLoading(false);
   }
 
-  async function handleFotoUpload(file) {
-    if (!file) return;
-    // Comprimeer voor opslag
-    const compressed = await new Promise(resolve => {
+  // Comprimeert een foto naar een kleine JPEG (base64, zonder data-URL-prefix)
+  // voor opslag en voor AI-herkenning.
+  async function comprimeerFoto(file, max = 800) {
+    return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
       img.onload = () => {
-        const MAX = 800;
         let { width, height } = img;
-        if (width > MAX || height > MAX) {
-          if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
-          else { width = Math.round(width * MAX / height); height = MAX; }
+        if (width > max || height > max) {
+          if (width > height) { height = Math.round(height * max / width); width = max; }
+          else { width = Math.round(width * max / height); height = max; }
         }
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
@@ -340,10 +341,49 @@ Maximaal 300 woorden, praktisch en informatief.`,
         URL.revokeObjectURL(url);
         resolve(canvas.toDataURL("image/jpeg", 0.75));
       };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Kon foto niet lezen")); };
       img.src = url;
     });
+  }
+
+  async function handleFotoUpload(file) {
+    if (!file) return;
+    const compressed = await comprimeerFoto(file);
     const base64 = compressed.split(",")[1];
     await analyseerFoto(base64, "image/jpeg");
+  }
+
+  // Herkent een NIEUWE plant op een foto (bv. genomen in de tuin/winkel) en
+  // vult naam, soort en categorie automatisch in bij het toevoegformulier.
+  async function herkenNieuwePlantFoto(file) {
+    if (!file) return;
+    setNieuweHerkenLoading(true);
+    try {
+      const compressed = await comprimeerFoto(file);
+      const base64 = compressed.split(",")[1];
+      const tekst = await callAI(
+        `Bekijk deze foto van een plant. Geef ALLEEN een JSON-object terug, zonder uitleg, markdown of codeblok, in exact dit formaat: ` +
+        `{"naam": "gangbare Nederlandse naam", "soort": "botanische/Latijnse naam indien herkenbaar, anders leeg", "categorie": "${CATEGORIEEN.join("|")}", ` +
+        `"waterIntervalDagen": 7, "zorgtips": "korte, praktische tips over snoeien, standplaats en verzorging voor deze plant, max 60 woorden"}. ` +
+        `Kies voor "categorie" de best passende optie uit de gegeven lijst. Schat "waterIntervalDagen" realistisch in voor dit type plant.`,
+        base64, "image/jpeg", "planten-foto-herkenning-nieuw"
+      );
+      const schoon = tekst.replace(/```json|```/g, "").trim();
+      const resultaat = JSON.parse(schoon);
+      setFormPlant(f => ({
+        ...f,
+        naam: resultaat.naam || f.naam,
+        soort: resultaat.soort || f.soort,
+        categorie: CATEGORIEEN.includes(resultaat.categorie) ? resultaat.categorie : f.categorie,
+        waterInterval: resultaat.waterIntervalDagen && resultaat.waterIntervalDagen > 0 ? resultaat.waterIntervalDagen : f.waterInterval,
+        notitie: resultaat.zorgtips ? resultaat.zorgtips : f.notitie,
+        foto: compressed,
+      }));
+      showToast("✨ Plant herkend, incl. verzorgingstips — controleer en vul aan waar nodig");
+    } catch (e) {
+      showToast("❌ Herkenning mislukt, vul handmatig in");
+    }
+    setNieuweHerkenLoading(false);
   }
 
   // ── Herinneringen berekenen ────────────────────────────
@@ -724,6 +764,17 @@ Maximaal 300 woorden, praktisch en informatief.`,
                 <X size={20} color={C.muted} />
               </button>
             </div>
+            <button style={{ ...S.btn(C.card, C.green), border: `1px solid ${C.border}`, width: "100%", marginBottom: 14, fontSize: 13 }}
+              onClick={() => nieuweFotoRef.current?.click()} disabled={nieuweHerkenLoading}>
+              {nieuweHerkenLoading ? "🤖 Herkennen…" : "📸 Herken plant met foto"}
+            </button>
+            <input ref={nieuweFotoRef} type="file" accept="image/*" style={{ display: "none" }}
+              onChange={e => herkenNieuwePlantFoto(e.target.files[0])} />
+            {formPlant.foto && (
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+                <img src={formPlant.foto} alt="" style={{ height: 120, borderRadius: 10 }} />
+              </div>
+            )}
             <input style={{ ...S.inp, marginBottom: 10 }} placeholder="Naam (bv. Tomaat, Monstera)" value={formPlant.naam} onChange={e => setFormPlant(f => ({ ...f, naam: e.target.value }))} autoFocus />
             <input style={{ ...S.inp, marginBottom: 10 }} placeholder="Soort / variëteit (optioneel)" value={formPlant.soort} onChange={e => setFormPlant(f => ({ ...f, soort: e.target.value }))} />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
@@ -750,7 +801,8 @@ Maximaal 300 woorden, praktisch en informatief.`,
                 <span style={{ fontSize: 13, color: C.muted }}>dagen — herinnering als te lang geen water</span>
               </div>
             </div>
-            <textarea style={{ ...S.inp, height: 70, resize: "none", marginBottom: 14 }} placeholder="Notities (standplaats, bijzonderheden…)" value={formPlant.notitie} onChange={e => setFormPlant(f => ({ ...f, notitie: e.target.value }))} />
+            <label style={{ fontSize: 11, color: C.muted, display: "block", marginBottom: 4 }}>Notities / verzorgingstips</label>
+            <textarea style={{ ...S.inp, height: 70, resize: "none", marginBottom: 14 }} placeholder="Notities (standplaats, bijzonderheden…) — wordt automatisch ingevuld bij fotoherkenning" value={formPlant.notitie} onChange={e => setFormPlant(f => ({ ...f, notitie: e.target.value }))} />
             <div style={{ display: "flex", gap: 10 }}>
               <button style={{ ...S.btn(C.card, C.text), border: `1px solid ${C.border}`, flex: 1 }} onClick={() => setShowForm(false)}>Annuleer</button>
               <button style={{ ...S.btn(), flex: 2 }} onClick={voegPlantToe}>Plant toevoegen</button>
