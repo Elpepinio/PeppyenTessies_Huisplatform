@@ -158,12 +158,16 @@ export default function MaaltijdApp() {
       if (d?.user) setHuidigeGebruiker(d.user);
     }).catch(() => {});
   }, []);
-  const [importTab, setImportTab] = useState("ai"); // ai | foto | link
+  const [importTab, setImportTab] = useState("ai"); // ai | foto | gerecht | link
   const [importUrl, setImportUrl] = useState("");
   const [importFotoLoading, setImportFotoLoading] = useState(false);
+  const [importGerechtLoading, setImportGerechtLoading] = useState(false);
   const [importLinkLoading, setImportLinkLoading] = useState(false);
   const [importFout, setImportFout] = useState(null);
   const fotoImportRef = useRef();
+  const gerechtFotoRef = useRef();
+  const [verfijnInstructie, setVerfijnInstructie] = useState("");
+  const [verfijnLoading, setVerfijnLoading] = useState(false);
 
   const [porties, setPorties] = useState({});
   const [bewerkReceptId, setBewerkReceptId] = useState(null); // recept-id -> porties override
@@ -533,6 +537,110 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
     setImportFotoLoading(false);
   }
 
+  // Herkent een gerecht op een foto (bv. in een restaurant) en laat de AI een
+  // plausibel recept bedenken om het thuis na te koken. Dit is iets anders dan
+  // importeerViaFoto: daar staat het recept al geschreven op de foto, hier
+  // moet de AI het gerecht herkennen en een recept ervoor bedenken.
+  async function importeerViaGerechtFoto(file) {
+    if (!file) return;
+    setImportGerechtLoading(true);
+    setImportFout(null);
+    try {
+      const base64 = await comprimeerFoto(file);
+
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: `Dit is een foto van een bereid gerecht, bijvoorbeeld gefotografeerd in een restaurant. Er staat GEEN recept bij — je moet het gerecht herkennen en zelf een plausibel recept bedenken waarmee dit thuis is na te koken.
+Herken wat voor gerecht het is (keuken, hoofdingrediënten, bereidingswijze te zien op de foto) en stel op basis daarvan een compleet, realistisch recept samen.
+Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks.
+
+Format:
+{
+  "naam": "naam van het gerecht",
+  "keuken": "type keuken",
+  "bereidingstijd": 30,
+  "porties": 4,
+  "kcal": 0,
+  "beschrijving": "korte beschrijving, vermeld dat dit een AI-inschatting is op basis van een foto",
+  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
+  "stappen": ["stap 1", "stap 2"]
+}
+
+Als er totaal geen (deel van een) gerecht op de foto te zien is: {"fout": "Geen gerecht herkenbaar op deze foto"}`,
+          imageBase64: base64,
+          bron: "maaltijden-foto-gerecht",
+          imageType: "image/jpeg",
+          maxTokens: 2000,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "AI mislukt");
+
+      const clean = data.text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      if (parsed.fout) throw new Error(parsed.fout);
+      // Bewaar de foto zodat de AI 'm nog een keer kan bekijken bij het verfijnen.
+      const nieuw = slaReceptOp({ ...parsed, aiGerechtFoto: `data:image/jpeg;base64,${base64}` }, { opentBewerken: true });
+      showToast(`✨ Recept nagemaakt op basis van de foto — pas gerust aan wat niet klopt`);
+    } catch (e) {
+      setImportFout(e.message);
+    }
+    setImportGerechtLoading(false);
+  }
+
+  // Laat de AI het huidige recept herzien op basis van een correctie van de
+  // gebruiker, met de oorspronkelijke foto er nog steeds bij als referentie.
+  // Werkt alleen voor recepten die uit de "Gerecht nakoken"-foto komen
+  // (die hebben aiGerechtFoto bewaard).
+  async function verfijnGerecht(recept, instructie) {
+    if (!instructie.trim() || !recept.aiGerechtFoto) return;
+    setVerfijnLoading(true);
+    try {
+      const base64 = recept.aiGerechtFoto.split(",")[1];
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: `Dit is dezelfde foto van een gerecht als eerder. Je hebt hier al een eerste recept-inschatting van gemaakt:
+${JSON.stringify({ naam: recept.naam, keuken: recept.keuken, bereidingstijd: recept.bereidingstijd, porties: recept.porties, ingredienten: recept.ingredienten, stappen: recept.stappen })}
+
+De gebruiker heeft deze correctie/aanvulling gegeven: "${instructie.trim()}"
+
+Pas het recept hierop aan (bv. andere ingrediënten, andere hoeveelheden, kruidiger, ander kooktype) en geef het VOLLEDIGE bijgewerkte recept terug.
+Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit format:
+{
+  "naam": "naam van het gerecht",
+  "keuken": "type keuken",
+  "bereidingstijd": 30,
+  "porties": 4,
+  "kcal": 0,
+  "beschrijving": "korte beschrijving",
+  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
+  "stappen": ["stap 1", "stap 2"]
+}`,
+          imageBase64: base64,
+          bron: "maaltijden-foto-gerecht-verfijnen",
+          imageType: "image/jpeg",
+          maxTokens: 2000,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "AI mislukt");
+      const clean = data.text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      updateRecept(recept.id, { ...parsed, aiGerechtFoto: recept.aiGerechtFoto });
+      setVerfijnInstructie("");
+      showToast("✨ Recept aangepast");
+    } catch (e) {
+      showToast("❌ Verfijnen mislukt, probeer het anders te verwoorden");
+    }
+    setVerfijnLoading(false);
+  }
+
   async function importeerViaLink() {
     if (!importUrl.trim()) return;
     setImportLinkLoading(true);
@@ -553,14 +661,22 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
     setImportLinkLoading(false);
   }
 
-  function slaReceptOp(parsed) {
+  function slaReceptOp(parsed, opties = {}) {
     const nieuw = { ...parsed, id: uid(), aangemaaktOp: Date.now() };
     persistData([...recepten, nieuw], weekmenu);
     showToast(`✅ "${nieuw.naam}" toegevoegd`);
     setAiResultaat(null);
     setAiPrompt("");
     setImportFout(null);
-    setTab("recepten");
+    if (opties.opentBewerken) {
+      // Landt direct in de bewerkmodus van het nieuwe recept, zodat het meteen
+      // te finetunen is (bv. na een AI-gok op basis van een foto van een gerecht).
+      setActieefReceptId(nieuw.id);
+      setBewerkReceptId(nieuw.id);
+    } else {
+      setTab("recepten");
+    }
+    return nieuw;
   }
 
   // ── Recept schalen ────────────────────────────────────
@@ -746,6 +862,26 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
         )}
 
         <main style={S.main}>
+          {/* Verfijnen op basis van de originele foto (alleen bij AI-gerecht-import) */}
+          {bewerkModus && actieefRecept.aiGerechtFoto && (
+            <div style={{ ...S.card, background:C.card, border:`1.5px dashed ${C.orange}66` }}>
+              <div style={{ display:"flex", gap:12, alignItems:"flex-start", marginBottom:10 }}>
+                <img src={actieefRecept.aiGerechtFoto} alt="Foto van het gerecht" style={{ width:64, height:64, borderRadius:10, objectFit:"cover", flexShrink:0 }} />
+                <div>
+                  <p style={{ margin:"0 0 3px", fontSize:13, fontWeight:700, color:C.orange }}>✨ AI-gok op basis van deze foto</p>
+                  <p style={{ margin:0, fontSize:12, color:C.muted }}>Klopt iets niet? Beschrijf wat anders was, dan bekijkt de AI de foto nog eens.</p>
+                </div>
+              </div>
+              <textarea style={{ ...S.inp, height:60, resize:"none", marginBottom:8, fontSize:13 }}
+                placeholder="Bv. 'het was pittiger' of 'volgens mij zat er kokosmelk in, geen room'"
+                value={verfijnInstructie} onChange={e => setVerfijnInstructie(e.target.value)} />
+              <button style={{ ...S.btn(C.orange), width:"100%", fontSize:13 }}
+                onClick={() => verfijnGerecht(actieefRecept, verfijnInstructie)} disabled={verfijnLoading || !verfijnInstructie.trim()}>
+                {verfijnLoading ? "🧑‍🍳 Recept wordt aangepast…" : "✨ Verfijn met AI"}
+              </button>
+            </div>
+          )}
+
           {/* Meta — bewerkbaar */}
           {bewerkModus ? (
             <div style={{ ...S.card, display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
@@ -1381,9 +1517,9 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
               </Link>
             )}
             {/* Sub-tabs */}
-            <div style={{ display:"flex", gap:4, background:"#FFFFFF", borderRadius:12, marginBottom:16, border:`1px solid ${C.border}`, padding:"4px" }}>
-              {[["ai","🤖 AI Kok"],["foto","📷 Foto"],["link","🔗 Link"]].map(([t,l]) => (
-                <button key={t} style={{ flex:1, border:"none", background:importTab===t?C.orange:"transparent", color:importTab===t?"#FFF":C.muted, borderRadius:9, padding:"8px 0", fontSize:12, fontWeight:600, cursor:"pointer" }}
+            <div style={{ display:"flex", flexWrap:"wrap", gap:4, background:"#FFFFFF", borderRadius:12, marginBottom:16, border:`1px solid ${C.border}`, padding:"4px" }}>
+              {[["ai","🤖 AI Kok"],["foto","📷 Kookboek"],["gerecht","🍴 Gerecht"],["link","🔗 Link"]].map(([t,l]) => (
+                <button key={t} style={{ flex:"1 1 45%", border:"none", background:importTab===t?C.orange:"transparent", color:importTab===t?"#FFF":C.muted, borderRadius:9, padding:"8px 0", fontSize:12, fontWeight:600, cursor:"pointer" }}
                   onClick={() => { setImportTab(t); setImportFout(null); }}>
                   {l}
                 </button>
@@ -1444,6 +1580,32 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
                   onChange={e => importeerViaFoto(e.target.files[0])} />
                 <p style={{ fontSize:12, color:C.muted, textAlign:"center", marginTop:8 }}>
                   Zorg voor goede belichting en houd de camera recht boven de pagina
+                </p>
+              </>
+            )}
+
+            {/* Gerecht nakoken op basis van een foto */}
+            {importTab === "gerecht" && (
+              <>
+                <div style={{ ...S.card, textAlign:"center", border:`2px dashed ${C.border}`, background:C.card, cursor:"pointer" }}
+                  onClick={() => gerechtFotoRef.current?.click()}>
+                  {importGerechtLoading ? (
+                    <div style={{ padding:"30px 0" }}>
+                      <div style={{ fontSize:32, marginBottom:10 }}>🧑‍🍳</div>
+                      <p style={{ fontSize:14, color:C.muted, margin:0 }}>Gerecht wordt herkend en recept bedacht…</p>
+                    </div>
+                  ) : (
+                    <div style={{ padding:"30px 0" }}>
+                      <div style={{ fontSize:40, marginBottom:10 }}>🍴</div>
+                      <p style={{ fontSize:15, fontWeight:700, color:C.orange, margin:"0 0 6px" }}>Gerecht nakoken</p>
+                      <p style={{ fontSize:13, color:C.muted, margin:0 }}>Maak een foto van een bereid gerecht (bv. in een restaurant) en laat de AI een recept bedenken om het thuis na te maken</p>
+                    </div>
+                  )}
+                </div>
+                <input ref={gerechtFotoRef} type="file" accept="image/*" style={{ display:"none" }}
+                  onChange={e => importeerViaGerechtFoto(e.target.files[0])} />
+                <p style={{ fontSize:12, color:C.muted, textAlign:"center", marginTop:8 }}>
+                  ⚠️ Dit is een AI-inschatting op basis van hoe het gerecht eruitziet — geen gegarandeerd exact recept
                 </p>
               </>
             )}

@@ -15,6 +15,8 @@ const BRON_LABELS = {
   "maaltijden-ai-kok-import": { emoji: "🍽️", label: "Maaltijden — AI-kok (opslaan)" },
   "maaltijden-weekmenu-suggestie": { emoji: "🍽️", label: "Maaltijden — Weekmenu-suggestie" },
   "maaltijden-foto-import": { emoji: "🍽️", label: "Maaltijden — Foto van kookboek" },
+  "maaltijden-foto-gerecht": { emoji: "🍴", label: "Maaltijden — Gerecht nakoken" },
+  "maaltijden-foto-gerecht-verfijnen": { emoji: "🍴", label: "Maaltijden — Gerecht verfijnen" },
   "maaltijden-link-import": { emoji: "🍽️", label: "Maaltijden — Recept via link" },
   "maaltijden-overig": { emoji: "🍽️", label: "Maaltijden — Overig" },
   "places-foto-herkenning": { emoji: "🗺️", label: "Places — Foto herkennen" },

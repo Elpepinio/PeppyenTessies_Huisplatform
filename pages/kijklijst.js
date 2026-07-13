@@ -125,6 +125,8 @@ export default function KijklijstApp() {
   const [editId, setEditId] = useState(null);
   const [zoekLoading, setZoekLoading] = useState(false);
   const [omdbBeschikbaar, setOmdbBeschikbaar] = useState(true);
+  const [imdbLinkUrl, setImdbLinkUrl] = useState("");
+  const [imdbLinkLoading, setImdbLinkLoading] = useState(false);
   const [showRecensieForm, setShowRecensieForm] = useState(false);
   const [recensieItemId, setRecensieItemId] = useState(null);
   const [recensieTekst, setRecensieTekst] = useState("");
@@ -184,7 +186,7 @@ export default function KijklijstApp() {
       const data = await res.json();
       if (data.reden === "geen_api_key") {
         setOmdbBeschikbaar(false);
-        showToast("⚠️ Geen OMDb API-key ingesteld — vul handmatig in");
+        showToast("⚠️ Geen OMDb API-key ingesteld — plak in plaats daarvan een IMDb-link");
       } else if (!data.gevonden) {
         showToast("❌ Niet gevonden op IMDb, vul handmatig in");
       } else {
@@ -205,6 +207,42 @@ export default function KijklijstApp() {
       showToast("❌ Opzoeken mislukt");
     }
     setZoekLoading(false);
+  }
+
+  // Alternatief voor de OMDb-zoekknop, zonder dat daar een API-key voor nodig
+  // is: een gedeelde IMDb-link (bv. vanuit de IMDb-app) plakken en de server
+  // leest de filmgegevens rechtstreeks van de pagina zelf.
+  async function importeerVanImdbLink() {
+    if (!imdbLinkUrl.trim()) return;
+    setImdbLinkLoading(true);
+    try {
+      const res = await fetch("/api/imdb-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: imdbLinkUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.gevonden) {
+        showToast(`❌ ${data.error || "Kon geen gegevens vinden op deze link"}`);
+      } else {
+        setForm(f => ({
+          ...f,
+          titel: data.titel || f.titel,
+          type: data.type || f.type,
+          jaar: data.jaar || f.jaar,
+          genre: data.genre || f.genre,
+          regisseur: data.regisseur || f.regisseur,
+          acteurs: data.acteurs || f.acteurs,
+          imdbRating: data.imdbRating != null ? data.imdbRating : f.imdbRating,
+          poster: data.poster || f.poster,
+        }));
+        setImdbLinkUrl("");
+        showToast(`✅ Gevonden: ${data.titel} (${data.jaar || "?"})`);
+      }
+    } catch {
+      showToast("❌ Kon de link niet verwerken");
+    }
+    setImdbLinkLoading(false);
   }
 
   function opslaanItem() {
@@ -539,7 +577,7 @@ export default function KijklijstApp() {
               </button>
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
               <input style={{ ...S.inp, flex: 1 }} placeholder="Titel van film of serie" value={form.titel}
                 onChange={e => setForm(f => ({ ...f, titel: e.target.value }))} autoFocus />
               {omdbBeschikbaar && (
@@ -548,6 +586,18 @@ export default function KijklijstApp() {
                   {zoekLoading ? "…" : "🔍 IMDb"}
                 </button>
               )}
+            </div>
+
+            <p style={{ fontSize: 11, color: C.muted, margin: "0 0 6px" }}>
+              Of plak een gedeelde IMDb-link (bv. vanuit de IMDb-app) — hiervoor is geen account of API-key nodig
+            </p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <input style={{ ...S.inp, flex: 1, fontSize: 13 }} placeholder="https://www.imdb.com/title/..."
+                value={imdbLinkUrl} onChange={e => setImdbLinkUrl(e.target.value)} />
+              <button style={{ ...S.btn(C.card, C.accent), border: `1px solid ${C.border}`, whiteSpace: "nowrap", fontSize: 13, padding: "0 14px" }}
+                onClick={importeerVanImdbLink} disabled={imdbLinkLoading || !imdbLinkUrl.trim()}>
+                {imdbLinkLoading ? "…" : "Importeer"}
+              </button>
             </div>
 
             {form.poster && (

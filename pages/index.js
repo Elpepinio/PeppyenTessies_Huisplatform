@@ -365,7 +365,7 @@ export default function Platform() {
             {bewerkVolgorde ? (
               <div style={{ ...S.tile, cursor: "default", opacity: 1 }}>
                 <div style={{ ...S.tileIcon, background: tool.color }}>
-                  <span style={{ fontSize: 22 }}>{tool.emoji}</span>
+                  <span style={{ fontSize: 22, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" }}>{tool.emoji}</span>
                 </div>
                 <p style={S.tileLabel}>{tool.label}</p>
                 <p style={S.tileDesc}>{tool.description}</p>
@@ -382,7 +382,7 @@ export default function Platform() {
             ) : (
               <Link href={tool.href} style={S.tile}>
                 <div style={{ ...S.tileIcon, background: tool.color }}>
-                  <span style={{ fontSize: 22 }}>{tool.emoji}</span>
+                  <span style={{ fontSize: 22, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" }}>{tool.emoji}</span>
                 </div>
                 <p style={S.tileLabel}>{tool.label}</p>
                 <p style={S.tileDesc}>{tool.description}</p>
