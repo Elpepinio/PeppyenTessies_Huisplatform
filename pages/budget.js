@@ -736,24 +736,19 @@ export default function BudgetApp() {
         </div>
       )}
 
-      {!navigator.onLine && (
-        <div style={{ background:C.orange, color:C.bg, padding:"7px 16px", fontSize:12, fontWeight:600, textAlign:"center" }}>
-          📡 Geen verbinding — wijzigingen worden opgeslagen zodra je weer online bent
-        </div>
-      )}
-
       <div style={{ maxWidth:960, margin:"0 auto" }}>
 
         {/* ── Header ── */}
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:4, flexWrap:"wrap", gap:8 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <Link href="/" style={{ display:"flex", alignItems:"center", justifyContent:"center", width:34, height:34, borderRadius:9, background:`linear-gradient(135deg,${C.accent},${C.purple})`, fontSize:17, textDecoration:"none" }}>🏠</Link>
+        <div style={{ marginBottom:4 }}>
+          <Link href="/" style={{ margin:0, fontSize:12, letterSpacing:"0.04em", textTransform:"uppercase", color:C.muted, fontWeight:600, background:"none", border:"none", padding:0, cursor:"pointer", textDecoration:"none", display:"inline-block" }}>
+            ← Overzicht
+          </Link>
+          <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", flexWrap:"wrap", gap:8, marginTop:6 }}>
             <div>
               <h1 style={{ margin:0, fontSize:19, fontWeight:800, letterSpacing:-.5 }}>Budget</h1>
               <p style={{ margin:0, color:C.muted, fontSize:11 }}>{names.p1} · {names.p2} · Gezamenlijk</p>
             </div>
-          </div>
-          <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+            <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
             {/* Maand-selector */}
             <input type="month" value={selectedMonth} max={NOW_MONTH}
               onChange={e => setSelectedMonth(e.target.value)}
@@ -765,6 +760,7 @@ export default function BudgetApp() {
             <input ref={csvRef} type="file" accept=".csv" style={{ display:"none" }} onChange={e => handleCSV(e.target.files[0])}/>
             <button onClick={() => setThemeName(t => t==="dark" ? "light" : "dark")} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:14 }}>{themeName==="dark" ? "☀️" : "🌙"}</button>
             <button onClick={() => setSetupDone(false)} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:14 }}>⚙️</button>
+          </div>
           </div>
         </div>
 
@@ -794,7 +790,7 @@ export default function BudgetApp() {
             {showBForm && (
               <div style={{ background:C.surf, borderRadius:12, border:`1px solid ${C.accent}44`, padding:16 }}>
                 <div style={{ fontSize:13, fontWeight:700, marginBottom:12, color:C.accent }}>Nieuw budget</div>
-                <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr 1fr 1fr auto", gap:8, alignItems:"end" }}>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))", gap:8, alignItems:"end" }}>
                   <div>
                     <Label C={C}>Categorie</Label>
                     <select style={S.inp} value={bForm.category} onChange={e => setBForm(p=>({...p,category:e.target.value}))}>
@@ -980,7 +976,7 @@ export default function BudgetApp() {
             <h2 style={{ margin:0, fontSize:15, fontWeight:800 }}>💰 Spaardoelen</h2>
             <div style={{ background:C.surf, borderRadius:12, border:`1px solid ${C.border}`, padding:14 }}>
               <div style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:9 }}>+ Nieuw spaardoel</div>
-              <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr 1fr 1fr auto", gap:7, alignItems:"end" }}>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))", gap:7, alignItems:"end" }}>
                 <div><Label C={C}>Naam</Label><input style={S.inp} placeholder="bv. Vakantie 2026" value={goalForm.name} onChange={e=>setGoalForm(p=>({...p,name:e.target.value}))}/></div>
                 <div><Label C={C}>Doel €</Label><input style={S.inp} type="number" min="0" value={goalForm.target} onChange={e=>setGoalForm(p=>({...p,target:e.target.value}))}/></div>
                 <div><Label C={C}>Nu gespaard €</Label><input style={S.inp} type="number" min="0" value={goalForm.current} onChange={e=>setGoalForm(p=>({...p,current:e.target.value}))}/></div>
@@ -1049,7 +1045,7 @@ export default function BudgetApp() {
             <h2 style={{ margin:0, fontSize:15, fontWeight:800 }}>✅ Taken & herinneringen</h2>
             <div style={{ background:C.surf, borderRadius:12, border:`1px solid ${C.border}`, padding:14 }}>
               <div style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:9 }}>+ Nieuwe taak</div>
-              <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr 1fr 1fr auto", gap:7, alignItems:"end" }}>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))", gap:7, alignItems:"end" }}>
                 <div><Label C={C}>Taak</Label><input style={S.inp} placeholder="Omschrijving" value={taskForm.title} onChange={e=>setTaskForm(p=>({...p,title:e.target.value}))}/></div>
                 <div><Label C={C}>Deadline</Label><input style={S.inp} type="date" value={taskForm.due} onChange={e=>setTaskForm(p=>({...p,due:e.target.value}))}/></div>
                 <div><Label C={C}>Prioriteit</Label><select style={S.inp} value={taskForm.priority} onChange={e=>setTaskForm(p=>({...p,priority:e.target.value}))}>{["hoog","middel","laag"].map(p=><option key={p}>{p}</option>)}</select></div>
@@ -1427,7 +1423,7 @@ export default function BudgetApp() {
 
             <div style={{ background:C.surf, borderRadius:11, border:`1px solid ${C.border}`, padding:13 }}>
               <div style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:9 }}>+ Nieuwe uitgave</div>
-              <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr auto", gap:7, alignItems:"end" }}>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))", gap:7, alignItems:"end" }}>
                 <div><Label C={C}>Naam</Label><input style={S.inp} placeholder="Omschrijving" value={expForm.name} onChange={e=>setExpForm(p=>({...p,name:e.target.value}))}/></div>
                 <div><Label C={C}>€</Label><input style={S.inp} type="number" min="0" step="0.01" placeholder="0.00" value={expForm.amount} onChange={e=>setExpForm(p=>({...p,amount:e.target.value}))}/></div>
                 <div><Label C={C}>Categorie</Label><select style={S.inp} value={expForm.category} onChange={e=>setExpForm(p=>({...p,category:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
