@@ -1558,7 +1558,7 @@ export default function BudgetApp() {
         ══════════════════════════════════════════════════════════════════ */}
         {tab === "bank" && (
           <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-            <div style={{ background:"#0D1F35", border:`1px solid ${C.accent}44`, borderRadius:13, padding:20 }}>
+            <div style={{ background:C.surf, border:`1px solid ${C.accent}44`, borderRadius:13, padding:20 }}>
               <div style={{ display:"flex", gap:12, marginBottom:14 }}>
                 <span style={{ fontSize:26 }}>🏦</span>
                 <div>
