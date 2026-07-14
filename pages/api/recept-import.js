@@ -41,6 +41,16 @@ export default async function handler(req, res) {
 
     const html = await pageRes.text();
 
+    // Probeer een goede voorbeeldfoto van de pagina te vinden — meestal staat
+    // die netjes klaar in de og:image meta-tag (gebruikt door de meeste
+    // receptensites voor social-media-previews).
+    let afbeelding = null;
+    const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+      || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+    if (ogImageMatch) {
+      try { afbeelding = new URL(ogImageMatch[1], url).toString(); } catch { /* ongeldige URL, negeren */ }
+    }
+
     // Strip HTML tags voor de AI — keep structuur maar verwijder scripts/styles
     const tekst = html
       .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
@@ -106,7 +116,7 @@ Als er geen recept op de pagina staat, geef dan: {"fout": "Geen recept gevonden 
       return res.status(400).json({ error: parsed.fout });
     }
 
-    return res.status(200).json({ recept: parsed });
+    return res.status(200).json({ recept: { ...parsed, foto: afbeelding } });
   } catch (e) {
     if (e.name === "TimeoutError") {
       return res.status(400).json({ error: "Pagina duurde te lang — probeer een andere URL" });

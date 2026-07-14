@@ -134,7 +134,7 @@ export default function MaaltijdApp() {
     naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4",
     beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "",
     ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }],
-    stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" },
+    stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null,
   });
 
   // Weekmenu plannen
@@ -167,6 +167,8 @@ export default function MaaltijdApp() {
   const [importFout, setImportFout] = useState(null);
   const fotoImportRef = useRef();
   const gerechtFotoRef = useRef();
+  const receptFotoRef = useRef();
+  const detailFotoRef = useRef();
   const [verfijnInstructie, setVerfijnInstructie] = useState("");
   const [verfijnLoading, setVerfijnLoading] = useState(false);
 
@@ -252,7 +254,7 @@ export default function MaaltijdApp() {
       aangemaaktOp: Date.now(),
     };
     persistData([...recepten, nieuw], weekmenu);
-    setReceptForm({ naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" } });
+    setReceptForm({ naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null });
     setShowReceptForm(false);
     showToast(`✅ ${nieuw.naam} toegevoegd`);
   }
@@ -307,17 +309,16 @@ export default function MaaltijdApp() {
   }
 
   // ── Boodschappenlijst genereren ───────────────────────
-  async function genereerBoodschappen() {
-    const gepland = Object.entries(weekmenu)
-      .filter(([k]) => k.startsWith(weekStart))
-      .map(([,rid]) => recepten.find(r => r.id === rid))
-      .filter(Boolean);
-
-    if (gepland.length === 0) { showToast("⚠️ Geen maaltijden gepland deze week"); return; }
+  // Kern-logica: neemt een lijst recepten, telt ingrediënten bij elkaar op
+  // (geschaald op porties), trekt af wat al in Voorraad staat, en stuurt de
+  // rest naar de Boodschappenlijst in Lijsten. Wordt gebruikt voor zowel de
+  // hele weekplanning als voor één los recept.
+  async function stuurIngredientenNaarBoodschappen(recepten_) {
+    if (recepten_.length === 0) { showToast("⚠️ Geen recepten om ingrediënten van te halen"); return; }
 
     // Samenvoegen van ingrediënten
     const ingredienten = {};
-    gepland.forEach(r => {
+    recepten_.forEach(r => {
       const p = porties[r.id] || r.porties || 4;
       const schaal = p / (r.porties || 4);
       (r.ingredienten || []).forEach(i => {
@@ -377,6 +378,15 @@ export default function MaaltijdApp() {
       });
       showToast(`✅ ${items.length} ingrediënten naar boodschappenlijst${alInVoorraad > 0 ? ` (${alInVoorraad} al deels in voorraad, verrekend)` : ""}`);
     } catch (e) { showToast("❌ Kon niet toevoegen aan boodschappenlijst"); }
+  }
+
+  async function genereerBoodschappen() {
+    const gepland = Object.entries(weekmenu)
+      .filter(([k]) => k.startsWith(weekStart))
+      .map(([,rid]) => recepten.find(r => r.id === rid))
+      .filter(Boolean);
+    if (gepland.length === 0) { showToast("⚠️ Geen maaltijden gepland deze week"); return; }
+    await stuurIngredientenNaarBoodschappen(gepland);
   }
 
   // ── AI ────────────────────────────────────────────────
@@ -480,26 +490,47 @@ Format:
 
   // Zet elke foto (ook HEIC vanaf iPhone-bibliotheek) om naar een gecomprimeerde
   // JPEG via canvas, zodat de AI-API 'm altijd kan lezen — ongeacht bronformaat.
-  async function comprimeerFoto(file) {
+  // max/kwaliteit instelbaar: voor AI-herkenning gebruiken we een grotere,
+  // scherpere versie (leesbaarheid van tekst op een foto is belangrijk);
+  // voor permanente opslag in Redis gebruiken we een veel kleinere versie
+  // (zelfde formaat als elders in de app), zodat recepten met foto's niet
+  // tegen Redis' opslaglimiet per waarde aanlopen naarmate de bibliotheek groeit.
+  async function comprimeerFoto(file, max = 1400, kwaliteit = 0.85) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
       img.onload = () => {
-        const MAX = 1400;
         let { width, height } = img;
-        if (width > MAX || height > MAX) {
-          if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
-          else { width = Math.round(width * MAX / height); height = MAX; }
+        if (width > max || height > max) {
+          if (width > height) { height = Math.round(height * max / width); width = max; }
+          else { width = Math.round(width * max / height); height = max; }
         }
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
         canvas.getContext("2d").drawImage(img, 0, 0, width, height);
         URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL("image/jpeg", 0.85).split(",")[1]);
+        resolve(canvas.toDataURL("image/jpeg", kwaliteit).split(",")[1]);
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Kon foto niet lezen")); };
       img.src = url;
     });
+  }
+
+  // Kleine, opslag-vriendelijke versie van een foto (800px, 72% kwaliteit) —
+  // dit is de variant die we daadwerkelijk als receptfoto bewaren.
+  async function comprimeerFotoVoorOpslag(file) {
+    return comprimeerFoto(file, 800, 0.72);
+  }
+
+  // Handmatige foto toevoegen aan het formulier, zonder AI — gewoon comprimeren en opslaan.
+  async function voegReceptFotoToe(file) {
+    if (!file) return;
+    try {
+      const base64 = await comprimeerFotoVoorOpslag(file);
+      setReceptForm(f => ({ ...f, foto: `data:image/jpeg;base64,${base64}` }));
+    } catch (e) {
+      showToast("❌ Kon foto niet toevoegen");
+    }
   }
 
   async function importeerViaFoto(file) {
@@ -544,7 +575,8 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
       const clean = data.text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       if (parsed.fout) throw new Error(parsed.fout);
-      slaReceptOp(parsed);
+      const opslagFoto = await comprimeerFotoVoorOpslag(file);
+      slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}` });
     } catch (e) {
       setImportFout(e.message);
     }
@@ -596,8 +628,12 @@ Als er totaal geen (deel van een) gerecht op de foto te zien is: {"fout": "Geen 
       const clean = data.text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       if (parsed.fout) throw new Error(parsed.fout);
-      // Bewaar de foto zodat de AI 'm nog een keer kan bekijken bij het verfijnen.
-      const nieuw = slaReceptOp({ ...parsed, aiGerechtFoto: `data:image/jpeg;base64,${base64}` }, { opentBewerken: true });
+      // De weergavefoto is de kleine opslag-variant; de AI-referentiefoto
+      // (voor het eventueel later verfijnen) blijft de grotere/scherpere versie —
+      // dat kan nu veilig, want beide staan in hun eigen Redis-key, niet meer
+      // samen in één groot record.
+      const opslagFoto = await comprimeerFotoVoorOpslag(file);
+      const nieuw = slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}`, aiGerechtFoto: `data:image/jpeg;base64,${base64}` }, { opentBewerken: true });
       showToast(`✨ Recept nagemaakt op basis van de foto — pas gerust aan wat niet klopt`);
     } catch (e) {
       setImportFout(e.message);
@@ -863,19 +899,51 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
         </header>
 
         {!bewerkModus && (
-          <div style={{ display:"flex", gap:8, padding:"0 20px 12px" }}>
-            <button style={{ ...S.btn(C.orange), flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
+          <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 20px 12px" }}>
+            <button style={{ ...S.btn(C.orange), flex:"1 1 30%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
               onClick={() => { setKookStapIndex(0); setKookTimerSec(0); setKookTimerLopend(false); setKookModusActief(true); }}>
               🍳 Kookmodus
             </button>
-            <button style={{ ...S.btn(C.card, C.green), border:`1px solid ${C.border}`, flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
+            <button style={{ ...S.btn(C.card, C.green), border:`1px solid ${C.border}`, flex:"1 1 30%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
               onClick={() => { setDagboekNotitie(""); setShowDagboekForm(true); }}>
               ✅ Markeer gemaakt
+            </button>
+            <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, flex:"1 1 30%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
+              onClick={() => stuurIngredientenNaarBoodschappen([actieefRecept])}>
+              <ShoppingCart size={14} /> Boodschappenlijst
             </button>
           </div>
         )}
 
         <main style={S.main}>
+          {/* Receptfoto */}
+          {bewerkModus ? (
+            <div style={{ marginBottom:12 }}>
+              {actieefRecept.foto && (
+                <div style={{ position:"relative", marginBottom:8 }}>
+                  <img src={actieefRecept.foto} alt="" style={{ width:"100%", height:160, objectFit:"cover", borderRadius:12 }} />
+                  <button onClick={() => updateRecept(actieefRecept.id, { foto: null })}
+                    style={{ position:"absolute", top:8, right:8, background:"rgba(0,0,0,.6)", border:"none", borderRadius:"50%", width:28, height:28, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    <X size={15} color="#FFF" />
+                  </button>
+                </div>
+              )}
+              <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, width:"100%", fontSize:13 }}
+                onClick={() => detailFotoRef.current?.click()}>
+                📷 {actieefRecept.foto ? "Andere foto kiezen" : "Foto toevoegen"}
+              </button>
+              <input ref={detailFotoRef} type="file" accept="image/*" style={{ display:"none" }}
+                onChange={async e => {
+                  const file = e.target.files[0];
+                  if (!file) return;
+                  const base64 = await comprimeerFotoVoorOpslag(file);
+                  updateRecept(actieefRecept.id, { foto: `data:image/jpeg;base64,${base64}` });
+                }} />
+            </div>
+          ) : actieefRecept.foto && (
+            <img src={actieefRecept.foto} alt="" style={{ width:"100%", height:180, objectFit:"cover", borderRadius:14, marginBottom:14 }} />
+          )}
+
           {/* Verfijnen op basis van de originele foto (alleen bij AI-gerecht-import) */}
           {bewerkModus && actieefRecept.aiGerechtFoto && (
             <div style={{ ...S.card, background:C.card, border:`1.5px dashed ${C.orange}66` }}>
@@ -1313,6 +1381,23 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
               </button>
             </div>
             <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam van het recept" value={receptForm.naam} onChange={e => setReceptForm(f=>({...f,naam:e.target.value}))} autoFocus />
+
+            {receptForm.foto && (
+              <div style={{ position:"relative", marginBottom:10 }}>
+                <img src={receptForm.foto} alt="" style={{ width:"100%", height:140, objectFit:"cover", borderRadius:10 }} />
+                <button onClick={() => setReceptForm(f => ({ ...f, foto: null }))}
+                  style={{ position:"absolute", top:6, right:6, background:"rgba(0,0,0,.6)", border:"none", borderRadius:"50%", width:26, height:26, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <X size={14} color="#FFF" />
+                </button>
+              </div>
+            )}
+            <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, width:"100%", marginBottom:10, fontSize:13 }}
+              onClick={() => receptFotoRef.current?.click()}>
+              📷 {receptForm.foto ? "Andere foto kiezen" : "Foto toevoegen"}
+            </button>
+            <input ref={receptFotoRef} type="file" accept="image/*" style={{ display:"none" }}
+              onChange={e => voegReceptFotoToe(e.target.files[0])} />
+
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
               <select style={S.inp} value={receptForm.keuken} onChange={e => setReceptForm(f=>({...f,keuken:e.target.value}))}>
                 {KEUKENS.map(k => <option key={k}>{k}</option>)}
@@ -1505,7 +1590,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                     return (
                     <div key={r.id} style={{ ...S.card, cursor:"pointer", display:"flex", gap:12, alignItems:"center" }}
                       onClick={() => setActieefReceptId(r.id)}>
-                      <div style={{ width:52, height:52, borderRadius:12, background:C.card, display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🍽️</div>
+                      {r.foto ? (
+                        <img src={r.foto} alt="" style={{ width:52, height:52, borderRadius:12, objectFit:"cover", flexShrink:0 }} />
+                      ) : (
+                        <div style={{ width:52, height:52, borderRadius:12, background:C.card, display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🍽️</div>
+                      )}
                       <div style={{ flex:1, minWidth:0 }}>
                         <p style={{ margin:"0 0 3px", fontWeight:700, fontSize:15 }}>{r.naam}</p>
                         <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" }}>

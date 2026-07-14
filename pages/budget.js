@@ -35,15 +35,29 @@ function parseRabobankCSV(text, rekeningMap) {
   const sep = firstLine.split(";").length > firstLine.split(",").length ? ";" : ",";
 
   const rows = text.trim().split("\n");
-  const header = rows[0].split(sep).map(c => c.replace(/^"|"$/g,"").trim().toLowerCase());
+  const header = rows[0].split(sep).map(c => c.replace(/^"|"$/g,"").replace(/\r$/,"").trim().toLowerCase());
 
-  const ci = name => header.findIndex(h => h.includes(name));
+  // Rabobank heeft meerdere CSV-exportvarianten: de "oude", Nederlandstalige
+  // (Datum/Bedrag/Naam tegenpartij/Omschrijving-1) en de nieuwere, Engelstalige
+  // "CSV_A"-indeling (Date/Amount/Name Counterpty/Description-1). We proberen
+  // de gegeven zoektermen op volgorde, zodat beide indelingen werken.
+  const ci = (...names) => {
+    for (const name of names) {
+      const idx = header.findIndex(h => h.includes(name));
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  };
   const iIBAN    = ci("iban") >= 0 ? ci("iban") : 0;
-  const iDatum   = ci("datum") >= 0 ? ci("datum") : 4;
-  const iBedrag  = ci("bedrag") >= 0 ? ci("bedrag") : 6;
-  const iNaam    = ci("naam") >= 0 ? ci("naam") : 1;
-  const iOmsch1  = ci("omschrijving") >= 0 ? ci("omschrijving") : 9;
-  const iOmsch2  = header.lastIndexOf(header.find((h,i) => i > iOmsch1 && h.includes("omschrijving"))) ?? 19;
+  const iDatum   = ci("datum", "date") >= 0 ? ci("datum", "date") : 4;
+  const iBedrag  = ci("bedrag", "amount") >= 0 ? ci("bedrag", "amount") : 6;
+  const iNaam    = ci("naam tegenpartij", "name counterpty", "naam") >= 0
+    ? ci("naam tegenpartij", "name counterpty", "naam") : 1;
+  const omschCols = header
+    .map((h, i) => (h.includes("omschrijving") || h.includes("description")) ? i : -1)
+    .filter(i => i >= 0);
+  const iOmsch1  = omschCols[0] ?? 9;
+  const iOmsch2  = omschCols[1] ?? 19;
 
   return rows.slice(1).flatMap(line => {
     if (!line.trim()) return [];
@@ -75,6 +89,10 @@ function parseRabobankCSV(text, rekeningMap) {
 
     const account = rekeningMap?.[iban] || "gezamenlijk";
 
+    // Vingerafdruk om dezelfde transactie later te herkennen als je een
+    // overlappende periode opnieuw importeert (voorkomt dubbele boekingen).
+    const bankRef = [iban, datum, cols[iBedrag], fullDesc].join("|");
+
     return [{
       id: uid(),
       name:     fullDesc.slice(0,80) || "Onbekend",
@@ -86,6 +104,7 @@ function parseRabobankCSV(text, rekeningMap) {
       fromBank: true,
       iban,
       rawDesc: fullDesc,
+      bankRef,
     }];
   });
 }
@@ -309,6 +328,7 @@ export default function BudgetApp() {
   const [tasks,        setTasksState]        = useState([]);
   const [bijst,        setBijstState]        = useState([]);
   const [setupDone,    setSetupDoneState]    = useState(false);
+  const [laatsteBankImport, setLaatsteBankImportState] = useState(null);
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null); // "Pepijn" | "Tessa"
 
   // ── Wie ben ik? (voor "wie heeft wat gedaan"-badges) ──
@@ -338,6 +358,7 @@ export default function BudgetApp() {
       savingsGoals: patch.savingsGoals ?? savingsGoals,
       tasks: patch.tasks ?? tasks,
       bijst: patch.bijst ?? bijst,
+      laatsteBankImport: patch.laatsteBankImport ?? laatsteBankImport,
     };
     if (patch.setupDone !== undefined) setSetupDoneState(patch.setupDone);
     if (patch.theme !== undefined) setThemeNameState(patch.theme);
@@ -346,11 +367,12 @@ export default function BudgetApp() {
     if (patch.expenses !== undefined) setExpensesState(patch.expenses);
     if (patch.budgets !== undefined) setBudgetsState(patch.budgets);
     if (patch.receipts !== undefined) setReceiptsState(patch.receipts);
+    if (patch.laatsteBankImport !== undefined) setLaatsteBankImportState(patch.laatsteBankImport);
     if (patch.savingsGoals !== undefined) setSavingsGoalsState(patch.savingsGoals);
     if (patch.tasks !== undefined) setTasksState(patch.tasks);
     if (patch.bijst !== undefined) setBijstState(patch.bijst);
     saveBudgetData(next);
-  }, [setupDone, themeName, names, incomes, expenses, budgets, receipts, savingsGoals, tasks, bijst]);
+  }, [setupDone, themeName, names, incomes, expenses, budgets, receipts, savingsGoals, tasks, bijst, laatsteBankImport]);
 
   // Kleine helper-setters die op dezelfde manier werken als de oude setX(updater)-vorm,
   // zodat de rest van de component-logica grotendeels ongewijzigd kan blijven.
@@ -383,6 +405,7 @@ export default function BudgetApp() {
         setSavingsGoalsState(data.savingsGoals || []);
         setTasksState(data.tasks || []);
         setBijstState(data.bijst || []);
+        setLaatsteBankImportState(data.laatsteBankImport || null);
         setLoading(false);
         setVerbindingsFout(false);
       } else if (active) {
@@ -576,22 +599,39 @@ export default function BudgetApp() {
   function delTask(id) { setTasks(p=>p.filter(t=>t.id!==id)); }
 
   function confirmCSV(rows) {
-    setExpenses(prev => [...prev, ...rows]);
+    persist({ expenses: [...expenses, ...rows], laatsteBankImport: Date.now() });
     setCsvImport(null);
+    setCsvDubbelCount(0);
     showToast(`✅ ${rows.length} transacties ingeladen`);
     setTab("uitgaven");
   }
 
   // ── CSV import ────────────────────────────────────────────────────────────
+  const [csvDubbelCount, setCsvDubbelCount] = useState(0);
+  const [csvReviewPagina, setCsvReviewPagina] = useState(0);
+  const CSV_PAGINA_GROOTTE = 50;
+
   function handleCSV(file) {
     if (!file) return;
-    setCsvError(""); setCsvImport(null);
+    setCsvError(""); setCsvImport(null); setCsvDubbelCount(0); setCsvReviewPagina(0);
     const reader = new FileReader();
     reader.onload = e => {
       try {
         const rows = parseRabobankCSV(e.target.result, ibanMap);
         if (!rows.length) { setCsvError("Geen uitgaven gevonden. Controleer het Rabobank CSV-formaat."); return; }
-        setCsvImport(rows);
+
+        // Sla transacties over die er (op basis van vingerafdruk) al in staan —
+        // zo kun je gerust een overlappende periode opnieuw importeren.
+        const bekendeRefs = new Set(expenses.filter(x => x.bankRef).map(x => x.bankRef));
+        const nieuw = rows.filter(r => !bekendeRefs.has(r.bankRef));
+        const dubbel = rows.length - nieuw.length;
+        setCsvDubbelCount(dubbel);
+
+        if (!nieuw.length) {
+          setCsvError(`Alle ${rows.length} transacties uit dit bestand staan al in Budget — niks nieuws om te importeren.`);
+          return;
+        }
+        setCsvImport(nieuw);
       } catch (err) { setCsvError("Fout bij inladen: " + err.message); }
     };
     reader.readAsText(file, "UTF-8");
@@ -1183,6 +1223,34 @@ export default function BudgetApp() {
         {tab === "dashboard" && (
           <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
 
+            {/* Bank-sync status — maakt de handmatige CSV-import voelbaar 'bijgehouden' */}
+            {(() => {
+              const dagenGeleden = laatsteBankImport ? Math.floor((Date.now() - laatsteBankImport) / (1000*60*60*24)) : null;
+              const vers = dagenGeleden !== null && dagenGeleden <= 3;
+              const veroudend = dagenGeleden !== null && dagenGeleden > 3 && dagenGeleden <= 7;
+              const kleur = laatsteBankImport === null ? C.muted : vers ? C.green : veroudend ? C.yellow : C.red;
+              return (
+                <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:"12px 14px", display:"flex", alignItems:"center", gap:10 }}>
+                  <span style={{ width:9, height:9, borderRadius:"50%", background:kleur, flexShrink:0 }} />
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ margin:0, fontSize:12, fontWeight:700, color:C.text }}>
+                      {laatsteBankImport === null
+                        ? "Nog geen bank-import gedaan"
+                        : dagenGeleden === 0 ? "Vandaag bijgewerkt vanuit de bank"
+                        : dagenGeleden === 1 ? "Gisteren bijgewerkt vanuit de bank"
+                        : `${dagenGeleden} dagen geleden bijgewerkt vanuit de bank`}
+                    </p>
+                    <p style={{ margin:0, fontSize:11, color:C.muted }}>
+                      {laatsteBankImport === null ? "Importeer je Rabobank-CSV om te beginnen" : !vers ? "Tijd voor een nieuwe export uit je bank-app?" : "Lekker actueel"}
+                    </p>
+                  </div>
+                  <button onClick={() => csvRef.current?.click()} style={{ background:vers?"none":C.accent, color:vers?C.accent:"#FFF", border:`1px solid ${C.accent}`, borderRadius:8, padding:"6px 12px", fontSize:11, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
+                    📂 Nu bijwerken
+                  </button>
+                </div>
+              );
+            })()}
+
             {/* 6-maanden trend grafiek */}
             {(() => {
               const maanden = Array.from({length:6}, (_,i) => {
@@ -1536,13 +1604,18 @@ export default function BudgetApp() {
 
             {csvImport?.length > 0 && (
               <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, overflow:"hidden" }}>
+                {csvDubbelCount > 0 && (
+                  <div style={{ padding:"8px 16px", background:`${C.yellow}15`, borderBottom:`1px solid ${C.border}`, fontSize:11, color:C.yellow }}>
+                    ℹ️ {csvDubbelCount} transactie{csvDubbelCount !== 1 ? "s" : ""} stond{csvDubbelCount === 1 ? "" : "en"} al in Budget en {csvDubbelCount === 1 ? "is" : "zijn"} overgeslagen
+                  </div>
+                )}
                 <div style={{ padding:"11px 16px", background:C.card, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
                   <div>
-                    <span style={{ fontWeight:700, fontSize:13 }}>{csvImport.length} transacties</span>
+                    <span style={{ fontWeight:700, fontSize:13 }}>{csvImport.length} nieuwe transacties</span>
                     <span style={{ color:C.muted, fontSize:11, marginLeft:8 }}>· {euro(csvImport.reduce((s,r)=>s+r.amount,0))} totaal</span>
                   </div>
                   <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                    <button style={S.btn(`${C.red}88`, C.text)} onClick={()=>{setCsvImport(null);}}>Annuleer</button>
+                    <button style={S.btn(`${C.red}88`, C.text)} onClick={()=>{setCsvImport(null); setCsvDubbelCount(0);}}>Annuleer</button>
                     <button style={S.btn(C.green)} onClick={()=>confirmCSV(csvImport)}>✅ Importeer ({csvImport.length})</button>
                   </div>
                 </div>
@@ -1552,7 +1625,9 @@ export default function BudgetApp() {
                       <tr>{["Omschrijving","Maand","Bedrag","Categorie","Rekening",""].map(h=><th key={h} style={{ padding:"7px 12px", textAlign:"left", color:C.muted, fontWeight:600, fontSize:11, borderBottom:`1px solid ${C.border}` }}>{h}</th>)}</tr>
                     </thead>
                     <tbody>
-                      {csvImport.map((row,i) => (
+                      {csvImport.slice(csvReviewPagina*CSV_PAGINA_GROOTTE, (csvReviewPagina+1)*CSV_PAGINA_GROOTTE).map((row,iRel) => {
+                        const i = csvReviewPagina*CSV_PAGINA_GROOTTE + iRel;
+                        return (
                         <tr key={i} style={{ borderBottom:`1px solid ${C.border}` }}>
                           <td style={{ padding:"6px 12px", maxWidth:220, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{row.name}</td>
                           <td style={{ padding:"6px 12px", color:C.muted }}>{fmtM(row.month)}</td>
@@ -1570,10 +1645,22 @@ export default function BudgetApp() {
                             </select>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+                {csvImport.length > CSV_PAGINA_GROOTTE && (
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 16px", borderTop:`1px solid ${C.border}`, background:C.card }}>
+                    <button style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"6px 12px", color:csvReviewPagina===0?C.muted:C.text, cursor:csvReviewPagina===0?"default":"pointer", fontSize:12, opacity:csvReviewPagina===0?0.5:1 }}
+                      disabled={csvReviewPagina===0} onClick={()=>setCsvReviewPagina(p=>p-1)}>← Vorige</button>
+                    <span style={{ fontSize:11, color:C.muted }}>
+                      {csvReviewPagina*CSV_PAGINA_GROOTTE+1}–{Math.min((csvReviewPagina+1)*CSV_PAGINA_GROOTTE, csvImport.length)} van {csvImport.length}
+                    </span>
+                    <button style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"6px 12px", color:(csvReviewPagina+1)*CSV_PAGINA_GROOTTE>=csvImport.length?C.muted:C.text, cursor:(csvReviewPagina+1)*CSV_PAGINA_GROOTTE>=csvImport.length?"default":"pointer", fontSize:12, opacity:(csvReviewPagina+1)*CSV_PAGINA_GROOTTE>=csvImport.length?0.5:1 }}
+                      disabled={(csvReviewPagina+1)*CSV_PAGINA_GROOTTE>=csvImport.length} onClick={()=>setCsvReviewPagina(p=>p+1)}>Volgende →</button>
+                  </div>
+                )}
               </div>
             )}
           </div>
