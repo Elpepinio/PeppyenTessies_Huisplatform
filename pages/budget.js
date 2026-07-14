@@ -14,15 +14,15 @@ const THEMES = {
 };
 
 const ACC_COL  = { gezamenlijk:"#00D4FF", p1:"#B57BFF", p2:"#FF8C42" };
-const CAT_ICON = { Wonen:"🏠", Boodschappen:"🛒", Transport:"🚗", Abonnementen:"📺", "Uit eten":"🍽️", Gezondheid:"💊", Kleding:"👗", Entertainment:"🎭", Vakantie:"✈️", Kinderen:"👶", Sparen:"💰", Overig:"📦" };
+const CAT_ICON = { Wonen:"🏠", Boodschappen:"🛒", Transport:"🚗", Abonnementen:"📺", "Uit eten":"🍽️", Gezondheid:"💊", Kleding:"👗", Entertainment:"🎭", Vakantie:"✈️", Kinderen:"👶", Sparen:"💰", "Gezamenlijke rekening":"🏦", Overig:"📦" };
 const CAT_COL  = {
   Wonen:"#6C63FF", Boodschappen:"#2ECC71", Transport:"#F39C12",
   Abonnementen:"#E74C3C", "Uit eten":"#1ABC9C", Gezondheid:"#E91E63",
   Kleding:"#FF9800", Entertainment:"#9C27B0", Vakantie:"#00BCD4",
-  Kinderen:"#FF6B9D", Sparen:"#3F51B5", Overig:"#607D8B",
+  Kinderen:"#FF6B9D", Sparen:"#3F51B5", "Gezamenlijke rekening":"#26A69A", Overig:"#607D8B",
 };
 
-const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Gezondheid","Kleding","Entertainment","Vakantie","Kinderen","Sparen","Overig"];
+const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Gezondheid","Kleding","Entertainment","Vakantie","Kinderen","Sparen","Gezamenlijke rekening","Overig"];
 // ── Dynamische datum (altijd actueel) ────────────────────────────────────────
 const _now       = new Date();
 const NOW_MONTH  = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}`;
@@ -30,7 +30,7 @@ const NOW_YEAR   = _now.getFullYear();
 const NOW_Q      = Math.ceil((_now.getMonth() + 1) / 3);
 
 // ── Rabobank CSV parser ───────────────────────────────────────────────────────
-function parseRabobankCSV(text, rekeningMap, categorieMap) {
+function parseRabobankCSV(text, rekeningMap, categorieMap, bekendeIbans) {
   const firstLine = text.trim().split("\n")[0];
   const sep = firstLine.split(";").length > firstLine.split(",").length ? ";" : ",";
 
@@ -49,6 +49,7 @@ function parseRabobankCSV(text, rekeningMap, categorieMap) {
     return -1;
   };
   const iIBAN    = ci("iban") >= 0 ? ci("iban") : 0;
+  const iTegenIban = ci("tegenrekening", "counterpty iban");
   const iDatum   = ci("datum", "date") >= 0 ? ci("datum", "date") : 4;
   const iBedrag  = ci("bedrag", "amount") >= 0 ? ci("bedrag", "amount") : 6;
   const iNaam    = ci("naam tegenpartij", "name counterpty", "naam") >= 0
@@ -83,6 +84,7 @@ function parseRabobankCSV(text, rekeningMap, categorieMap) {
       : datum.split("-").reverse().slice(0,2).join("-");
 
     const iban    = cols[iIBAN] || "";
+    const tegenIban = iTegenIban >= 0 ? (cols[iTegenIban] || "") : "";
     const naam    = cols[iNaam] || "";
     const omsch   = [cols[iOmsch1], cols[iOmsch2] ?? ""].filter(Boolean).join(" – ").slice(0,100);
     const fullDesc = [naam, omsch].filter(Boolean).join(" · ").trim();
@@ -103,7 +105,12 @@ function parseRabobankCSV(text, rekeningMap, categorieMap) {
       .trim();
     const categorieSleutel = [normaliseer(naam), normaliseer(omsch)].filter(Boolean).join(" · ").slice(0, 80)
       || fullDesc.toLowerCase().slice(0,40);
-    const category = categorieMap?.[categorieSleutel] || guessCategory(fullDesc);
+
+    // Een overschrijving náár een bekend rekeningnummer (bv. de gezamenlijke
+    // rekening) is een betrouwbaarder signaal dan tekstherkenning — dat gaat
+    // daarom vóór de geleerde/geraden categorie.
+    const ibanCategorie = tegenIban && bekendeIbans?.[tegenIban.replace(/\s/g,"").toUpperCase()];
+    const category = ibanCategorie || categorieMap?.[categorieSleutel] || guessCategory(fullDesc);
 
     // Vingerafdruk om dezelfde transactie later te herkennen als je een
     // overlappende periode opnieuw importeert (voorkomt dubbele boekingen).
@@ -120,6 +127,7 @@ function parseRabobankCSV(text, rekeningMap, categorieMap) {
       fixed:    false,
       fromBank: true,
       iban,
+      tegenIban,
       rawDesc: fullDesc,
       bankRef,
     }];
@@ -148,6 +156,7 @@ function guessCategory(t) {
   if (/booking|airbnb|hotel|vliegticket|ryanair|transavia|corendon|sunweb|vakantie/.test(t)) return "Vakantie";
   if (/bioscoop|theater|concert|ticketmaster|efteling|pretpark/.test(t)) return "Entertainment";
   if (/sparen|spaarrekening/.test(t)) return "Sparen";
+  if (/inleg|naar gezamenlijk|gezamenlijke rekening|extra inleg/.test(t)) return "Gezamenlijke rekening";
   return "Overig";
 }
 
@@ -348,6 +357,10 @@ export default function BudgetApp() {
   const [laatsteBankImport, setLaatsteBankImportState] = useState(null);
   const [ibanMap, setIbanMapState] = useState({});
   const [categorieMap, setCategorieMapState] = useState({});
+  // Rekeningnummers van bekende, vaste tegenpartijen — een overschrijving náár
+  // zo'n rekening krijgt automatisch de gekoppelde categorie, betrouwbaarder
+  // dan tekstherkenning. Vooraf gevuld met de gezamenlijke rekening.
+  const [bekendeIbans, setBekendeIbansState] = useState({ "NL38RABO0353865362": "Gezamenlijke rekening" });
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null); // "Pepijn" | "Tessa"
 
   // ── Wie ben ik? (voor "wie heeft wat gedaan"-badges) ──
@@ -380,6 +393,7 @@ export default function BudgetApp() {
       laatsteBankImport: patch.laatsteBankImport ?? laatsteBankImport,
       ibanMap: patch.ibanMap ?? ibanMap,
       categorieMap: patch.categorieMap ?? categorieMap,
+      bekendeIbans: patch.bekendeIbans ?? bekendeIbans,
     };
     if (patch.setupDone !== undefined) setSetupDoneState(patch.setupDone);
     if (patch.theme !== undefined) setThemeNameState(patch.theme);
@@ -391,11 +405,12 @@ export default function BudgetApp() {
     if (patch.laatsteBankImport !== undefined) setLaatsteBankImportState(patch.laatsteBankImport);
     if (patch.ibanMap !== undefined) setIbanMapState(patch.ibanMap);
     if (patch.categorieMap !== undefined) setCategorieMapState(patch.categorieMap);
+    if (patch.bekendeIbans !== undefined) setBekendeIbansState(patch.bekendeIbans);
     if (patch.savingsGoals !== undefined) setSavingsGoalsState(patch.savingsGoals);
     if (patch.tasks !== undefined) setTasksState(patch.tasks);
     if (patch.bijst !== undefined) setBijstState(patch.bijst);
     saveBudgetData(next);
-  }, [setupDone, themeName, names, incomes, expenses, budgets, receipts, savingsGoals, tasks, bijst, laatsteBankImport, ibanMap, categorieMap]);
+  }, [setupDone, themeName, names, incomes, expenses, budgets, receipts, savingsGoals, tasks, bijst, laatsteBankImport, ibanMap, categorieMap, bekendeIbans]);
 
   // Kleine helper-setters die op dezelfde manier werken als de oude setX(updater)-vorm,
   // zodat de rest van de component-logica grotendeels ongewijzigd kan blijven.
@@ -409,6 +424,7 @@ export default function BudgetApp() {
   const setBijst        = (updater) => persist({ bijst: typeof updater === "function" ? updater(bijst) : updater });
   const setIbanMap      = (updater) => persist({ ibanMap: typeof updater === "function" ? updater(ibanMap) : updater });
   const setCategorieMap = (updater) => persist({ categorieMap: typeof updater === "function" ? updater(categorieMap) : updater });
+  const setBekendeIbans = (updater) => persist({ bekendeIbans: typeof updater === "function" ? updater(bekendeIbans) : updater });
   const setThemeName    = (updater) => persist({ theme: typeof updater === "function" ? updater(themeName) : updater });
   const setSetupDone    = (val) => persist({ setupDone: val });
 
@@ -433,6 +449,8 @@ export default function BudgetApp() {
         setLaatsteBankImportState(data.laatsteBankImport || null);
         setIbanMapState(data.ibanMap || {});
         setCategorieMapState(data.categorieMap || {});
+        setBekendeIbansState(data.bekendeIbans && Object.keys(data.bekendeIbans).length > 0
+          ? data.bekendeIbans : { "NL38RABO0353865362": "Gezamenlijke rekening" });
         setLoading(false);
         setVerbindingsFout(false);
       } else if (active) {
@@ -635,6 +653,8 @@ export default function BudgetApp() {
   // ── CSV import ────────────────────────────────────────────────────────────
   const [csvDubbelCount, setCsvDubbelCount] = useState(0);
   const [csvReviewPagina, setCsvReviewPagina] = useState(0);
+  const [nieuweIbanInput, setNieuweIbanInput] = useState("");
+  const [nieuweIbanCategorie, setNieuweIbanCategorie] = useState("Gezamenlijke rekening");
   const CSV_PAGINA_GROOTTE = 50;
 
   function handleCSV(file) {
@@ -643,7 +663,7 @@ export default function BudgetApp() {
     const reader = new FileReader();
     reader.onload = e => {
       try {
-        const rows = parseRabobankCSV(e.target.result, ibanMap, categorieMap);
+        const rows = parseRabobankCSV(e.target.result, ibanMap, categorieMap, bekendeIbans);
         if (!rows.length) { setCsvError("Geen uitgaven gevonden. Controleer het Rabobank CSV-formaat."); return; }
 
         // Sla transacties over die er (op basis van vingerafdruk) al in staan —
@@ -1630,6 +1650,40 @@ export default function BudgetApp() {
                   </div>
                 </div>
               )}
+
+              <div style={{ background:C.card, borderRadius:10, padding:11, marginBottom:12 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:7 }}>🏦 Bekende rekeningnummers → categorie</div>
+                <p style={{ fontSize:10, color:C.muted, margin:"0 0 8px", lineHeight:1.5 }}>
+                  Een overschrijving náár zo'n rekening (bv. de gezamenlijke rekening) krijgt altijd deze categorie, ongeacht de omschrijving.
+                </p>
+                {Object.entries(bekendeIbans).map(([iban, cat]) => (
+                  <div key={iban} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5 }}>
+                    <span style={{ fontSize:11, color:C.text, fontFamily:"monospace", flex:1 }}>{iban}</span>
+                    <span style={{ color:C.muted, fontSize:11 }}>→</span>
+                    <select value={cat} onChange={e=>setBekendeIbans(p=>({...p,[iban]:e.target.value}))}
+                      style={{ ...S.inp, width:"auto", fontSize:11, padding:"3px 7px" }}>
+                      {CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                    </select>
+                    <button onClick={()=>setBekendeIbans(p=>{const n={...p};delete n[iban];return n;})}
+                      style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:12 }}>×</button>
+                  </div>
+                ))}
+                <div style={{ display:"flex", gap:6, marginTop:8, flexWrap:"wrap" }}>
+                  <input placeholder="NL.. rekeningnummer" value={nieuweIbanInput} onChange={e=>setNieuweIbanInput(e.target.value)}
+                    style={{ ...S.inp, flex:"1 1 160px", fontSize:11, padding:"5px 9px", fontFamily:"monospace" }} />
+                  <select value={nieuweIbanCategorie} onChange={e=>setNieuweIbanCategorie(e.target.value)}
+                    style={{ ...S.inp, width:"auto", fontSize:11, padding:"5px 9px" }}>
+                    {CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                  <button style={{ ...S.btn(C.accent), fontSize:11, padding:"5px 12px" }}
+                    onClick={()=>{
+                      const iban = nieuweIbanInput.replace(/\s/g,"").toUpperCase();
+                      if (!iban) return;
+                      setBekendeIbans(p=>({...p,[iban]:nieuweIbanCategorie}));
+                      setNieuweIbanInput("");
+                    }}>+ Toevoegen</button>
+                </div>
+              </div>
 
               <div style={{ background:C.card, borderRadius:10, padding:11, marginBottom:12, fontSize:11, color:C.muted, lineHeight:1.6 }}>
                 📋 rabo.nl → Rekeningen → <strong style={{ color:C.text }}>Download → CSV</strong> → kies periode

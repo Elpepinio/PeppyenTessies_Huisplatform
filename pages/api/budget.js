@@ -17,6 +17,7 @@ const EMPTY_STATE = {
   bijst: [],
   ibanMap: {},
   categorieMap: {},
+  bekendeIbans: {},
 };
 
 export default async function handler(req, res) {

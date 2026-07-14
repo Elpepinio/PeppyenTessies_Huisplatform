@@ -16,7 +16,7 @@ export default async function handler(req, res) {
 
   const { huidigPw, nieuwPw } = req.body || {};
   if (!huidigPw || !nieuwPw) return res.status(400).json({ error: "Velden ontbreken" });
-  if (nieuwPw.length < 6) return res.status(400).json({ error: "Nieuw wachtwoord moet minstens 6 tekens zijn" });
+  if (nieuwPw.length < 12) return res.status(400).json({ error: "Nieuw wachtwoord moet minstens 12 tekens zijn" });
 
   try {
     // Verifieer huidig wachtwoord

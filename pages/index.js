@@ -92,6 +92,16 @@ export default function Platform() {
   const [nieuwPw2, setNieuwPw2]           = useState("");
   const [pwMsg, setPwMsg]                 = useState(null); // { ok, tekst }
   const [pwBusy, setPwBusy]               = useState(false);
+  // Tweestapsverificatie — inloggen
+  const [pendingToken, setPendingToken]   = useState(null); // niet-null = we zitten in de 2FA-stap
+  const [tweeFACode, setTweeFACode]       = useState("");
+  // Tweestapsverificatie — instellen in het instellingenpaneel
+  const [tfaEnabled, setTfaEnabled]       = useState(false);
+  const [tfaSetup, setTfaSetup]           = useState(null); // { secret, qrDataUrl } tijdens instellen
+  const [tfaConfirmCode, setTfaConfirmCode] = useState("");
+  const [tfaDisablePw, setTfaDisablePw]   = useState("");
+  const [tfaMsg, setTfaMsg]               = useState(null); // { ok, tekst }
+  const [tfaBusy, setTfaBusy]             = useState(false);
 
   // ── Volgorde tools (gedeeld via Redis) ───────────────
   const [toolVolgorde, setToolVolgorde] = useState(TOOLS.map(t => t.href));
@@ -140,7 +150,10 @@ export default function Platform() {
         if (!res.ok) throw new Error("server");
         const data = await res.json();
         if (!data.accountExists) setStatus("setup");
-        else if (data.loggedIn)  { setIngelogdAls(data.user || null); setStatus("overzicht"); }
+        else if (data.loggedIn)  {
+          setIngelogdAls(data.user || null); setStatus("overzicht");
+          fetch("/api/auth/2fa-status").then(r => r.json()).then(d => setTfaEnabled(!!d.enabled)).catch(() => {});
+        }
         else                     setStatus("login");
       } catch (e) {
         setStatus("fout");
@@ -152,7 +165,7 @@ export default function Platform() {
     e.preventDefault();
     setError("");
     if (password !== confirmPassword) { setError("Wachtwoorden komen niet overeen"); return; }
-    if (password.length < 6) { setError("Wachtwoord moet minstens 6 tekens zijn"); return; }
+    if (password.length < 12) { setError("Wachtwoord moet minstens 12 tekens zijn"); return; }
     setBusy(true);
     try {
       const res = await fetch("/api/auth/setup", {
@@ -179,12 +192,43 @@ export default function Platform() {
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || "Wachtwoord onjuist"); setBusy(false); return; }
+      if (data.needs2FA) {
+        // Wachtwoord klopte — nu nog de code uit de authenticator-app.
+        setPendingToken(data.pendingToken);
+        setBusy(false);
+        return;
+      }
+      window.location.href = "/";
+    } catch (e) { setError("Geen verbinding met de server"); setBusy(false); }
+  }
+
+  async function handle2FAVerify(e) {
+    e.preventDefault();
+    setError("");
+    if (!/^\d{6}$/.test(tweeFACode.trim())) { setError("Vul de 6-cijferige code in"); return; }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/auth/2fa-verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingToken, code: tweeFACode.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || "Onjuiste code"); setBusy(false); return; }
       window.location.href = "/";
     } catch (e) { setError("Geen verbinding met de server"); setBusy(false); }
   }
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
+    // Maak ook de offline-cache leeg — anders blijft eerder opgehaalde data
+    // (bv. budgetgegevens) nog op het toestel staan nadat je bent uitgelogd.
+    if (typeof caches !== "undefined") {
+      try {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      } catch (e) { /* niet kritiek als dit een keer mislukt */ }
+    }
     window.location.href = "/";
   }
 
@@ -192,7 +236,7 @@ export default function Platform() {
     e.preventDefault();
     setPwMsg(null);
     if (nieuwPw !== nieuwPw2) { setPwMsg({ ok: false, tekst: "Nieuwe wachtwoorden komen niet overeen" }); return; }
-    if (nieuwPw.length < 6)   { setPwMsg({ ok: false, tekst: "Nieuw wachtwoord moet minstens 6 tekens zijn" }); return; }
+    if (nieuwPw.length < 12)   { setPwMsg({ ok: false, tekst: "Nieuw wachtwoord moet minstens 12 tekens zijn" }); return; }
     setPwBusy(true);
     try {
       const res = await fetch("/api/auth/change-password", {
@@ -208,6 +252,60 @@ export default function Platform() {
       }
     } catch (e) { setPwMsg({ ok: false, tekst: "Geen verbinding" }); }
     setPwBusy(false);
+  }
+
+  // ── Tweestapsverificatie instellen ──
+  async function handleTfaSetupStart() {
+    setTfaMsg(null); setTfaBusy(true);
+    try {
+      const res = await fetch("/api/auth/2fa-setup", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { setTfaMsg({ ok: false, tekst: data.error || "Mislukt" }); }
+      else setTfaSetup({ secret: data.secret, qrDataUrl: data.qrDataUrl });
+    } catch (e) { setTfaMsg({ ok: false, tekst: "Geen verbinding" }); }
+    setTfaBusy(false);
+  }
+
+  async function handleTfaConfirm(e) {
+    e.preventDefault();
+    setTfaMsg(null);
+    if (!/^\d{6}$/.test(tfaConfirmCode.trim())) { setTfaMsg({ ok: false, tekst: "Vul de 6-cijferige code in" }); return; }
+    setTfaBusy(true);
+    try {
+      const res = await fetch("/api/auth/2fa-confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: tfaConfirmCode.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setTfaMsg({ ok: false, tekst: data.error || "Onjuiste code" }); }
+      else {
+        setTfaEnabled(true); setTfaSetup(null); setTfaConfirmCode("");
+        setTfaMsg({ ok: true, tekst: "Tweestapsverificatie is actief ✅" });
+      }
+    } catch (e) { setTfaMsg({ ok: false, tekst: "Geen verbinding" }); }
+    setTfaBusy(false);
+  }
+
+  async function handleTfaDisable(e) {
+    e.preventDefault();
+    setTfaMsg(null);
+    if (!tfaDisablePw) { setTfaMsg({ ok: false, tekst: "Vul je wachtwoord in" }); return; }
+    setTfaBusy(true);
+    try {
+      const res = await fetch("/api/auth/2fa-disable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: tfaDisablePw }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setTfaMsg({ ok: false, tekst: data.error || "Mislukt" }); }
+      else {
+        setTfaEnabled(false); setTfaDisablePw("");
+        setTfaMsg({ ok: true, tekst: "Tweestapsverificatie is uitgeschakeld" });
+      }
+    } catch (e) { setTfaMsg({ ok: false, tekst: "Geen verbinding" }); }
+    setTfaBusy(false);
   }
 
   // ── Laadscherm met subtiele animatie ──
@@ -254,7 +352,7 @@ export default function Platform() {
         <p style={S.authBody}>Stel een naam en wachtwoord in. Dit wachtwoord deel je met je huisgenoot zodat jullie beiden toegang hebben.</p>
         <input style={S.authInput} placeholder="Naam van het huishouden" value={name} onChange={e => setName(e.target.value)} autoFocus />
         <div style={{ position: "relative", width: "100%", maxWidth: 320 }}>
-          <input style={{ ...S.authInput, marginBottom: 0, paddingRight: 44 }} placeholder="Wachtwoord (min. 6 tekens)" type={showPw ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} />
+          <input style={{ ...S.authInput, marginBottom: 0, paddingRight: 44 }} placeholder="Wachtwoord (min. 12 tekens)" type={showPw ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} />
           <button type="button" onClick={() => setShowPw(v => !v)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 4 }}>
             {showPw ? <EyeOff size={16} color="#B8B2A8" /> : <Eye size={16} color="#B8B2A8" />}
           </button>
@@ -269,6 +367,29 @@ export default function Platform() {
   );
 
   // ── Inloggen ──
+  if (status === "login" && pendingToken) return (
+    <div style={S.appBg}>
+      <form style={S.authWrap} onSubmit={handle2FAVerify}>
+        <div style={{ width: 52, height: 52, borderRadius: 14, background: "#2D4A3E", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>
+          <KeyRound size={24} color="#FAF6F0" strokeWidth={1.8} />
+        </div>
+        <h1 style={S.authTitle}>Bevestigingscode</h1>
+        <p style={S.authBody}>Vul de 6-cijferige code uit je authenticator-app in.</p>
+        <input style={{ ...S.authInput, textAlign: "center", fontSize: 22, letterSpacing: 6, fontWeight: 700 }}
+          placeholder="000000" inputMode="numeric" maxLength={6} autoFocus
+          value={tweeFACode} onChange={e => setTweeFACode(e.target.value.replace(/\D/g, "").slice(0, 6))} />
+        {error && <p style={{ ...S.authError, marginTop: 8 }}>{error}</p>}
+        <button style={{ ...S.authBtn, opacity: busy ? 0.7 : 1, marginTop: error ? 0 : 8 }} type="submit" disabled={busy}>
+          {busy ? "Bezig…" : "Bevestigen"}
+        </button>
+        <button type="button" style={{ marginTop: 14, background: "none", border: "none", color: "#8C8576", fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", cursor: "pointer" }}
+          onClick={() => { setPendingToken(null); setTweeFACode(""); setError(""); setPassword(""); }}>
+          ← Terug
+        </button>
+      </form>
+    </div>
+  );
+
   if (status === "login") return (
     <div style={S.appBg}>
       <form style={S.authWrap} onSubmit={handleLogin}>
@@ -349,13 +470,67 @@ export default function Platform() {
           <p style={{ margin: "0 0 14px", fontWeight: 700, fontSize: 14, color: "#2D4A3E" }}>🔑 Wachtwoord wijzigen</p>
           <form onSubmit={handleWachtwoordWijzigen}>
             <input style={{ ...S.settingInput, marginBottom: 8 }} type="password" placeholder="Huidig wachtwoord" value={huidigPw} onChange={e => setHuidigPw(e.target.value)} />
-            <input style={{ ...S.settingInput, marginBottom: 8 }} type="password" placeholder="Nieuw wachtwoord (min. 6 tekens)" value={nieuwPw} onChange={e => setNieuwPw(e.target.value)} />
+            <input style={{ ...S.settingInput, marginBottom: 8 }} type="password" placeholder="Nieuw wachtwoord (min. 12 tekens)" value={nieuwPw} onChange={e => setNieuwPw(e.target.value)} />
             <input style={{ ...S.settingInput, marginBottom: 12 }} type="password" placeholder="Herhaal nieuw wachtwoord" value={nieuwPw2} onChange={e => setNieuwPw2(e.target.value)} />
             {pwMsg && <p style={{ fontSize: 13, color: pwMsg.ok ? "#2D4A3E" : "#C86E4A", margin: "0 0 10px" }}>{pwMsg.tekst}</p>}
             <button style={{ ...S.authBtn, maxWidth: "none", padding: "12px 0", fontSize: 14, opacity: pwBusy ? 0.7 : 1 }} type="submit" disabled={pwBusy}>
               {pwBusy ? "Bezig…" : "Wachtwoord wijzigen"}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Tweestapsverificatie-paneel */}
+      {showInstellingen && (
+        <div style={{ margin: "0 20px 16px", background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 18, padding: "18px 16px" }}>
+          <p style={{ margin: "0 0 4px", fontWeight: 700, fontSize: 14, color: "#2D4A3E" }}>🔐 Tweestapsverificatie</p>
+          <p style={{ margin: "0 0 14px", fontSize: 12, color: "#8C8576" }}>
+            {tfaEnabled ? "Actief — bij inloggen wordt ook een code uit je authenticator-app gevraagd." : "Extra beveiligingslaag bovenop het wachtwoord, via een authenticator-app (Google Authenticator, Authy, 1Password)."}
+          </p>
+
+          {!tfaEnabled && !tfaSetup && (
+            <button style={{ ...S.authBtn, maxWidth: "none", padding: "12px 0", fontSize: 14, opacity: tfaBusy ? 0.7 : 1 }} onClick={handleTfaSetupStart} disabled={tfaBusy}>
+              {tfaBusy ? "Bezig…" : "Instellen"}
+            </button>
+          )}
+
+          {!tfaEnabled && tfaSetup && (
+            <form onSubmit={handleTfaConfirm}>
+              <p style={{ fontSize: 12, color: "#2D2A26", margin: "0 0 10px" }}>
+                Scan deze QR-code met je authenticator-app:
+              </p>
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                <img src={tfaSetup.qrDataUrl} alt="QR-code voor tweestapsverificatie" style={{ width: 180, height: 180, borderRadius: 10, border: "1px solid #EFE9DC" }} />
+              </div>
+              <p style={{ fontSize: 11, color: "#8C8576", margin: "0 0 4px" }}>Kan niet scannen? Vul deze code handmatig in:</p>
+              <p style={{ fontSize: 12, fontFamily: "monospace", background: "#FAF6F0", padding: "8px 10px", borderRadius: 8, wordBreak: "break-all", margin: "0 0 14px", userSelect: "all" }}>
+                {tfaSetup.secret}
+              </p>
+              <input style={{ ...S.settingInput, marginBottom: 10, textAlign: "center", fontSize: 18, letterSpacing: 4, fontWeight: 700 }}
+                placeholder="000000" inputMode="numeric" maxLength={6}
+                value={tfaConfirmCode} onChange={e => setTfaConfirmCode(e.target.value.replace(/\D/g, "").slice(0, 6))} />
+              {tfaMsg && <p style={{ fontSize: 13, color: tfaMsg.ok ? "#2D4A3E" : "#C86E4A", margin: "0 0 10px" }}>{tfaMsg.tekst}</p>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" style={{ ...S.authBtn, maxWidth: "none", flex: 1, padding: "12px 0", fontSize: 14, background: "#E4DCCB", color: "#2D2A26" }}
+                  onClick={() => { setTfaSetup(null); setTfaConfirmCode(""); setTfaMsg(null); }}>
+                  Annuleer
+                </button>
+                <button style={{ ...S.authBtn, maxWidth: "none", flex: 1, padding: "12px 0", fontSize: 14, opacity: tfaBusy ? 0.7 : 1 }} type="submit" disabled={tfaBusy}>
+                  {tfaBusy ? "Bezig…" : "Bevestigen"}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {tfaEnabled && (
+            <form onSubmit={handleTfaDisable}>
+              <input style={{ ...S.settingInput, marginBottom: 10 }} type="password" placeholder="Wachtwoord ter bevestiging" value={tfaDisablePw} onChange={e => setTfaDisablePw(e.target.value)} />
+              {tfaMsg && <p style={{ fontSize: 13, color: tfaMsg.ok ? "#2D4A3E" : "#C86E4A", margin: "0 0 10px" }}>{tfaMsg.tekst}</p>}
+              <button style={{ ...S.authBtn, maxWidth: "none", padding: "12px 0", fontSize: 14, background: "#C86E4A", opacity: tfaBusy ? 0.7 : 1 }} type="submit" disabled={tfaBusy}>
+                {tfaBusy ? "Bezig…" : "Uitschakelen"}
+              </button>
+            </form>
+          )}
         </div>
       )}
 

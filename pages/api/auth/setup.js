@@ -21,8 +21,8 @@ export default async function handler(req, res) {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "Vul een naam voor het huishouden in" });
     }
-    if (!password || password.length < 6) {
-      return res.status(400).json({ error: "Wachtwoord moet minstens 6 tekens zijn" });
+    if (!password || password.length < 12) {
+      return res.status(400).json({ error: "Wachtwoord moet minstens 12 tekens zijn" });
     }
 
     await createHousehold(name.trim(), password);

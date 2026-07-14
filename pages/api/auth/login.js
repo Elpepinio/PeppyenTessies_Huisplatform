@@ -1,4 +1,4 @@
-import { verifyPassword, createSession, sessionCookieHeader } from "../../../lib/auth";
+import { verifyPassword, createSession, sessionCookieHeader, is2FAEnabled, createPendingLogin } from "../../../lib/auth";
 
 // Eenvoudige rate-limiting in het geheugen van de serverless functie:
 // niet waterdicht over meerdere instanties, maar weert snelle geautomatiseerde pogingen af.
@@ -49,6 +49,14 @@ export default async function handler(req, res) {
     if (!valid) {
       recordAttempt(ip);
       return res.status(401).json({ error: "Wachtwoord onjuist" });
+    }
+
+    // Als tweestapsverificatie actief is, nog geen sessie aanmaken — eerst
+    // moet de authenticator-code kloppen. De client krijgt een tijdelijk
+    // token (5 min geldig) mee om die tweede stap aan te koppelen.
+    if (await is2FAEnabled()) {
+      const pendingToken = await createPendingLogin(user);
+      return res.status(200).json({ needs2FA: true, pendingToken });
     }
 
     const token = await createSession(user);
