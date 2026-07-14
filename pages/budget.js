@@ -30,7 +30,7 @@ const NOW_YEAR   = _now.getFullYear();
 const NOW_Q      = Math.ceil((_now.getMonth() + 1) / 3);
 
 // ── Rabobank CSV parser ───────────────────────────────────────────────────────
-function parseRabobankCSV(text, rekeningMap) {
+function parseRabobankCSV(text, rekeningMap, categorieMap) {
   const firstLine = text.trim().split("\n")[0];
   const sep = firstLine.split(";").length > firstLine.split(",").length ? ";" : ",";
 
@@ -89,6 +89,11 @@ function parseRabobankCSV(text, rekeningMap) {
 
     const account = rekeningMap?.[iban] || "gezamenlijk";
 
+    // Sleutel om dezelfde tegenpartij te herkennen, ongeacht kleine verschillen
+    // in transactiereferenties — gebruikt om categorieën te leren/hergebruiken.
+    const categorieSleutel = naam.toLowerCase().trim().replace(/\s+/g, " ") || fullDesc.toLowerCase().slice(0,40);
+    const category = categorieMap?.[categorieSleutel] || guessCategory(fullDesc);
+
     // Vingerafdruk om dezelfde transactie later te herkennen als je een
     // overlappende periode opnieuw importeert (voorkomt dubbele boekingen).
     const bankRef = [iban, datum, cols[iBedrag], fullDesc].join("|");
@@ -97,7 +102,8 @@ function parseRabobankCSV(text, rekeningMap) {
       id: uid(),
       name:     fullDesc.slice(0,80) || "Onbekend",
       amount:   Math.abs(amount),
-      category: guessCategory(fullDesc),
+      category,
+      categorieSleutel,
       account,
       month,
       fixed:    false,
@@ -329,6 +335,8 @@ export default function BudgetApp() {
   const [bijst,        setBijstState]        = useState([]);
   const [setupDone,    setSetupDoneState]    = useState(false);
   const [laatsteBankImport, setLaatsteBankImportState] = useState(null);
+  const [ibanMap, setIbanMapState] = useState({});
+  const [categorieMap, setCategorieMapState] = useState({});
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null); // "Pepijn" | "Tessa"
 
   // ── Wie ben ik? (voor "wie heeft wat gedaan"-badges) ──
@@ -359,6 +367,8 @@ export default function BudgetApp() {
       tasks: patch.tasks ?? tasks,
       bijst: patch.bijst ?? bijst,
       laatsteBankImport: patch.laatsteBankImport ?? laatsteBankImport,
+      ibanMap: patch.ibanMap ?? ibanMap,
+      categorieMap: patch.categorieMap ?? categorieMap,
     };
     if (patch.setupDone !== undefined) setSetupDoneState(patch.setupDone);
     if (patch.theme !== undefined) setThemeNameState(patch.theme);
@@ -368,11 +378,13 @@ export default function BudgetApp() {
     if (patch.budgets !== undefined) setBudgetsState(patch.budgets);
     if (patch.receipts !== undefined) setReceiptsState(patch.receipts);
     if (patch.laatsteBankImport !== undefined) setLaatsteBankImportState(patch.laatsteBankImport);
+    if (patch.ibanMap !== undefined) setIbanMapState(patch.ibanMap);
+    if (patch.categorieMap !== undefined) setCategorieMapState(patch.categorieMap);
     if (patch.savingsGoals !== undefined) setSavingsGoalsState(patch.savingsGoals);
     if (patch.tasks !== undefined) setTasksState(patch.tasks);
     if (patch.bijst !== undefined) setBijstState(patch.bijst);
     saveBudgetData(next);
-  }, [setupDone, themeName, names, incomes, expenses, budgets, receipts, savingsGoals, tasks, bijst, laatsteBankImport]);
+  }, [setupDone, themeName, names, incomes, expenses, budgets, receipts, savingsGoals, tasks, bijst, laatsteBankImport, ibanMap, categorieMap]);
 
   // Kleine helper-setters die op dezelfde manier werken als de oude setX(updater)-vorm,
   // zodat de rest van de component-logica grotendeels ongewijzigd kan blijven.
@@ -384,6 +396,8 @@ export default function BudgetApp() {
   const setSavingsGoals = (updater) => persist({ savingsGoals: typeof updater === "function" ? updater(savingsGoals) : updater });
   const setTasks        = (updater) => persist({ tasks: typeof updater === "function" ? updater(tasks) : updater });
   const setBijst        = (updater) => persist({ bijst: typeof updater === "function" ? updater(bijst) : updater });
+  const setIbanMap      = (updater) => persist({ ibanMap: typeof updater === "function" ? updater(ibanMap) : updater });
+  const setCategorieMap = (updater) => persist({ categorieMap: typeof updater === "function" ? updater(categorieMap) : updater });
   const setThemeName    = (updater) => persist({ theme: typeof updater === "function" ? updater(themeName) : updater });
   const setSetupDone    = (val) => persist({ setupDone: val });
 
@@ -406,6 +420,8 @@ export default function BudgetApp() {
         setTasksState(data.tasks || []);
         setBijstState(data.bijst || []);
         setLaatsteBankImportState(data.laatsteBankImport || null);
+        setIbanMapState(data.ibanMap || {});
+        setCategorieMapState(data.categorieMap || {});
         setLoading(false);
         setVerbindingsFout(false);
       } else if (active) {
@@ -442,7 +458,6 @@ export default function BudgetApp() {
   const [selectedMonth, setSelectedMonth] = useState(NOW_MONTH); // maand-selector
   const [csvImport,    setCsvImport]    = useState(null);
   const [csvError,     setCsvError]     = useState("");
-  const [ibanMap,      setIbanMap]      = useState({});
   const [toast,        setToast]        = useState(null);
   const [toastColor,   setToastColor]   = useState(null);
   const [expForm,      setExpForm]      = useState({ name:"", amount:"", category:CATEGORIES[0], account:"p1", month:NOW_MONTH, fixed:false, recurring:false, note:"" });
@@ -617,7 +632,7 @@ export default function BudgetApp() {
     const reader = new FileReader();
     reader.onload = e => {
       try {
-        const rows = parseRabobankCSV(e.target.result, ibanMap);
+        const rows = parseRabobankCSV(e.target.result, ibanMap, categorieMap);
         if (!rows.length) { setCsvError("Geen uitgaven gevonden. Controleer het Rabobank CSV-formaat."); return; }
 
         // Sla transacties over die er (op basis van vingerafdruk) al in staan —
@@ -1585,6 +1600,26 @@ export default function BudgetApp() {
                 </div>
               )}
 
+              {Object.keys(categorieMap).length > 0 && (
+                <div style={{ background:C.card, borderRadius:10, padding:11, marginBottom:12 }}>
+                  <div style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:7 }}>🏷️ Geleerde categorieën ({Object.keys(categorieMap).length})</div>
+                  <div style={{ maxHeight:160, overflowY:"auto" }}>
+                    {Object.entries(categorieMap).map(([sleutel, cat]) => (
+                      <div key={sleutel} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5 }}>
+                        <span style={{ fontSize:11, color:C.text, flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sleutel}</span>
+                        <span style={{ color:C.muted, fontSize:11 }}>→</span>
+                        <select value={cat} onChange={e=>setCategorieMap(p=>({...p,[sleutel]:e.target.value}))}
+                          style={{ ...S.inp, width:"auto", fontSize:11, padding:"3px 7px" }}>
+                          {CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                        </select>
+                        <button onClick={()=>setCategorieMap(p=>{const n={...p};delete n[sleutel];return n;})}
+                          style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:12 }}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div style={{ background:C.card, borderRadius:10, padding:11, marginBottom:12, fontSize:11, color:C.muted, lineHeight:1.6 }}>
                 📋 rabo.nl → Rekeningen → <strong style={{ color:C.text }}>Download → CSV</strong> → kies periode
               </div>
@@ -1619,6 +1654,27 @@ export default function BudgetApp() {
                     <button style={S.btn(C.green)} onClick={()=>confirmCSV(csvImport)}>✅ Importeer ({csvImport.length})</button>
                   </div>
                 </div>
+                <div style={{ padding:"9px 16px", background:`${C.accent}0F`, borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                  <span style={{ fontSize:11, color:C.muted, whiteSpace:"nowrap" }}>💡 Deze hele CSV komt van één rekening? Zet 'm in één keer (wordt onthouden voor volgende keer):</span>
+                  <select defaultValue="" onChange={e=>{
+                      if (!e.target.value) return;
+                      const gekozenAccount = e.target.value;
+                      setCsvImport(r => r.map(row => ({ ...row, account: gekozenAccount })));
+                      // Onthoud deze koppeling ook voor de IBAN('s) in dit bestand, zodat
+                      // een volgende import van dezelfde rekening dit niet meer vraagt.
+                      const ibans = [...new Set(csvImport.map(row => row.iban).filter(Boolean))];
+                      setIbanMap(prev => {
+                        const next = { ...prev };
+                        ibans.forEach(iban => { next[iban] = gekozenAccount; });
+                        return next;
+                      });
+                      e.target.value = "";
+                    }}
+                    style={{ ...S.inp, width:"auto", fontSize:11, padding:"5px 9px" }}>
+                    <option value="">Alle {csvImport.length} rijen naar…</option>
+                    {accountOptions.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}
+                  </select>
+                </div>
                 <div style={{ maxHeight:400, overflowY:"auto" }}>
                   <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                     <thead style={{ position:"sticky", top:0, background:C.card }}>
@@ -1633,7 +1689,14 @@ export default function BudgetApp() {
                           <td style={{ padding:"6px 12px", color:C.muted }}>{fmtM(row.month)}</td>
                           <td style={{ padding:"6px 12px", fontWeight:700, color:C.red }}>-{euro(row.amount)}</td>
                           <td style={{ padding:"6px 12px" }}>
-                            <select value={row.category} onChange={e=>{const r=[...csvImport];r[i]={...r[i],category:e.target.value};setCsvImport(r);}}
+                            <select value={row.category} onChange={e=>{
+                                const nieuweCategorie = e.target.value;
+                                // Pas toe op álle rijen in deze import met dezelfde tegenpartij —
+                                // niet alleen deze ene rij — zodat je maar één keer hoeft te corrigeren.
+                                setCsvImport(r => r.map(x => x.categorieSleutel === row.categorieSleutel ? { ...x, category: nieuweCategorie } : x));
+                                // En onthoud de koppeling voor toekomstige imports van dezelfde tegenpartij.
+                                if (row.categorieSleutel) setCategorieMap(prev => ({ ...prev, [row.categorieSleutel]: nieuweCategorie }));
+                              }}
                               style={{ background:C.card, border:`1px solid ${CAT_COL[row.category]||C.border}`, borderRadius:6, padding:"3px 7px", color:C.text, fontSize:11 }}>
                               {CATEGORIES.map(c=><option key={c}>{c}</option>)}
                             </select>

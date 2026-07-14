@@ -15,6 +15,8 @@ const EMPTY_STATE = {
   savingsGoals: [],
   tasks: [],
   bijst: [],
+  ibanMap: {},
+  categorieMap: {},
 };
 
 export default async function handler(req, res) {
