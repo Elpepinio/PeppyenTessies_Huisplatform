@@ -5,7 +5,7 @@ import { Plus, X, ChevronLeft, Camera, Leaf, Droplets, Scissors, Sun, Thermomete
 // ── Constanten ─────────────────────────────────────────
 const MAANDEN = ["Jan","Feb","Mrt","Apr","Mei","Jun","Jul","Aug","Sep","Okt","Nov","Dec"];
 const LOCATIES = ["Binnen","Buiten","Tuin","Balkon","Kas","Vensterbank"];
-const CATEGORIEEN = ["Groente","Fruit","Kruiden","Bloemen","Struiken","Bomen","Kamerplanten","Cactus/Vetplanten","Klimplanten","Overig"];
+const CATEGORIEEN = ["Groente","Fruit","Kruiden","Gras","Bloemen","Struiken","Bomen","Kamerplanten","Cactus/Vetplanten","Klimplanten","Overig"];
 const ONDERHOUD_TYPES = [
   { id: "water",    label: "Water geven",  icon: "💧", color: "#00D4FF" },
   { id: "snoei",    label: "Snoeien",      icon: "✂️", color: "#2D4A3E" },
@@ -55,6 +55,11 @@ function getSeizoensAdvies(plant, maandIdx) {
     if (m >= 3 && m <= 8) advies.push({ type: "mest", tekst: "Groeiseizoen: wekelijks bemesten" });
     if (m >= 4 && m <= 9) advies.push({ type: "repot", tekst: "Goed moment om te verpotten" });
   }
+  if (plant.categorie === "Gras") {
+    if (m === 3 || m === 4) advies.push({ type: "mest", tekst: "Voorjaarsbemesting voor het groeiseizoen" });
+    if (m >= 3 && m <= 9) advies.push({ type: "snoei", tekst: "Regelmatig maaien" });
+    if (m === 9 || m === 10) advies.push({ type: "mest", tekst: "Naherfstbemesting / verticuteren" });
+  }
 
   // Wateradvies op basis van locatie en seizoen
   const buiten = ["Buiten","Tuin","Balkon"].includes(plant.locatie);
@@ -63,6 +68,32 @@ function getSeizoensAdvies(plant, maandIdx) {
   else advies.push({ type: "water", tekst: "Controleer de bodemvochtigheid" });
 
   return advies;
+}
+
+// Sleutel om een specifiek adviesitem te herkennen (los per plant bewaard).
+function adviesSleutel(a) {
+  return `${a.type}|${a.tekst}`;
+}
+
+// Niet elke taak is "één keer per jaar en dan klaar": oogsten, maaien en
+// wekelijks/dagelijks bemesten of water geven moet je juist herhaaldelijk
+// blijven doen zolang het seizoen loopt. Zo'n taak wegklikken mag 'm dus niet
+// het hele seizoen laten verdwijnen — alleen echt eenmalige taken (snoeien,
+// verpotten, zaaien, in winterrust brengen) verdienen die lange verberging.
+function isRegelmatigeTaak(a) {
+  if (a.type === "water" || a.type === "oogst") return true;
+  return /regelmatig|wekelijks|dagelijks/i.test(a.tekst);
+}
+
+// Eenmalige taken: ~8 maanden verborgen (lang genoeg om niet dit seizoen
+// alweer terug te komen, kort genoeg om vóór de volgende jaarlijkse
+// gelegenheid weer op te duiken). Terugkerende taken: maar 2 weken, zodat ze
+// binnen hetzelfde seizoen gewoon weer een seintje geven.
+function isAdviesWeggeklikt(plant, a) {
+  const tijdstip = plant.dismissedAdvies?.[adviesSleutel(a)];
+  if (!tijdstip) return false;
+  const verbergDagen = isRegelmatigeTaak(a) ? 14 : 240;
+  return (Date.now() - tijdstip) / 86400000 < verbergDagen;
 }
 
 // ── Data helpers ────────────────────────────────────────
@@ -137,6 +168,8 @@ export default function PlantenApp() {
   }, []);
   const [activePlantId, setActivePlantId] = useState(null);
   const [tab, setTab] = useState("overzicht"); // overzicht | kalender | log
+  const [zoekterm, setZoekterm] = useState("");
+  const [filterPlek, setFilterPlek] = useState(null); // null | "binnen" | "buiten"
   const lastWriteRef = useRef(0);
 
   // Formulier
@@ -244,6 +277,14 @@ export default function PlantenApp() {
 
   function updatePlant(id, fields) {
     persistData(planten.map(p => p.id === id ? { ...p, ...fields } : p), onderhoudLog);
+  }
+
+  // Klikt een adviesitem weg voor deze ene plant, zonder dat er per se een
+  // datering in het onderhoudslog hoeft te komen (dat kan nog steeds via de
+  // aparte "Log"-knop).
+  function dismissAdvies(plant, a) {
+    updatePlant(plant.id, { dismissedAdvies: { ...(plant.dismissedAdvies || {}), [adviesSleutel(a)]: Date.now() } });
+    showToast(`✅ Advies weggeklikt tot de volgende keer`);
   }
 
   // ── Onderhoud ─────────────────────────────────────────
@@ -390,7 +431,7 @@ Maximaal 300 woorden, praktisch en informatief.`,
   function berekenHerinneringen() {
     const herinneringen = [];
     planten.forEach(plant => {
-      const advies = getSeizoensAdvies(plant, huidigeM);
+      const advies = getSeizoensAdvies(plant, huidigeM).filter(a => !isAdviesWeggeklikt(plant, a));
       const logEntries = onderhoudLog.filter(l => l.plantId === plant.id);
       advies.forEach(a => {
         // Check wanneer dit onderhoud voor het laatst is gedaan
@@ -433,7 +474,7 @@ Maximaal 300 woorden, praktisch en informatief.`,
   // ════════════════════════
   if (activePlant) {
     const plantLog = onderhoudLog.filter(l => l.plantId === activePlant.id).sort((a,b) => b.datum.localeCompare(a.datum));
-    const seizoensAdvies = getSeizoensAdvies(activePlant, huidigeM);
+    const seizoensAdvies = getSeizoensAdvies(activePlant, huidigeM).filter(a => !isAdviesWeggeklikt(activePlant, a));
 
     return (
       <div style={S.appBg}>
@@ -471,16 +512,20 @@ Maximaal 300 woorden, praktisch en informatief.`,
           <div style={S.card}>
             <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 700, color: C.green }}>📅 {MAANDEN[huidigeM]} — Wat nu te doen</h3>
             {seizoensAdvies.length === 0
-              ? <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>Geen specifiek seizoensadvies voor deze maand.</p>
+              ? <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>Geen openstaand seizoensadvies voor deze maand.</p>
               : seizoensAdvies.map((a, i) => {
                   const type = ONDERHOUD_TYPES.find(t => t.id === a.type);
                   return (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}>
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}>
                       <span style={{ fontSize: 18 }}>{type?.icon || "📝"}</span>
                       <span style={{ flex: 1, fontSize: 13, color: C.text }}>{a.tekst}</span>
                       <button style={{ ...S.btn(type?.color || C.green), fontSize: 11, padding: "5px 10px" }}
                         onClick={() => { setOnderhoudForm({ type: a.type, notitie: a.tekst, datum: new Date().toISOString().slice(0,10) }); setShowOnderhoud(true); }}>
                         Log
+                      </button>
+                      <button style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, width: 28, height: 28, cursor: "pointer", color: C.muted, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+                        onClick={() => dismissAdvies(activePlant, a)} title="Al gedaan — verberg tot de volgende keer">
+                        <Check size={14} />
                       </button>
                     </div>
                   );
@@ -668,32 +713,62 @@ Maximaal 300 woorden, praktisch en informatief.`,
                 <p style={{ fontSize: 14, color: C.muted, margin: 0 }}>Tik + om je eerste plant toe te voegen</p>
               </div>
             )}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
-              {planten.map(plant => {
-                const plantLog = onderhoudLog.filter(l => l.plantId === plant.id);
-                const lastWater = plantLog.filter(l => l.type === "water").sort((a,b) => b.datum.localeCompare(a.datum))[0];
-                const dagenZonderWater = lastWater
-                  ? Math.floor((Date.now() - new Date(lastWater.datum)) / 86400000)
-                  : null;
-                return (
-                  <div key={plant.id} style={{ ...S.card, cursor: "pointer", padding: 0, overflow: "hidden" }}
-                    onClick={() => setActivePlantId(plant.id)}>
-                    {plant.foto
-                      ? <img src={plant.foto} alt={plant.naam} style={{ width: "100%", height: 100, objectFit: "cover" }} />
-                      : <div style={{ height: 80, background: C.card, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>🌱</div>}
-                    <div style={{ padding: "10px 12px" }}>
-                      <p style={{ margin: "0 0 2px", fontSize: 14, fontWeight: 700, color: C.text }}>{plant.naam}</p>
-                      <p style={{ margin: 0, fontSize: 11, color: C.muted }}>{plant.locatie} · {plant.categorie}</p>
-                      {dagenZonderWater !== null && (
-                        <p style={{ margin: "4px 0 0", fontSize: 11, color: dagenZonderWater > 5 ? C.red : C.muted }}>
-                          💧 {dagenZonderWater === 0 ? "Vandaag water" : `${dagenZonderWater}d geleden water`}
-                        </p>
-                      )}
-                    </div>
+            {planten.length > 0 && (() => {
+              const isBuiten = p => ["Buiten","Tuin","Balkon"].includes(p.locatie);
+              let zichtbaar = planten;
+              if (filterPlek === "binnen") zichtbaar = zichtbaar.filter(p => !isBuiten(p));
+              else if (filterPlek === "buiten") zichtbaar = zichtbaar.filter(p => isBuiten(p));
+              if (zoekterm.trim()) {
+                const z = zoekterm.toLowerCase();
+                zichtbaar = zichtbaar.filter(p => p.naam.toLowerCase().includes(z) || p.soort?.toLowerCase().includes(z) || p.categorie.toLowerCase().includes(z));
+              }
+              const aantalBinnen = planten.filter(p => !isBuiten(p)).length;
+              const aantalBuiten = planten.filter(isBuiten).length;
+              return (
+                <>
+                  <div style={{ position: "relative", marginBottom: 10 }}>
+                    <input style={S.inp} placeholder="🔍 Zoek op naam, soort of categorie…" value={zoekterm} onChange={e => setZoekterm(e.target.value)} />
                   </div>
-                );
-              })}
-            </div>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                    <button style={{ flex: 1, border: "none", borderRadius: 10, padding: "9px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: filterPlek === null ? C.green : C.card, color: filterPlek === null ? "#FFF" : C.muted }}
+                      onClick={() => setFilterPlek(null)}>Alles ({planten.length})</button>
+                    <button style={{ flex: 1, border: "none", borderRadius: 10, padding: "9px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: filterPlek === "binnen" ? C.green : C.card, color: filterPlek === "binnen" ? "#FFF" : C.muted }}
+                      onClick={() => setFilterPlek(filterPlek === "binnen" ? null : "binnen")}>🏠 Binnen ({aantalBinnen})</button>
+                    <button style={{ flex: 1, border: "none", borderRadius: 10, padding: "9px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: filterPlek === "buiten" ? C.green : C.card, color: filterPlek === "buiten" ? "#FFF" : C.muted }}
+                      onClick={() => setFilterPlek(filterPlek === "buiten" ? null : "buiten")}>🌳 Buiten ({aantalBuiten})</button>
+                  </div>
+                  {zichtbaar.length === 0 && (
+                    <p style={{ textAlign: "center", color: C.muted, fontSize: 14, padding: "20px 0" }}>Niks gevonden.</p>
+                  )}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+                    {zichtbaar.map(plant => {
+                      const plantLog = onderhoudLog.filter(l => l.plantId === plant.id);
+                      const lastWater = plantLog.filter(l => l.type === "water").sort((a,b) => b.datum.localeCompare(a.datum))[0];
+                      const dagenZonderWater = lastWater
+                        ? Math.floor((Date.now() - new Date(lastWater.datum)) / 86400000)
+                        : null;
+                      return (
+                        <div key={plant.id} style={{ ...S.card, cursor: "pointer", padding: 0, overflow: "hidden" }}
+                          onClick={() => setActivePlantId(plant.id)}>
+                          {plant.foto
+                            ? <img src={plant.foto} alt={plant.naam} style={{ width: "100%", height: 100, objectFit: "cover" }} />
+                            : <div style={{ height: 80, background: C.card, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>🌱</div>}
+                          <div style={{ padding: "10px 12px" }}>
+                            <p style={{ margin: "0 0 2px", fontSize: 14, fontWeight: 700, color: C.text }}>{plant.naam}</p>
+                            <p style={{ margin: 0, fontSize: 11, color: C.muted }}>{plant.locatie} · {plant.categorie}</p>
+                            {dagenZonderWater !== null && (
+                              <p style={{ margin: "4px 0 0", fontSize: 11, color: dagenZonderWater > 5 ? C.red : C.muted }}>
+                                💧 {dagenZonderWater === 0 ? "Vandaag water" : `${dagenZonderWater}d geleden water`}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()}
           </>
         )}
 
@@ -704,7 +779,7 @@ Maximaal 300 woorden, praktisch en informatief.`,
             {planten.length === 0
               ? <p style={{ color: C.muted, fontSize: 14, textAlign: "center", padding: "40px 0" }}>Voeg eerst planten toe</p>
               : planten.map(plant => {
-                  const advies = getSeizoensAdvies(plant, huidigeM);
+                  const advies = getSeizoensAdvies(plant, huidigeM).filter(a => !isAdviesWeggeklikt(plant, a));
                   return (
                     <div key={plant.id} style={{ ...S.card, marginBottom: 10 }} onClick={() => setActivePlantId(plant.id)}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>

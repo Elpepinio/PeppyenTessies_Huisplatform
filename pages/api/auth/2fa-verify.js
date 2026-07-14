@@ -1,6 +1,6 @@
 import {
   createSession, sessionCookieHeader,
-  verify2FALoginCode, getPendingLogin, destroyPendingLogin,
+  verify2FALoginCode, verifyAndConsumeRecoveryCode, getPendingLogin, destroyPendingLogin,
 } from "../../../lib/auth";
 
 // Zelfde eenvoudige rate-limiting als bij het wachtwoord — een authenticator-
@@ -45,7 +45,9 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: "Deze inlogpoging is verlopen — begin opnieuw." });
     }
 
-    const geldig = await verify2FALoginCode(code);
+    const geldig = /^\d{6}$/.test(String(code).trim())
+      ? await verify2FALoginCode(code)
+      : await verifyAndConsumeRecoveryCode(code);
     if (!geldig) {
       recordAttempt(ip);
       return res.status(401).json({ error: "Onjuiste code" });

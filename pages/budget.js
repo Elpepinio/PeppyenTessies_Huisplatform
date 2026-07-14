@@ -14,15 +14,15 @@ const THEMES = {
 };
 
 const ACC_COL  = { gezamenlijk:"#00D4FF", p1:"#B57BFF", p2:"#FF8C42" };
-const CAT_ICON = { Wonen:"🏠", Boodschappen:"🛒", Transport:"🚗", Abonnementen:"📺", "Uit eten":"🍽️", Gezondheid:"💊", Kleding:"👗", Entertainment:"🎭", Vakantie:"✈️", Kinderen:"👶", Sparen:"💰", "Gezamenlijke rekening":"🏦", Overig:"📦" };
+const CAT_ICON = { Wonen:"🏠", Boodschappen:"🛒", Transport:"🚗", Abonnementen:"📺", "Uit eten":"🍽️", Gezondheid:"💊", Kleding:"👗", Entertainment:"🎭", Vakantie:"✈️", Kinderen:"👶", Sparen:"💰", Verzekering:"🛡️", "Goede doelen":"❤️", "Gezamenlijke rekening":"🏦", Overig:"📦" };
 const CAT_COL  = {
   Wonen:"#6C63FF", Boodschappen:"#2ECC71", Transport:"#F39C12",
   Abonnementen:"#E74C3C", "Uit eten":"#1ABC9C", Gezondheid:"#E91E63",
   Kleding:"#FF9800", Entertainment:"#9C27B0", Vakantie:"#00BCD4",
-  Kinderen:"#FF6B9D", Sparen:"#3F51B5", "Gezamenlijke rekening":"#26A69A", Overig:"#607D8B",
+  Kinderen:"#FF6B9D", Sparen:"#3F51B5", Verzekering:"#795548", "Goede doelen":"#D81B60", "Gezamenlijke rekening":"#26A69A", Overig:"#607D8B",
 };
 
-const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Gezondheid","Kleding","Entertainment","Vakantie","Kinderen","Sparen","Gezamenlijke rekening","Overig"];
+const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Gezondheid","Kleding","Entertainment","Vakantie","Kinderen","Sparen","Verzekering","Goede doelen","Gezamenlijke rekening","Overig"];
 // ── Dynamische datum (altijd actueel) ────────────────────────────────────────
 const _now       = new Date();
 const NOW_MONTH  = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}`;
@@ -134,6 +134,86 @@ function parseRabobankCSV(text, rekeningMap, categorieMap, bekendeIbans) {
   });
 }
 
+// Creditcard-afschriften verschillen sterk per kaartuitgever (ICS, Amex,
+// bank-eigen creditcards...) — deze parser is daarom bewust flexibeler dan de
+// Rabobank-parser: hij zoekt naar de meest gebruikelijke kolomnamen in
+// meerdere talen/varianten, in plaats van één vast formaat te verwachten.
+// Een creditcardafschrift heeft meestal geen eigen-IBAN-kolom (het is altijd
+// dezelfde kaart), dus "account" wordt niet automatisch bepaald — dat kies je
+// na het inlezen in één keer voor de hele import.
+function parseCreditCardCSV(text, categorieMap) {
+  const firstLine = text.trim().split("\n")[0];
+  const sep = firstLine.split(";").length > firstLine.split(",").length ? ";" : ",";
+  const rows = text.trim().split("\n");
+  const header = rows[0].split(sep).map(c => c.replace(/^"|"$/g,"").replace(/\r$/,"").trim().toLowerCase());
+
+  const ci = (...names) => {
+    for (const name of names) {
+      const idx = header.findIndex(h => h.includes(name));
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  };
+  const iDatum  = ci("transactiedatum", "boekdatum", "datum", "transaction date", "date");
+  const iBedrag = ci("transactiebedrag", "bedrag", "amount");
+  const iOmsch  = ci("omschrijving", "transactieomschrijving", "specificatie", "vermelding", "description", "merchant", "naam");
+
+  if (iDatum < 0 || iBedrag < 0) return []; // kon geen bruikbare kolommen vinden
+
+  return rows.slice(1).flatMap(line => {
+    if (!line.trim()) return [];
+    const cols = [];
+    let cur = "", inQ = false;
+    for (const ch of line + sep) {
+      if (ch === '"') inQ = !inQ;
+      else if (ch === sep && !inQ) { cols.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+    if (cols.length < 2) return [];
+
+    const ruwDatum = (cols[iDatum] || "").replace(/^"|"$/g, "").trim();
+    const ruwBedrag = (cols[iBedrag] || "").replace(/^"|"$/g, "").trim();
+    const omsch = iOmsch >= 0 ? (cols[iOmsch] || "").replace(/^"|"$/g, "").trim().slice(0, 100) : "Onbekend";
+    if (!ruwDatum || !ruwBedrag) return [];
+
+    // Datum kan YYYY-MM-DD of DD-MM-YYYY zijn
+    let jaar, maand;
+    if (/^\d{4}/.test(ruwDatum)) {
+      [jaar, maand] = ruwDatum.split(/[-/]/);
+    } else {
+      const delen = ruwDatum.split(/[-/]/);
+      [, maand, jaar] = delen.length === 3 ? delen : [null, "01", "1970"];
+    }
+    if (jaar?.length === 2) jaar = "20" + jaar;
+    const month = `${jaar}-${String(maand).padStart(2, "0")}`;
+
+    const bedragSchoon = ruwBedrag.replace(/[^\d,.-]/g, "");
+    const amount = Math.abs(parseFloat(bedragSchoon.includes(",") ? bedragSchoon.replace(/\./g,"").replace(",",".") : bedragSchoon));
+    if (!amount || isNaN(amount)) return [];
+
+    const normaliseer = s => s.toLowerCase().replace(/\d{1,4}[-/]\d{1,2}[-/]\d{1,4}/g, "").replace(/\d+/g, "").replace(/\s+/g, " ").trim();
+    const categorieSleutel = normaliseer(omsch).slice(0, 80) || omsch.toLowerCase().slice(0, 40);
+    const category = categorieMap?.[categorieSleutel] || guessCategory(omsch);
+
+    const bankRef = ["creditcard", ruwDatum, ruwBedrag, omsch].join("|");
+
+    return [{
+      id: uid(),
+      name: omsch.slice(0, 80) || "Onbekend",
+      amount,
+      category,
+      categorieSleutel,
+      account: "gezamenlijk",
+      month,
+      fixed: false,
+      fromBank: true,
+      bron: "creditcard",
+      rawDesc: omsch,
+      bankRef,
+    }];
+  });
+}
+
 function detectIBANsInCSV(text) {
   const sep = text.split("\n")[0].split(";").length > text.split("\n")[0].split(",").length ? ";" : ",";
   const ibans = new Set();
@@ -147,15 +227,17 @@ function detectIBANsInCSV(text) {
 function guessCategory(t) {
   t = t.toLowerCase();
   if (/albert heijn|jumbo|lidl|aldi|plus|spar|dirk|supermarkt/.test(t)) return "Boodschappen";
-  if (/huur|hypotheek|energie|gas|elektra|nuon|vattenfall|eneco|essent/.test(t)) return "Wonen";
+  if (/huur|hypotheek|energie|gas|elektra|water|nuon|vattenfall|eneco|essent|vitens|waternet|dunea|brabant water|evides|wml|oasen|pwn/.test(t)) return "Wonen";
   if (/ns |ov-chip|trein|bus|metro|shell|bp |esso|benzine|parkeer|uber|bolt/.test(t)) return "Transport";
   if (/netflix|spotify|disney|videoland|ziggo|kpn|t-mobile|vodafone/.test(t)) return "Abonnementen";
   if (/restaurant|cafe|café|mcdonalds|thuisbezorgd|deliveroo|dominos|pizza|sushi/.test(t)) return "Uit eten";
   if (/zara|h&m|primark|wehkamp|zalando|bol\.com|nike|adidas|uniqlo/.test(t)) return "Kleding";
+  if (/verzeker|zorgverzekeraar|vgz|cz\b|zilveren kruis|achmea|ohra|centraal beheer|univé|interpolis|aegon|nationale.?nederlanden|ditzo|fbto|anwb|asr\b|allianz|inshared/.test(t)) return "Verzekering";
   if (/apotheek|huisarts|tandarts|ziekenhuis|gym|sportschool|yoga|decathlon/.test(t)) return "Gezondheid";
   if (/booking|airbnb|hotel|vliegticket|ryanair|transavia|corendon|sunweb|vakantie/.test(t)) return "Vakantie";
   if (/bioscoop|theater|concert|ticketmaster|efteling|pretpark/.test(t)) return "Entertainment";
   if (/sparen|spaarrekening/.test(t)) return "Sparen";
+  if (/unicef|artsen zonder grenzen|rode kruis|greenpeace|wnf|wereld natuur fonds|kwf|hartstichting|leger des heils|oxfam novib|amnesty|natuurmonumenten|dierenbescherming|goede doel|donatie|stichting.*fonds|giro555/.test(t)) return "Goede doelen";
   if (/inleg|naar gezamenlijk|gezamenlijke rekening|extra inleg/.test(t)) return "Gezamenlijke rekening";
   return "Overig";
 }
@@ -500,6 +582,7 @@ export default function BudgetApp() {
   const [taskForm,     setTaskForm]     = useState({title:"",due:"",account:"alle",priority:"middel"});
 
   const csvRef  = useRef();
+  const creditcardCsvRef = useRef();
 
   // ── Derived data (memoised) ───────────────────────────────────────────────
   const accountOptions = useMemo(() => [
@@ -668,6 +751,36 @@ export default function BudgetApp() {
 
         // Sla transacties over die er (op basis van vingerafdruk) al in staan —
         // zo kun je gerust een overlappende periode opnieuw importeren.
+        const bekendeRefs = new Set(expenses.filter(x => x.bankRef).map(x => x.bankRef));
+        const nieuw = rows.filter(r => !bekendeRefs.has(r.bankRef));
+        const dubbel = rows.length - nieuw.length;
+        setCsvDubbelCount(dubbel);
+
+        if (!nieuw.length) {
+          setCsvError(`Alle ${rows.length} transacties uit dit bestand staan al in Budget — niks nieuws om te importeren.`);
+          return;
+        }
+        setCsvImport(nieuw);
+      } catch (err) { setCsvError("Fout bij inladen: " + err.message); }
+    };
+    reader.readAsText(file, "UTF-8");
+  }
+
+  // Creditcard-afschriften zijn meestal abonnementen/eenmalige aankopen op één
+  // kaart — geen eigen-IBAN-koppeling nodig, wel dezelfde dubbele-detectie en
+  // geleerde-categorieën als bij de bank-CSV.
+  function handleCreditcardCSV(file) {
+    if (!file) return;
+    setCsvError(""); setCsvImport(null); setCsvDubbelCount(0); setCsvReviewPagina(0);
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const rows = parseCreditCardCSV(e.target.result, categorieMap);
+        if (!rows.length) {
+          setCsvError("Geen transacties herkend in dit bestand. Creditcard-afschriften verschillen sterk per kaartuitgever — stuur een voorbeeldbestand door zodat de import daarop afgestemd kan worden.");
+          return;
+        }
+
         const bekendeRefs = new Set(expenses.filter(x => x.bankRef).map(x => x.bankRef));
         const nieuw = rows.filter(r => !bekendeRefs.has(r.bankRef));
         const dubbel = rows.length - nieuw.length;
@@ -1700,6 +1813,33 @@ export default function BudgetApp() {
               </div>
 
               {csvError && <div style={{ marginTop:8, background:`${C.red}15`, border:`1px solid ${C.red}44`, borderRadius:8, padding:"7px 12px", color:C.red, fontSize:12 }}>⚠️ {csvError}</div>}
+            </div>
+
+            {/* Creditcard CSV-import — los van de bank-CSV, geen IBAN-koppeling nodig */}
+            <div style={{ background:C.surf, border:`1px solid ${C.accent}44`, borderRadius:13, padding:20 }}>
+              <div style={{ display:"flex", gap:12, marginBottom:14 }}>
+                <span style={{ fontSize:26 }}>💳</span>
+                <div>
+                  <h2 style={{ margin:0, fontSize:16, fontWeight:800 }}>Creditcard CSV-import</h2>
+                  <p style={{ margin:"4px 0 0", fontSize:12, color:C.muted }}>Vaak abonnementen/eenmalige aankopen · zelfde dubbele-detectie en geleerde categorieën als bij de bank-CSV</p>
+                </div>
+              </div>
+
+              <div style={{ background:C.card, borderRadius:10, padding:11, marginBottom:12, fontSize:11, color:C.muted, lineHeight:1.6 }}>
+                📋 Exporteer het afschrift van je creditcardmaatschappij (bv. ICS) als CSV, meestal via hun app/website onder "Afschriften" of "Transacties"
+              </div>
+
+              <div style={{ border:`2px dashed ${csvImport ? C.green : C.border}`, borderRadius:12, padding:22, textAlign:"center", cursor:"pointer" }}
+                onClick={()=>creditcardCsvRef.current?.click()}
+                onDrop={e=>{e.preventDefault();handleCreditcardCSV(e.dataTransfer.files[0]);}}
+                onDragOver={e=>e.preventDefault()}>
+                <input ref={creditcardCsvRef} type="file" accept=".csv" style={{ display:"none" }} onChange={e=>handleCreditcardCSV(e.target.files[0])}/>
+                <div style={{ fontSize:26, marginBottom:4 }}>💳</div><div style={{ fontWeight:700 }}>Sleep CSV of klik</div><div style={{ color:C.muted, fontSize:11, marginTop:2 }}>Creditcard-afschrift .csv</div>
+              </div>
+
+              <p style={{ fontSize:10, color:C.muted, margin:"8px 0 0", lineHeight:1.5 }}>
+                ⚠️ Creditcard-afschriften verschillen per kaartuitgever. Lukt het inlezen niet goed, stuur dan een voorbeeldbestand door — dan stem ik de import daarop af, zoals ook bij de bank-CSV is gebeurd.
+              </p>
             </div>
 
             {csvImport?.length > 0 && (

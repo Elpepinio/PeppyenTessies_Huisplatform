@@ -13,10 +13,10 @@ export default async function handler(req, res) {
     const { code } = req.body || {};
     if (!code) return res.status(400).json({ error: "Vul de code uit je authenticator-app in" });
 
-    const geldig = await confirm2FASetup(code);
-    if (!geldig) return res.status(401).json({ error: "Onjuiste code — probeer het nog eens" });
+    const codes = await confirm2FASetup(code);
+    if (!codes) return res.status(401).json({ error: "Onjuiste code — probeer het nog eens" });
 
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, recoveryCodes: codes });
   } catch (e) {
     return res.status(500).json({ error: "Kon 2FA niet bevestigen" });
   }
