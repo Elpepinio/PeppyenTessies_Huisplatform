@@ -89,9 +89,20 @@ function parseRabobankCSV(text, rekeningMap, categorieMap) {
 
     const account = rekeningMap?.[iban] || "gezamenlijk";
 
-    // Sleutel om dezelfde tegenpartij te herkennen, ongeacht kleine verschillen
-    // in transactiereferenties — gebruikt om categorieën te leren/hergebruiken.
-    const categorieSleutel = naam.toLowerCase().trim().replace(/\s+/g, " ") || fullDesc.toLowerCase().slice(0,40);
+    // Sleutel om "hetzelfde soort transactie" te herkennen — gebruikt om
+    // categorieën te leren/hergebruiken. Alleen de naam van de tegenpartij is
+    // niet genoeg: familie/bekenden maken vaak overschrijvingen met heel
+    // verschillende doelen (bv. hypotheekrente vs. een cadeautje), dus de
+    // omschrijving telt nadrukkelijk mee. Getallen/referenties/data worden
+    // eruit gehaald omdat die toch elke keer net anders zijn.
+    const normaliseer = s => s
+      .toLowerCase()
+      .replace(/\d{1,4}[-/]\d{1,2}[-/]\d{1,4}/g, "")   // datums
+      .replace(/\d+/g, "")                              // losse getallen/referenties
+      .replace(/\s+/g, " ")
+      .trim();
+    const categorieSleutel = [normaliseer(naam), normaliseer(omsch)].filter(Boolean).join(" · ").slice(0, 80)
+      || fullDesc.toLowerCase().slice(0,40);
     const category = categorieMap?.[categorieSleutel] || guessCategory(fullDesc);
 
     // Vingerafdruk om dezelfde transactie later te herkennen als je een
