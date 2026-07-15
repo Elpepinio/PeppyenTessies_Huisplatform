@@ -14,17 +14,18 @@ const THEMES = {
 };
 
 const ACC_COL  = { gezamenlijk:"#00D4FF", p1:"#B57BFF", p2:"#FF8C42" };
-const CAT_ICON = { Wonen:"🏠", Boodschappen:"🛒", Transport:"🚗", Abonnementen:"📺", "Uit eten":"🍽️", Gezondheid:"💊", Kleding:"👗", Entertainment:"🎭", Vakantie:"✈️", Kinderen:"👶", Sparen:"💰", Verzekering:"🛡️", "Goede doelen":"❤️", Bankkosten:"🏛️", "Cadeaus":"🎁", Broodjes:"🥪", Stappen:"🍻", "Gezamenlijke rekening":"🏦", Overig:"📦" };
+const CAT_ICON = { Wonen:"🏠", Boodschappen:"🛒", Transport:"🚗", Abonnementen:"📺", "Uit eten":"🍽️", Gezondheid:"💊", Kleding:"👗", Entertainment:"🎭", Vakantie:"✈️", Kinderen:"👶", Sparen:"💰", Verzekering:"🛡️", "Goede doelen":"❤️", Bankkosten:"🏛️", "Cadeaus":"🎁", Broodjes:"🥪", Stappen:"🍻", "Afschrijving creditcard":"💳", "Onderhoud huis":"🔧", "Inrichten huis":"🛋️", "Persoonlijke verzorging":"🧴", "Gezamenlijke rekening":"🏦", Overig:"📦" };
 const CAT_COL  = {
   Wonen:"#6C63FF", Boodschappen:"#2ECC71", Transport:"#F39C12",
   Abonnementen:"#E74C3C", "Uit eten":"#1ABC9C", Gezondheid:"#E91E63",
   Kleding:"#FF9800", Entertainment:"#9C27B0", Vakantie:"#00BCD4",
   Kinderen:"#FF6B9D", Sparen:"#3F51B5", Verzekering:"#795548", "Goede doelen":"#D81B60",
   Bankkosten:"#546E7A", Cadeaus:"#EC407A", Broodjes:"#8D6E63", Stappen:"#7C4DFF",
+  "Afschrijving creditcard":"#455A64", "Onderhoud huis":"#5D4037", "Inrichten huis":"#9575CD", "Persoonlijke verzorging":"#4DB6AC",
   "Gezamenlijke rekening":"#26A69A", Overig:"#607D8B",
 };
 
-const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Broodjes","Gezondheid","Kleding","Entertainment","Stappen","Vakantie","Kinderen","Sparen","Verzekering","Goede doelen","Cadeaus","Bankkosten","Gezamenlijke rekening","Overig"];
+const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Broodjes","Gezondheid","Persoonlijke verzorging","Kleding","Entertainment","Stappen","Vakantie","Kinderen","Sparen","Verzekering","Goede doelen","Cadeaus","Bankkosten","Afschrijving creditcard","Onderhoud huis","Inrichten huis","Gezamenlijke rekening","Overig"];
 // ── Dynamische datum (altijd actueel) ────────────────────────────────────────
 const _now       = new Date();
 const NOW_MONTH  = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}`;
@@ -240,7 +241,11 @@ function guessCategory(t) {
   if (/bioscoop|theater|concert|ticketmaster|efteling|pretpark/.test(t)) return "Entertainment";
   if (/sparen|spaarrekening/.test(t)) return "Sparen";
   if (/unicef|artsen zonder grenzen|rode kruis|greenpeace|wnf|wereld natuur fonds|kwf|hartstichting|leger des heils|oxfam novib|amnesty|natuurmonumenten|dierenbescherming|goede doel|donatie|stichting.*fonds|giro555/.test(t)) return "Goede doelen";
-  if (/afschrijvingskosten|bankkosten|betaalpas|kosten betaalrekening|jaarlijkse.*kosten|pakketkosten|creditcardkosten/.test(t)) return "Bankkosten";
+  if (/afschrijvingskosten|bankkosten|betaalpas|kosten betaalrekening|jaarlijkse.*kosten|pakketkosten/.test(t)) return "Bankkosten";
+  if (/afschrijving.*creditcard|afschrijving ics|creditcardafschrijving|creditcardkosten|ics creditcard/.test(t)) return "Afschrijving creditcard";
+  if (/loodgieter|aannemer|klusbedrijf|dakdekker|huisschilder|installateur|onderhoudsbedrijf|cv-ketel|ketelonderhoud|rioolontstopping/.test(t)) return "Onderhoud huis";
+  if (/ikea|leen bakker|kwantum|woonwinkel|meubel|gordijnen|behang|woondecoratie|karwei|praxis|gamma|hornbach/.test(t)) return "Inrichten huis";
+  if (/kapper|drogist|kruidvat|etos|parfumerie|schoonheidssalon|nagelstudio|kapsalon/.test(t)) return "Persoonlijke verzorging";
   if (/bakker|broodje|lunchroom|croissanterie|broodzaak|belegd broodje/.test(t)) return "Broodjes";
   if (/café|kroeg|nachtclub|bar\b|discotheek|borrel/.test(t)) return "Stappen";
   if (/cadeau|cadeaubon|geschenk|bloemen.*cadeau/.test(t)) return "Cadeaus";
@@ -263,7 +268,11 @@ const NAAM_SUGGESTIES = {
   Broodjes:     ["Broodje bakker", "Lunchroom", "Lunch op werk"],
   Stappen:      ["Café", "Kroeg", "Uitgaan", "Borrel"],
   Cadeaus:      ["Verjaardagscadeau", "Cadeaubon", "Sinterklaas", "Kerstcadeau"],
-  Bankkosten:   ["Betaalpas kosten", "Jaarlijkse bankkosten", "Creditcardkosten"],
+  Bankkosten:   ["Betaalpas kosten", "Jaarlijkse bankkosten"],
+  "Afschrijving creditcard": ["Afschrijving ICS", "Creditcard-afschrijving"],
+  "Onderhoud huis": ["Loodgieter", "CV-ketel onderhoud", "Klusbedrijf"],
+  "Inrichten huis": ["IKEA", "Meubels", "Gordijnen"],
+  "Persoonlijke verzorging": ["Kapper", "Drogist", "Nagelstudio"],
 };
 
 const BUDGET_SUGGESTIONS = {
