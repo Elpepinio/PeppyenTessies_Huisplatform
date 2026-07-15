@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
+import { logFout } from "../../lib/error-log";
 
 const redis = Redis.fromEnv();
 const DATA_KEY = "huishouden:maaltijden";
@@ -43,7 +44,7 @@ export default async function handler(req, res) {
       );
 
       return res.status(200).json({ ...EMPTY, ...parsed, recepten: receptenMetFotos });
-    } catch (e) { return res.status(500).json({ error: "Laden mislukt" }); }
+    } catch (e) { logFout({ bron: "api-maaltijden-get", bericht: e.message, stack: e.stack }); return res.status(500).json({ error: "Laden mislukt" }); }
   }
 
   if (req.method === "POST") {
@@ -72,7 +73,7 @@ export default async function handler(req, res) {
 
       await redis.set(DATA_KEY, JSON.stringify({ ...req.body, recepten: receptenMeta }));
       return res.status(200).json({ ok: true });
-    } catch (e) { return res.status(500).json({ error: "Opslaan mislukt: " + e.message }); }
+    } catch (e) { logFout({ bron: "api-maaltijden-post", bericht: e.message, stack: e.stack }); return res.status(500).json({ error: "Opslaan mislukt: " + e.message }); }
   }
 
   res.setHeader("Allow", ["GET", "POST"]);

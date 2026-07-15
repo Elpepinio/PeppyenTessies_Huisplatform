@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import { BUILD_INFO } from "../lib/build-info";
 import { Home, List, Wallet, LogOut, Lock, KeyRound, Settings, Eye, EyeOff } from "lucide-react";
 
 const TOOLS = [
@@ -108,6 +109,18 @@ export default function Platform() {
   const [tfaShowRegenerate, setTfaShowRegenerate] = useState(false);
   const [tfaRegeneratePw, setTfaRegeneratePw] = useState("");
 
+  // ── Back-up & herstel ──
+  const [laatsteBackup, setLaatsteBackup] = useState(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMsg, setBackupMsg] = useState(null);
+  const [showHerstelForm, setShowHerstelForm] = useState(false);
+  const [herstelBestand, setHerstelBestand] = useState(null); // geparste inhoud, wacht op bevestiging
+  const [herstelBevestiging, setHerstelBevestiging] = useState("");
+  const [herstelBusy, setHerstelBusy] = useState(false);
+  const herstelFileRef = useRef();
+  const [foutlog, setFoutlog] = useState(null);
+  const [showFoutlog, setShowFoutlog] = useState(false);
+
   // ── Volgorde tools (gedeeld via Redis) ───────────────
   const [toolVolgorde, setToolVolgorde] = useState(TOOLS.map(t => t.href));
   const [bewerkVolgorde, setBewerkVolgorde] = useState(false);
@@ -158,6 +171,7 @@ export default function Platform() {
         else if (data.loggedIn)  {
           setIngelogdAls(data.user || null); setStatus("overzicht");
           fetch("/api/auth/2fa-status").then(r => r.json()).then(d => { setTfaEnabled(!!d.enabled); setTfaRecoveryRemaining(d.recoveryCodesRemaining || 0); }).catch(() => {});
+          fetch("/api/instellingen").then(r => r.json()).then(d => setLaatsteBackup(d.laatsteBackup || null)).catch(() => {});
         }
         else                     setStatus("login");
       } catch (e) {
@@ -337,6 +351,76 @@ export default function Platform() {
       }
     } catch (e) { setTfaMsg({ ok: false, tekst: "Geen verbinding" }); }
     setTfaBusy(false);
+  }
+
+  // ── Back-up & herstel ──
+  async function handleExport() {
+    setBackupBusy(true);
+    setBackupMsg(null);
+    try {
+      const res = await fetch("/api/export");
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || "Export mislukt");
+
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const datumSlug = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `ons-huishouden-backup-${datumSlug}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      const nu = Date.now();
+      setLaatsteBackup(nu);
+      await fetch("/api/instellingen", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ laatsteBackup: nu }),
+      });
+      setBackupMsg({ ok: true, tekst: `✅ Back-up gedownload (${payload.aantalSleutels} onderdelen)` });
+    } catch (e) {
+      setBackupMsg({ ok: false, tekst: "❌ Kon geen back-up maken: " + e.message });
+    }
+    setBackupBusy(false);
+  }
+
+  function handleHerstelBestand(file) {
+    if (!file) return;
+    setBackupMsg(null);
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        if (!parsed.data || typeof parsed.data !== "object") throw new Error("Dit lijkt geen geldig back-upbestand van deze app te zijn");
+        setHerstelBestand(parsed);
+      } catch (err) {
+        setBackupMsg({ ok: false, tekst: "❌ Kon bestand niet lezen: " + err.message });
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  async function handleHerstel() {
+    if (herstelBevestiging !== "HERSTEL" || !herstelBestand) return;
+    setHerstelBusy(true);
+    setBackupMsg(null);
+    try {
+      const res = await fetch("/api/import", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: herstelBestand.data }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Herstellen mislukt");
+      setBackupMsg({ ok: true, tekst: `✅ ${data.hersteld} onderdelen hersteld. Ververs de app om alles te zien.` });
+      setHerstelBestand(null);
+      setHerstelBevestiging("");
+      setShowHerstelForm(false);
+    } catch (e) {
+      setBackupMsg({ ok: false, tekst: "❌ " + e.message });
+    }
+    setHerstelBusy(false);
   }
 
   // ── Laadscherm met subtiele animatie ──
@@ -523,6 +607,100 @@ export default function Platform() {
         </div>
       )}
 
+      {/* Back-up & herstel paneel */}
+      {showInstellingen && (
+        <div style={{ margin: "0 20px 16px", background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 18, padding: "18px 16px" }}>
+          <p style={{ margin: "0 0 4px", fontWeight: 700, fontSize: 14, color: "#2D4A3E" }}>💾 Back-up &amp; herstel</p>
+          <p style={{ margin: "0 0 12px", fontSize: 12, color: "#8C8576" }}>
+            {laatsteBackup
+              ? `Laatste back-up: ${new Date(laatsteBackup).toLocaleDateString("nl-NL", { day:"numeric", month:"long", year:"numeric" })}${Date.now() - laatsteBackup > 30*86400000 ? " — dat is meer dan 30 dagen geleden" : ""}`
+              : "Nog nooit een back-up gemaakt"}
+          </p>
+
+          <button style={{ ...S.authBtn, maxWidth: "none", padding: "12px 0", fontSize: 14, opacity: backupBusy ? 0.7 : 1, marginBottom: 10 }} onClick={handleExport} disabled={backupBusy}>
+            {backupBusy ? "Bezig…" : "📥 Exporteer alle data"}
+          </button>
+
+          {!showHerstelForm ? (
+            <button type="button" style={{ background: "none", border: "none", color: "#8C8576", fontSize: 12, fontWeight: 600, cursor: "pointer", width: "100%", textAlign: "center", padding: "6px 0" }}
+              onClick={() => setShowHerstelForm(true)}>
+              Herstellen vanuit een eerdere back-up
+            </button>
+          ) : (
+            <div style={{ borderTop: "1px solid #EFE9DC", paddingTop: 12, marginTop: 4 }}>
+              {!herstelBestand ? (
+                <>
+                  <p style={{ fontSize: 12, color: "#8C8576", margin: "0 0 10px" }}>Kies een eerder gedownload back-upbestand (.json):</p>
+                  <button style={{ ...S.authBtn, maxWidth: "none", padding: "10px 0", fontSize: 13, background: "#E4DCCB", color: "#2D2A26" }} onClick={() => herstelFileRef.current?.click()}>
+                    Bestand kiezen
+                  </button>
+                  <input ref={herstelFileRef} type="file" accept="application/json" style={{ display: "none" }} onChange={e => handleHerstelBestand(e.target.files[0])} />
+                </>
+              ) : (
+                <>
+                  <p style={{ fontSize: 12, color: "#C86E4A", fontWeight: 600, margin: "0 0 10px", lineHeight: 1.6 }}>
+                    ⚠️ Dit overschrijft de huidige gegevens van {Object.keys(herstelBestand.data).length} onderdelen met de inhoud van de back-up
+                    van {herstelBestand.gemaaktOp ? new Date(herstelBestand.gemaaktOp).toLocaleDateString("nl-NL") : "onbekende datum"}.
+                    Dit kan niet ongedaan gemaakt worden.
+                  </p>
+                  <p style={{ fontSize: 12, color: "#2D2A26", margin: "0 0 6px" }}>Typ <strong>HERSTEL</strong> om te bevestigen:</p>
+                  <input style={{ ...S.settingInput, marginBottom: 10 }} value={herstelBevestiging} onChange={e => setHerstelBevestiging(e.target.value)} placeholder="HERSTEL" />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" style={{ ...S.authBtn, maxWidth: "none", flex: 1, padding: "10px 0", fontSize: 13, background: "#E4DCCB", color: "#2D2A26" }}
+                      onClick={() => { setHerstelBestand(null); setHerstelBevestiging(""); setShowHerstelForm(false); }}>
+                      Annuleer
+                    </button>
+                    <button style={{ ...S.authBtn, maxWidth: "none", flex: 1, padding: "10px 0", fontSize: 13, background: "#C86E4A", opacity: herstelBevestiging === "HERSTEL" ? 1 : 0.5 }}
+                      onClick={handleHerstel} disabled={herstelBevestiging !== "HERSTEL" || herstelBusy}>
+                      {herstelBusy ? "Bezig…" : "Herstellen"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {backupMsg && <p style={{ fontSize: 13, color: backupMsg.ok ? "#2D4A3E" : "#C86E4A", margin: "10px 0 0" }}>{backupMsg.tekst}</p>}
+        </div>
+      )}
+
+      {/* Foutlog-paneel */}
+      {showInstellingen && (
+        <div style={{ margin: "0 20px 16px", background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 18, padding: "18px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: "#2D4A3E" }}>🐛 Foutlog</p>
+            <button style={{ background: "none", border: "none", color: "#2D4A3E", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              onClick={() => {
+                if (showFoutlog) { setShowFoutlog(false); return; }
+                setShowFoutlog(true);
+                fetch("/api/error-log").then(r => r.json()).then(d => setFoutlog(d.log || [])).catch(() => setFoutlog([]));
+              }}>
+              {showFoutlog ? "Verberg" : "Bekijk"}
+            </button>
+          </div>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#8C8576" }}>Technische fouten worden hier automatisch verzameld, ook als niemand ze meldt.</p>
+          {showFoutlog && (
+            foutlog === null ? (
+              <p style={{ fontSize: 12, color: "#8C8576", margin: "12px 0 0" }}>Laden…</p>
+            ) : foutlog.length === 0 ? (
+              <p style={{ fontSize: 12, color: "#8C8576", margin: "12px 0 0" }}>Geen fouten gelogd. 🎉</p>
+            ) : (
+              <div style={{ maxHeight: 260, overflowY: "auto", marginTop: 12 }}>
+                {foutlog.slice(0, 30).map((f, i) => (
+                  <div key={i} style={{ background: "#FAF6F0", borderRadius: 10, padding: "8px 10px", marginBottom: 6 }}>
+                    <p style={{ margin: "0 0 2px", fontSize: 11, fontWeight: 700, color: "#C86E4A" }}>
+                      {f.bron} · {new Date(f.datum).toLocaleString("nl-NL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      {f.gebruiker ? ` · ${f.gebruiker}` : ""}
+                    </p>
+                    <p style={{ margin: 0, fontSize: 12, color: "#2D2A26", wordBreak: "break-word" }}>{f.bericht}</p>
+                  </div>
+                ))}
+              </div>
+            )
+          )}
+        </div>
+      )}
+
       {/* Tweestapsverificatie-paneel */}
       {showInstellingen && (
         <div style={{ margin: "0 20px 16px", background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 18, padding: "18px 16px" }}>
@@ -658,6 +836,11 @@ export default function Platform() {
           </div>
         ))}
       </main>
+
+      <p style={{ textAlign: "center", fontSize: 10, color: "#C2BCAE", padding: "0 20px 24px" }}>
+        Bijgewerkt: {new Date(BUILD_INFO.datum).toLocaleDateString("nl-NL", { day: "numeric", month: "long", year: "numeric" })}, {new Date(BUILD_INFO.datum).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}
+        {BUILD_INFO.omschrijving ? ` · ${BUILD_INFO.omschrijving}` : ""}
+      </p>
     </div>
   );
 }

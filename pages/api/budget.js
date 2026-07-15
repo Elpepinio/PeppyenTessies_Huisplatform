@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
+import { logFout } from "../../lib/error-log";
 
 const redis = Redis.fromEnv();
 const DATA_KEY = "huishouden:budget";
@@ -36,6 +37,7 @@ export default async function handler(req, res) {
       const parsed = typeof data === "string" ? JSON.parse(data) : data;
       return res.status(200).json({ ...EMPTY_STATE, ...parsed });
     } catch (e) {
+      logFout({ bron: "api-budget-get", bericht: e.message, stack: e.stack });
       return res.status(500).json({ error: "Kon data niet laden" });
     }
   }
@@ -46,6 +48,7 @@ export default async function handler(req, res) {
       await redis.set(DATA_KEY, JSON.stringify({ ...EMPTY_STATE, ...body }));
       return res.status(200).json({ ok: true });
     } catch (e) {
+      logFout({ bron: "api-budget-post", bericht: e.message, stack: e.stack });
       return res.status(500).json({ error: "Kon data niet opslaan" });
     }
   }

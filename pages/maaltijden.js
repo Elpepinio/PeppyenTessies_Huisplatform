@@ -5,9 +5,10 @@ import { Plus, X, ChevronLeft, Search, ShoppingCart, Clock, Users, Flame, Check,
 // ── Constanten ─────────────────────────────────────────
 const DAGEN = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"];
 const MAALTIJDMOMENTEN = ["Ontbijt","Lunch","Diner"];
-const KEUKENS = ["Nederlands","Italiaans","Aziatisch","Mediterraan","Mexicaans","Frans","Indisch","Kamado","Overig"];
+const KEUKENS = ["Nederlands","Italiaans","Aziatisch","Oosters","Mediterraan","Spaans","Mexicaans","Frans","Indisch","Kamado","Overig"];
 const DIEET_TAGS = ["Vegetarisch","Veganistisch","Glutenvrij","Lactosevrij"];
-const HOOFDINGREDIENTEN = ["Pasta","Rijst","Aardappelen","Kip","Vlees","Vis","Peulvruchten","Ei","Overig"];
+const HOOFDINGREDIENTEN = ["Pasta","Orzo","Rijst","Risotto","Aardappelen","Kip","Vlees","Vis","Peulvruchten","Ei","Overig"];
+const GANGTYPES = ["Voorgerecht","Hoofdgerecht","Nagerecht","Soep"];
 const BEREIDINGSTIJD_OPTIES = [
   { id: "kort", label: "⚡ < 20 min", test: t => t > 0 && t <= 20 },
   { id: "middel", label: "⏱ 20-45 min", test: t => t > 20 && t <= 45 },
@@ -24,8 +25,10 @@ function guessHoofdingredient(ingredienten) {
   if (/kip|kipfilet|kipdij/.test(tekst)) return "Kip";
   if (/zalm|tonijn|vis|garnaal|garnalen|mossel|kabeljauw|forel|makreel/.test(tekst)) return "Vis";
   if (/rund|varken|gehakt|worst|spek|lam|biefstuk|bacon|chorizo/.test(tekst)) return "Vlees";
+  if (/risotto|arborio|carnaroli/.test(tekst)) return "Risotto";
+  if (/\borzo\b/.test(tekst)) return "Orzo";
   if (/pasta|spaghetti|macaroni|penne|tagliatelle|lasagne|noedels|mie\b/.test(tekst)) return "Pasta";
-  if (/rijst|risotto|paella/.test(tekst)) return "Rijst";
+  if (/rijst|paella/.test(tekst)) return "Rijst";
   if (/aardappel|patat|frieten/.test(tekst)) return "Aardappelen";
   if (/kikkererwt|linze|boon|bonen|peulvrucht/.test(tekst)) return "Peulvruchten";
   if (/\bei\b|eieren|eierdooier/.test(tekst)) return "Ei";
@@ -126,6 +129,7 @@ const S = {
   switchBtn: { fontSize: 12, letterSpacing: "0.04em", textTransform: "uppercase", color: C.muted, fontWeight: 600, background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "none", display: "inline-block" },
   loadingWrap: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, minHeight: "100vh" },
   tabBtn: (active) => ({ flex: 1, border: "none", background: active ? C.orange : "transparent", color: active ? "#FFF" : C.muted, borderRadius: 9, padding: "9px 0", fontSize: 13, fontWeight: 600, cursor: "pointer" }),
+  chipActief: { background: `${C.orange}18`, color: C.orange, border: `1px solid ${C.orange}55`, borderRadius: 20, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" },
 };
 
 // ════════════════════════════════════════════════════════
@@ -155,7 +159,7 @@ export default function MaaltijdApp() {
   // Recept form
   const [showReceptForm, setShowReceptForm] = useState(false);
   const [receptForm, setReceptForm] = useState({
-    naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4",
+    naam: "", keuken: "Nederlands", gangtype: "Hoofdgerecht", bereidingstijd: "30", porties: "4",
     beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "",
     ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }],
     stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null,
@@ -179,6 +183,8 @@ export default function MaaltijdApp() {
   const [keukenFilter, setKeukenFilter] = useState(null);
   const [hoofdingredientFilter, setHoofdingredientFilter] = useState(null);
   const [bereidingstijdFilter, setBereidingstijdFilter] = useState(null); // "kort" | "middel" | "lang"
+  const [gangtypeFilter, setGangtypeFilter] = useState(null);
+  const [showFilters, setShowFilters] = useState(false);
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null);
 
   useEffect(() => {
@@ -204,6 +210,10 @@ export default function MaaltijdApp() {
   const [bewerkReceptId, setBewerkReceptId] = useState(null); // recept-id -> porties override
   const [toast, setToast] = useState(null);
   const [kookModusActief, setKookModusActief] = useState(false);
+  const [showEiTimer, setShowEiTimer] = useState(false);
+  const [eiTimers, setEiTimers] = useState([]); // [{id, naam, eindTijd, duurSeconden}]
+  const [customEiMinuten, setCustomEiMinuten] = useState("7");
+  const [, setEiTick] = useState(0); // forceert elke seconde een her-render zolang er timers lopen
   const [kookStapIndex, setKookStapIndex] = useState(0);
   const [kookTimerSec, setKookTimerSec] = useState(0);
   const [kookTimerLopend, setKookTimerLopend] = useState(false);
@@ -229,7 +239,33 @@ export default function MaaltijdApp() {
     return () => clearInterval(interval);
   }, [kookTimerLopend]);
 
-  // ── Data ─────────────────────────────────────────────
+  // Eierkookwekker — telt op basis van een vast eindtijdstip terug (niet door
+  // gewoon elke seconde -1 te doen), zodat het ook klopt als het tabblad even
+  // op de achtergrond stond en de browser de interval heeft vertraagd.
+  useEffect(() => {
+    if (eiTimers.length === 0) return;
+    const interval = setInterval(() => {
+      setEiTick(t => t + 1);
+      const nu = Date.now();
+      const klaar = eiTimers.filter(t => t.eindTijd <= nu && !t.klaarGemeld);
+      if (klaar.length > 0) {
+        setEiTimers(prev => prev.map(t => klaar.some(k => k.id === t.id) ? { ...t, klaarGemeld: true } : t));
+        if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 300]);
+        klaar.forEach(t => showToast(`⏰ ${t.naam} is klaar!`));
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [eiTimers]);
+
+  function startEiTimer(naam, minuten) {
+    const duurSeconden = Math.round(minuten * 60);
+    setEiTimers(prev => [...prev, { id: uid(), naam, eindTijd: Date.now() + duurSeconden * 1000, duurSeconden, klaarGemeld: false }]);
+  }
+
+  function stopEiTimer(id) {
+    setEiTimers(prev => prev.filter(t => t.id !== id));
+  }
+
   const persistData = useCallback((nextRecepten, nextWeekmenu) => {
     lastWriteRef.current = Date.now();
     setReceptenState(nextRecepten);
@@ -284,7 +320,7 @@ export default function MaaltijdApp() {
       aangemaaktOp: Date.now(),
     };
     persistData([...recepten, nieuw], weekmenu);
-    setReceptForm({ naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null });
+    setReceptForm({ naam: "", keuken: "Nederlands", gangtype: "Hoofdgerecht", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null });
     setShowReceptForm(false);
     showToast(`✅ ${nieuw.naam} toegevoegd`);
   }
@@ -523,6 +559,7 @@ Format:
 {
   "naam": "...",
   "keuken": "...",
+  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
   "bereidingstijd": 30,
   "porties": 4,
   "kcal": 0,
@@ -608,6 +645,7 @@ Format:
 {
   "naam": "naam van het recept",
   "keuken": "type keuken",
+  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
   "bereidingstijd": 30,
   "porties": 4,
   "kcal": 0,
@@ -661,6 +699,7 @@ Format:
 {
   "naam": "naam van het gerecht",
   "keuken": "type keuken",
+  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
   "bereidingstijd": 30,
   "porties": 4,
   "kcal": 0,
@@ -719,6 +758,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 {
   "naam": "naam van het gerecht",
   "keuken": "type keuken",
+  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
   "bereidingstijd": 30,
   "porties": 4,
   "kcal": 0,
@@ -777,7 +817,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   function importeerGekozenRecepten(gekozenIndexen) {
     const nieuwe = gekozenIndexen.map(i => {
       const r = linkKeuzeRecepten[i];
-      return { ...r, id: uid(), hoofdingredient: guessHoofdingredient(r.ingredienten), aangemaaktOp: Date.now() };
+      return { ...r, id: uid(), hoofdingredient: guessHoofdingredient(r.ingredienten), gangtype: r.gangtype || "Hoofdgerecht", aangemaaktOp: Date.now() };
     });
     persistData([...recepten, ...nieuwe], weekmenu);
     showToast(`✅ ${nieuwe.length} recept${nieuwe.length === 1 ? "" : "en"} toegevoegd`);
@@ -787,7 +827,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   }
 
   function slaReceptOp(parsed, opties = {}) {
-    const nieuw = { ...parsed, id: uid(), hoofdingredient: parsed.hoofdingredient || guessHoofdingredient(parsed.ingredienten), aangemaaktOp: Date.now() };
+    const nieuw = { ...parsed, id: uid(), hoofdingredient: parsed.hoofdingredient || guessHoofdingredient(parsed.ingredienten), gangtype: parsed.gangtype || "Hoofdgerecht", aangemaaktOp: Date.now() };
     persistData([...recepten, nieuw], weekmenu);
     showToast(`✅ "${nieuw.naam}" toegevoegd`);
     setAiResultaat(null);
@@ -945,6 +985,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   }
   if (dieetFilter) gefilterd = gefilterd.filter(r => (r.dieet||[]).includes(dieetFilter));
   if (keukenFilter) gefilterd = gefilterd.filter(r => (r.keuken || "Overig") === keukenFilter);
+  if (gangtypeFilter) gefilterd = gefilterd.filter(r => (r.gangtype || "Hoofdgerecht") === gangtypeFilter);
   if (hoofdingredientFilter) gefilterd = gefilterd.filter(r => (r.hoofdingredient || guessHoofdingredient(r.ingredienten)) === hoofdingredientFilter);
   if (bereidingstijdFilter) {
     const optie = BEREIDINGSTIJD_OPTIES.find(o => o.id === bereidingstijdFilter);
@@ -952,7 +993,8 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   }
   // Zodra er specifiek gefilterd/gezocht wordt, toont een platte lijst het
   // duidelijker dan de keuken-groepering — vooral zodra de bibliotheek groeit.
-  const filtersActief = !!(zoekterm.trim() || dieetFilter || keukenFilter || hoofdingredientFilter || bereidingstijdFilter);
+  const filtersActief = !!(zoekterm.trim() || dieetFilter || keukenFilter || gangtypeFilter || hoofdingredientFilter || bereidingstijdFilter);
+  const aantalActieveFilters = [dieetFilter, keukenFilter, gangtypeFilter, hoofdingredientFilter, bereidingstijdFilter].filter(Boolean).length;
 
   // Groepeer op keuken (leidende categorie), in de vaste KEUKENS-volgorde;
   // onbekende/legacy keuken-waardes komen als eigen groep achteraan.
@@ -1085,6 +1127,13 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                 <select style={{ ...S.inp, padding:"8px 10px" }} value={actieefRecept.hoofdingredient||"Overig"}
                   onChange={e => updateRecept(actieefRecept.id, { hoofdingredient: e.target.value })}>
                   {HOOFDINGREDIENTEN.map(h => <option key={h} value={h}>{h}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Gangtype</label>
+                <select style={{ ...S.inp, padding:"8px 10px" }} value={actieefRecept.gangtype||"Hoofdgerecht"}
+                  onChange={e => updateRecept(actieefRecept.id, { gangtype: e.target.value })}>
+                  {GANGTYPES.map(g => <option key={g}>{g}</option>)}
                 </select>
               </div>
               <div>
@@ -1413,6 +1462,81 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
         </div>
       )}
 
+      {/* Eierkookwekker */}
+      {showEiTimer && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:150, display:"flex", alignItems:"flex-end" }} onClick={() => setShowEiTimer(false)}>
+          <div style={{ background:"#FFF", width:"100%", maxHeight:"85vh", overflowY:"auto", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20, boxSizing:"border-box" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.orange }}>🥚 Eierkookwekker</p>
+              <button onClick={() => setShowEiTimer(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={20} color={C.muted} />
+              </button>
+            </div>
+            <p style={{ fontSize:12, color:C.muted, margin:"0 0 14px" }}>
+              Tik op een gaarheid zodra je het ei in het kokende water legt — de timer start meteen vanaf dat moment. Je kunt meerdere eieren tegelijk timen, ook met verschillende gaarheid.
+            </p>
+
+            {/* Voorgeprogrammeerde standen */}
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:14 }}>
+              {[
+                { naam:"Zacht", minuten:6, sub:"lopend eigeel", emoji:"🟡" },
+                { naam:"Halfhard", minuten:8, sub:"licht gebonden", emoji:"🟠" },
+                { naam:"Hard", minuten:10, sub:"volledig gaar", emoji:"🔴" },
+              ].map(preset => (
+                <button key={preset.naam} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 6px", cursor:"pointer", textAlign:"center" }}
+                  onClick={() => { startEiTimer(`${preset.naam} ei`, preset.minuten); showToast(`🥚 ${preset.naam} ei gestart (${preset.minuten} min)`); }}>
+                  <div style={{ fontSize:22, marginBottom:4 }}>{preset.emoji}</div>
+                  <div style={{ fontWeight:700, fontSize:13, color:C.text }}>{preset.naam}</div>
+                  <div style={{ fontSize:10, color:C.muted }}>{preset.minuten} min</div>
+                  <div style={{ fontSize:9, color:C.muted, marginTop:2 }}>{preset.sub}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* Zelf een duur instellen */}
+            <div style={{ display:"flex", gap:8, marginBottom:18 }}>
+              <input type="number" min="1" max="30" style={{ ...S.inp, flex:1 }} value={customEiMinuten} onChange={e => setCustomEiMinuten(e.target.value)} placeholder="Minuten" />
+              <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, whiteSpace:"nowrap" }}
+                onClick={() => { const m = +customEiMinuten || 0; if (m <= 0) return; startEiTimer(`Ei (${m} min)`, m); showToast(`🥚 Timer gestart (${m} min)`); }}>
+                ⏱ Eigen tijd starten
+              </button>
+            </div>
+
+            {/* Actieve timers */}
+            {eiTimers.length > 0 && (
+              <>
+                <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em", margin:"0 0 8px" }}>Lopende timers</p>
+                {eiTimers.map(t => {
+                  const resterend = Math.max(0, Math.ceil((t.eindTijd - Date.now()) / 1000));
+                  const klaar = resterend === 0;
+                  const voortgang = Math.min(1, Math.max(0, 1 - resterend / t.duurSeconden));
+                  return (
+                    <div key={t.id} style={{ background: klaar ? `${C.green}15` : C.card, border:`1px solid ${klaar ? C.green : C.border}`, borderRadius:12, padding:"10px 14px", marginBottom:8 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                        <span style={{ fontWeight:700, fontSize:14, color:klaar ? C.green : C.text }}>{klaar ? "✅ " : "🥚 "}{t.naam}</span>
+                        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                          <span style={{ fontVariantNumeric:"tabular-nums", fontWeight:700, fontSize:15, color:klaar ? C.green : C.orange }}>
+                            {klaar ? "Klaar!" : `${String(Math.floor(resterend/60)).padStart(2,"0")}:${String(resterend%60).padStart(2,"0")}`}
+                          </span>
+                          <button onClick={() => stopEiTimer(t.id)} style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, padding:2 }}>
+                            <X size={16} />
+                          </button>
+                        </div>
+                      </div>
+                      {!klaar && (
+                        <div style={{ height:4, background:C.border, borderRadius:2, marginTop:8, overflow:"hidden" }}>
+                          <div style={{ height:"100%", width:`${voortgang*100}%`, background:C.orange, borderRadius:2, transition:"width 1s linear" }} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Plan-overlay */}
       {showPlanOverlay && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => { setShowPlanOverlay(false); setPlanZoek(""); }}>
@@ -1548,10 +1672,15 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
               </select>
               <input style={S.inp} placeholder="Min. bereidingstijd" type="number" value={receptForm.bereidingstijd} onChange={e => setReceptForm(f=>({...f,bereidingstijd:e.target.value}))} />
             </div>
-            <select style={{ ...S.inp, marginBottom:10 }} value={receptForm.hoofdingredient || ""} onChange={e => setReceptForm(f=>({...f,hoofdingredient:e.target.value}))}>
-              <option value="">Hoofdingrediënt (automatisch als leeg)</option>
-              {HOOFDINGREDIENTEN.map(h => <option key={h} value={h}>{h}</option>)}
-            </select>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+              <select style={S.inp} value={receptForm.hoofdingredient || ""} onChange={e => setReceptForm(f=>({...f,hoofdingredient:e.target.value}))}>
+                <option value="">Hoofdingr. (auto)</option>
+                {HOOFDINGREDIENTEN.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+              <select style={S.inp} value={receptForm.gangtype} onChange={e => setReceptForm(f=>({...f,gangtype:e.target.value}))}>
+                {GANGTYPES.map(g => <option key={g}>{g}</option>)}
+              </select>
+            </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8, marginBottom:10 }}>
               <input style={S.inp} placeholder="Porties" type="number" value={receptForm.porties} onChange={e=>setReceptForm(f=>({...f,porties:e.target.value}))} />
               <input style={S.inp} placeholder="Kcal" type="number" value={receptForm.kcal} onChange={e=>setReceptForm(f=>({...f,kcal:e.target.value}))} />
@@ -1627,11 +1756,19 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
         </div>
       )}
 
-      <header style={S.header}>
+      <header style={{ ...S.header, alignItems:"flex-start" }}>
         <div>
           <Link href="/" style={S.switchBtn}>← Overzicht</Link>
           <h1 style={S.title}>🍽️ Maaltijden</h1>
         </div>
+        <button onClick={() => setShowEiTimer(true)} style={{ position:"relative", background:C.card, border:`1px solid ${C.border}`, borderRadius:12, width:44, height:44, fontSize:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Eierkookwekker">
+          🥚
+          {eiTimers.length > 0 && (
+            <span style={{ position:"absolute", top:-4, right:-4, background:C.orange, color:"#FFF", borderRadius:"50%", width:18, height:18, fontSize:10, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>
+              {eiTimers.length}
+            </span>
+          )}
+        </button>
       </header>
 
       {/* Tabs */}
@@ -1719,6 +1856,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                     <span style={{ fontSize:12, color:C.muted }}>⏱ {r.bereidingstijd}min</span>
                     <span style={{ fontSize:12, color:C.muted }}>👥 {r.porties}p</span>
                     {r.hoofdingredient && r.hoofdingredient !== "Overig" && <span style={{ fontSize:12, color:C.muted }}>🥘 {r.hoofdingredient}</span>}
+                    {r.gangtype && r.gangtype !== "Hoofdgerecht" && <span style={{ fontSize:12, color:C.muted }}>· {r.gangtype}</span>}
                     {r.kcal ? <span style={{ fontSize:12, color:C.muted }}>🔥{r.kcal}kcal</span> : null}
                     {weergaveReceptBeoordeling(r) > 0 && <span style={{ fontSize:11 }}>{"⭐".repeat(Math.round(weergaveReceptBeoordeling(r)))}</span>}
                     {veelGemaakt && <span title="Vaak gemaakt" style={{ fontSize:11 }}>🔥 favoriet</span>}
@@ -1732,41 +1870,28 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
           return (
           <>
-            <input style={{ ...S.inp, marginBottom:10 }} placeholder="🔍 Zoek op naam, keuken of ingrediënt…" value={zoekterm} onChange={e=>setZoekterm(e.target.value)} />
-
-            {/* Dieet-filter */}
-            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:8, paddingBottom:2 }}>
-              <button style={{ border:`1px solid ${!dieetFilter?C.orange:C.border}`, background:!dieetFilter?C.orange:"#FFF", color:!dieetFilter?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                onClick={() => setDieetFilter(null)}>Alle diëten</button>
-              {DIEET_TAGS.map(tag => (
-                <button key={tag} style={{ border:`1px solid ${dieetFilter===tag?C.green:C.border}`, background:dieetFilter===tag?C.green:"#FFF", color:dieetFilter===tag?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                  onClick={() => setDieetFilter(dieetFilter===tag?null:tag)}>{tag}</button>
-              ))}
+            <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+              <input style={{ ...S.inp, flex:1 }} placeholder="🔍 Zoek op naam, keuken of ingrediënt…" value={zoekterm} onChange={e=>setZoekterm(e.target.value)} />
+              <button style={{ position:"relative", background: aantalActieveFilters>0 ? C.orange : "#FFF", border:`1px solid ${aantalActieveFilters>0 ? C.orange : C.border}`, borderRadius:12, width:44, height:"auto", flexShrink:0, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}
+                onClick={() => setShowFilters(true)} title="Filters">
+                <span style={{ fontSize:18 }}>⚙️</span>
+                {aantalActieveFilters > 0 && (
+                  <span style={{ position:"absolute", top:-6, right:-6, background:C.red, color:"#FFF", borderRadius:"50%", width:18, height:18, fontSize:10, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    {aantalActieveFilters}
+                  </span>
+                )}
+              </button>
             </div>
 
-            {/* Bereidingstijd-filter */}
-            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:8, paddingBottom:2 }}>
-              {BEREIDINGSTIJD_OPTIES.map(o => (
-                <button key={o.id} style={{ border:`1px solid ${bereidingstijdFilter===o.id?C.orange:C.border}`, background:bereidingstijdFilter===o.id?C.orange:"#FFF", color:bereidingstijdFilter===o.id?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                  onClick={() => setBereidingstijdFilter(bereidingstijdFilter===o.id?null:o.id)}>{o.label}</button>
-              ))}
-            </div>
-
-            {/* Hoofdingrediënt-filter */}
-            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:8, paddingBottom:2 }}>
-              {HOOFDINGREDIENTEN.map(h => (
-                <button key={h} style={{ border:`1px solid ${hoofdingredientFilter===h?C.orange:C.border}`, background:hoofdingredientFilter===h?C.orange:"#FFF", color:hoofdingredientFilter===h?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                  onClick={() => setHoofdingredientFilter(hoofdingredientFilter===h?null:h)}>{h}</button>
-              ))}
-            </div>
-
-            {/* Keuken-filter */}
-            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:14, paddingBottom:2 }}>
-              {KEUKENS.map(k => (
-                <button key={k} style={{ border:`1px solid ${keukenFilter===k?C.orange:C.border}`, background:keukenFilter===k?C.orange:"#FFF", color:keukenFilter===k?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                  onClick={() => setKeukenFilter(keukenFilter===k?null:k)}>{k}</button>
-              ))}
-            </div>
+            {aantalActieveFilters > 0 && (
+              <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
+                {dieetFilter && <span style={{ ...S.chipActief, }} onClick={()=>setDieetFilter(null)}>{dieetFilter} ✕</span>}
+                {keukenFilter && <span style={S.chipActief} onClick={()=>setKeukenFilter(null)}>{keukenFilter} ✕</span>}
+                {gangtypeFilter && <span style={S.chipActief} onClick={()=>setGangtypeFilter(null)}>{gangtypeFilter} ✕</span>}
+                {hoofdingredientFilter && <span style={S.chipActief} onClick={()=>setHoofdingredientFilter(null)}>{hoofdingredientFilter} ✕</span>}
+                {bereidingstijdFilter && <span style={S.chipActief} onClick={()=>setBereidingstijdFilter(null)}>{BEREIDINGSTIJD_OPTIES.find(o=>o.id===bereidingstijdFilter)?.label} ✕</span>}
+              </div>
+            )}
 
             {gefilterd.length === 0 && (
               <div style={{ textAlign:"center", padding:"50px 20px" }}>
@@ -1775,6 +1900,59 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                   {filtersActief ? "Niks gevonden met deze filters" : "Nog geen recepten"}
                 </p>
                 <p style={{ fontSize:14, color:C.muted, margin:0 }}>{filtersActief ? "Probeer een andere combinatie" : "Tik + of gebruik de AI-kok"}</p>
+              </div>
+            )}
+
+            {/* Filterpaneel — alle filterdimensies gebundeld i.p.v. los onder elkaar */}
+            {showFilters && (
+              <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:150, display:"flex", alignItems:"flex-end" }} onClick={() => setShowFilters(false)}>
+                <div style={{ background:"#FFF", width:"100%", maxHeight:"85vh", overflowY:"auto", padding:"20px 20px 28px", borderTopLeftRadius:20, borderTopRightRadius:20, boxSizing:"border-box" }} onClick={e => e.stopPropagation()}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                    <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.orange }}>⚙️ Filters</p>
+                    <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+                      {aantalActieveFilters > 0 && (
+                        <button style={{ background:"none", border:"none", color:C.muted, fontSize:12, fontWeight:600, cursor:"pointer" }}
+                          onClick={() => { setDieetFilter(null); setKeukenFilter(null); setGangtypeFilter(null); setHoofdingredientFilter(null); setBereidingstijdFilter(null); }}>
+                          Wis alles
+                        </button>
+                      )}
+                      <button onClick={() => setShowFilters(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                        <X size={20} color={C.muted} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {[
+                    { label:"Gangtype", opties:GANGTYPES, waarde:gangtypeFilter, set:setGangtypeFilter },
+                    { label:"Keuken", opties:KEUKENS, waarde:keukenFilter, set:setKeukenFilter },
+                    { label:"Hoofdingrediënt", opties:HOOFDINGREDIENTEN, waarde:hoofdingredientFilter, set:setHoofdingredientFilter },
+                    { label:"Dieet", opties:DIEET_TAGS, waarde:dieetFilter, set:setDieetFilter },
+                  ].map(groep => (
+                    <div key={groep.label} style={{ marginBottom:18 }}>
+                      <p style={{ fontSize:12, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em", margin:"0 0 8px" }}>{groep.label}</p>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                        {groep.opties.map(optie => (
+                          <button key={optie} style={{ border:`1px solid ${groep.waarde===optie?C.orange:C.border}`, background:groep.waarde===optie?C.orange:"#FFF", color:groep.waarde===optie?"#FFF":C.muted, borderRadius:20, padding:"6px 13px", fontSize:12, fontWeight:600, cursor:"pointer" }}
+                            onClick={() => groep.set(groep.waarde===optie?null:optie)}>{optie}</button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  <div style={{ marginBottom:6 }}>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em", margin:"0 0 8px" }}>Bereidingstijd</p>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                      {BEREIDINGSTIJD_OPTIES.map(o => (
+                        <button key={o.id} style={{ border:`1px solid ${bereidingstijdFilter===o.id?C.orange:C.border}`, background:bereidingstijdFilter===o.id?C.orange:"#FFF", color:bereidingstijdFilter===o.id?"#FFF":C.muted, borderRadius:20, padding:"6px 13px", fontSize:12, fontWeight:600, cursor:"pointer" }}
+                          onClick={() => setBereidingstijdFilter(bereidingstijdFilter===o.id?null:o.id)}>{o.label}</button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button style={{ ...S.btn(), width:"100%", marginTop:18 }} onClick={() => setShowFilters(false)}>
+                    Toon {gefilterd.length} recept{gefilterd.length===1?"":"en"}
+                  </button>
+                </div>
               </div>
             )}
 
