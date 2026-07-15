@@ -8,7 +8,7 @@ const MAALTIJDMOMENTEN = ["Ontbijt","Lunch","Diner"];
 const KEUKENS = ["Nederlands","Italiaans","Aziatisch","Oosters","Mediterraan","Spaans","Mexicaans","Frans","Indisch","Kamado","Overig"];
 const DIEET_TAGS = ["Vegetarisch","Veganistisch","Glutenvrij","Lactosevrij"];
 const HOOFDINGREDIENTEN = ["Pasta","Orzo","Rijst","Risotto","Aardappelen","Kip","Vlees","Vis","Peulvruchten","Ei","Overig"];
-const GANGTYPES = ["Voorgerecht","Hoofdgerecht","Nagerecht","Soep"];
+const GANGTYPES = ["Voorgerecht","Hoofdgerecht","Nagerecht","Soep","Stoofpotje","Salade"];
 const BEREIDINGSTIJD_OPTIES = [
   { id: "kort", label: "⚡ < 20 min", test: t => t > 0 && t <= 20 },
   { id: "middel", label: "⏱ 20-45 min", test: t => t > 20 && t <= 45 },
@@ -559,7 +559,7 @@ Format:
 {
   "naam": "...",
   "keuken": "...",
-  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
+  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht, Soep, Stoofpotje of Salade",
   "bereidingstijd": 30,
   "porties": 4,
   "kcal": 0,
@@ -645,7 +645,7 @@ Format:
 {
   "naam": "naam van het recept",
   "keuken": "type keuken",
-  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
+  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht, Soep, Stoofpotje of Salade",
   "bereidingstijd": 30,
   "porties": 4,
   "kcal": 0,
@@ -699,7 +699,7 @@ Format:
 {
   "naam": "naam van het gerecht",
   "keuken": "type keuken",
-  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
+  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht, Soep, Stoofpotje of Salade",
   "bereidingstijd": 30,
   "porties": 4,
   "kcal": 0,
@@ -758,7 +758,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 {
   "naam": "naam van het gerecht",
   "keuken": "type keuken",
-  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
+  "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht, Soep, Stoofpotje of Salade",
   "bereidingstijd": 30,
   "porties": 4,
   "kcal": 0,

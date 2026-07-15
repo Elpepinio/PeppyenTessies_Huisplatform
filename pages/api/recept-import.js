@@ -86,7 +86,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown, in dit exacte formaat â
     {
       "naam": "naam van het recept",
       "keuken": "type keuken (Nederlands/Italiaans/etc)",
-      "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht of Soep",
+      "gangtype": "Voorgerecht, Hoofdgerecht, Nagerecht, Soep, Stoofpotje of Salade",
       "bereidingstijd": 30,
       "porties": 4,
       "kcal": 0,
