@@ -1,12 +1,36 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, Search, ShoppingCart, Clock, Users, Flame } from "lucide-react";
+import { Plus, X, ChevronLeft, Search, ShoppingCart, Clock, Users, Flame, Check, Share2 } from "lucide-react";
 
 // ── Constanten ─────────────────────────────────────────
 const DAGEN = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"];
 const MAALTIJDMOMENTEN = ["Ontbijt","Lunch","Diner"];
 const KEUKENS = ["Nederlands","Italiaans","Aziatisch","Mediterraan","Mexicaans","Frans","Indisch","Kamado","Overig"];
 const DIEET_TAGS = ["Vegetarisch","Veganistisch","Glutenvrij","Lactosevrij"];
+const HOOFDINGREDIENTEN = ["Pasta","Rijst","Aardappelen","Kip","Vlees","Vis","Peulvruchten","Ei","Overig"];
+const BEREIDINGSTIJD_OPTIES = [
+  { id: "kort", label: "⚡ < 20 min", test: t => t > 0 && t <= 20 },
+  { id: "middel", label: "⏱ 20-45 min", test: t => t > 20 && t <= 45 },
+  { id: "lang", label: "🕐 45+ min", test: t => t > 45 },
+];
+
+// Herkent het hoofdingrediënt automatisch op basis van de ingrediëntenlijst,
+// zodat je er niet handmatig bij elk recept aan hoeft te denken. Blijft
+// altijd achteraf aanpasbaar. Gebaseerd op de eerste treffer uit deze
+// volgorde — een recept met zowel rijst als kip wordt bv. als "Kip" gezien,
+// omdat het eiwit meestal de meer bepalende zoekterm is dan de bijgerechten.
+function guessHoofdingredient(ingredienten) {
+  const tekst = (ingredienten || []).map(i => i.naam || "").join(" ").toLowerCase();
+  if (/kip|kipfilet|kipdij/.test(tekst)) return "Kip";
+  if (/zalm|tonijn|vis|garnaal|garnalen|mossel|kabeljauw|forel|makreel/.test(tekst)) return "Vis";
+  if (/rund|varken|gehakt|worst|spek|lam|biefstuk|bacon|chorizo/.test(tekst)) return "Vlees";
+  if (/pasta|spaghetti|macaroni|penne|tagliatelle|lasagne|noedels|mie\b/.test(tekst)) return "Pasta";
+  if (/rijst|risotto|paella/.test(tekst)) return "Rijst";
+  if (/aardappel|patat|frieten/.test(tekst)) return "Aardappelen";
+  if (/kikkererwt|linze|boon|bonen|peulvrucht/.test(tekst)) return "Peulvruchten";
+  if (/\bei\b|eieren|eierdooier/.test(tekst)) return "Ei";
+  return "Overig";
+}
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -152,6 +176,9 @@ export default function MaaltijdApp() {
   const [zoekterm, setZoekterm] = useState("");
   const [ingeklapteKeukens, setIngeklapteKeukens] = useState({});
   const [dieetFilter, setDieetFilter] = useState(null);
+  const [keukenFilter, setKeukenFilter] = useState(null);
+  const [hoofdingredientFilter, setHoofdingredientFilter] = useState(null);
+  const [bereidingstijdFilter, setBereidingstijdFilter] = useState(null); // "kort" | "middel" | "lang"
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null);
 
   useEffect(() => {
@@ -161,6 +188,7 @@ export default function MaaltijdApp() {
   }, []);
   const [importTab, setImportTab] = useState("ai"); // ai | foto | gerecht | link
   const [importUrl, setImportUrl] = useState("");
+  const [linkKeuzeRecepten, setLinkKeuzeRecepten] = useState(null); // meerdere gevonden recepten op één pagina, wachtend op keuze
   const [importFotoLoading, setImportFotoLoading] = useState(false);
   const [importGerechtLoading, setImportGerechtLoading] = useState(false);
   const [importLinkLoading, setImportLinkLoading] = useState(false);
@@ -243,20 +271,42 @@ export default function MaaltijdApp() {
   // ── Recept mutaties ───────────────────────────────────
   function voegReceptToe() {
     if (!receptForm.naam.trim()) return;
+    const schoneIngredienten = receptForm.ingredienten.filter(i => i.naam.trim());
     const nieuw = {
       ...receptForm,
       id: uid(),
       porties: +receptForm.porties || 4,
       bereidingstijd: +receptForm.bereidingstijd || 30,
       kcal: +receptForm.kcal || 0,
-      ingredienten: receptForm.ingredienten.filter(i => i.naam.trim()),
+      ingredienten: schoneIngredienten,
       stappen: receptForm.stappen.filter(s => s.trim()),
+      hoofdingredient: receptForm.hoofdingredient || guessHoofdingredient(schoneIngredienten),
       aangemaaktOp: Date.now(),
     };
     persistData([...recepten, nieuw], weekmenu);
     setReceptForm({ naam: "", keuken: "Nederlands", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null });
     setShowReceptForm(false);
     showToast(`✅ ${nieuw.naam} toegevoegd`);
+  }
+
+  // Deelt een recept (naam, ingrediënten geschaald naar huidige porties, en
+  // stappen) via de native deel-UI van het toestel, met WhatsApp als terugval.
+  async function deelRecept(recept) {
+    const p = porties[recept.id] || recept.porties || 4;
+    const regels = [`🍽️ ${recept.naam}`, `⏱ ${recept.bereidingstijd} min · 👥 ${p} porties`, ""];
+    regels.push("Ingrediënten:");
+    (recept.ingredienten || []).forEach(i => {
+      regels.push(`• ${geschaaldHoeveelheid(recept, i)}${i.eenheid !== "stuks" ? i.eenheid : ""} ${i.naam}`);
+    });
+    regels.push("", "Bereiding:");
+    (recept.stappen || []).forEach((s, i) => regels.push(`${i + 1}. ${s}`));
+    const tekst = regels.join("\n");
+
+    if (navigator.share) {
+      try { await navigator.share({ title: recept.naam, text: tekst }); } catch (e) { /* geannuleerd */ }
+    } else {
+      window.open(`https://wa.me/?text=${encodeURIComponent(tekst)}`, "_blank");
+    }
   }
 
   function verwijderRecept(id) {
@@ -533,20 +583,25 @@ Format:
     }
   }
 
-  async function importeerViaFoto(file) {
-    if (!file) return;
+  // Ondersteunt meerdere foto's tegelijk — handig als een recept over
+  // meerdere kookboekpagina's loopt (bv. ingrediënten op de linkerpagina,
+  // bereidingswijze op de rechter). Alle foto's gaan in één keer naar de AI
+  // zodat die het als één samenhangend recept leest; alleen de eerste foto
+  // wordt bewaard als weergavefoto bij het recept.
+  async function importeerViaFoto(files) {
+    const lijst = Array.from(files || []).filter(Boolean);
+    if (!lijst.length) return;
     setImportFotoLoading(true);
     setImportFout(null);
     try {
-      const base64 = await comprimeerFoto(file);
-      const type = "image/jpeg";
+      const base64Lijst = await Promise.all(lijst.map(f => comprimeerFoto(f)));
 
       const res = await fetch("/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: `Dit is een foto van een receptpagina uit een kookboek of tijdschrift.
-Extraheer het volledige recept en geef het terug als JSON.
+          prompt: `Dit ${lijst.length > 1 ? `zijn ${lijst.length} foto's van opeenvolgende pagina's` : "is een foto"} van een receptpagina uit een kookboek of tijdschrift.
+${lijst.length > 1 ? "Behandel alle foto's samen als één recept (bv. ingrediënten op de ene pagina, bereidingswijze op de andere) en voeg ze samen tot één compleet recept. " : ""}Extraheer het volledige recept en geef het terug als JSON.
 Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks.
 
 Format:
@@ -561,11 +616,11 @@ Format:
   "stappen": ["stap 1", "stap 2"]
 }
 
-Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
-          imageBase64: base64,
+Als er geen leesbaar recept op de foto('s) staat: {"fout": "Geen recept leesbaar"}`,
+          imageBase64Array: base64Lijst,
           bron: "maaltijden-foto-import",
-          imageType: type,
-          maxTokens: 2000,
+          imageType: "image/jpeg",
+          maxTokens: 2200,
         }),
       });
 
@@ -575,7 +630,7 @@ Als er geen leesbaar recept op de foto staat: {"fout": "Geen recept leesbaar"}`,
       const clean = data.text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       if (parsed.fout) throw new Error(parsed.fout);
-      const opslagFoto = await comprimeerFotoVoorOpslag(file);
+      const opslagFoto = await comprimeerFotoVoorOpslag(lijst[0]);
       slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}` });
     } catch (e) {
       setImportFout(e.message);
@@ -703,16 +758,36 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Import mislukt");
-      slaReceptOp(data.recept);
-      setImportUrl("");
+
+      if (data.recepten.length === 1) {
+        slaReceptOp(data.recepten[0]);
+        setImportUrl("");
+      } else {
+        // Meerdere recepten op deze pagina gevonden (bv. een overzichtspagina)
+        // — laat de gebruiker kiezen welke geïmporteerd worden.
+        setLinkKeuzeRecepten(data.recepten);
+      }
     } catch (e) {
       setImportFout(e.message);
     }
     setImportLinkLoading(false);
   }
 
+  // Importeert alle aangevinkte recepten uit de keuzelijst (meerdere-recepten-op-één-pagina).
+  function importeerGekozenRecepten(gekozenIndexen) {
+    const nieuwe = gekozenIndexen.map(i => {
+      const r = linkKeuzeRecepten[i];
+      return { ...r, id: uid(), hoofdingredient: guessHoofdingredient(r.ingredienten), aangemaaktOp: Date.now() };
+    });
+    persistData([...recepten, ...nieuwe], weekmenu);
+    showToast(`✅ ${nieuwe.length} recept${nieuwe.length === 1 ? "" : "en"} toegevoegd`);
+    setLinkKeuzeRecepten(null);
+    setImportUrl("");
+    setTab("recepten");
+  }
+
   function slaReceptOp(parsed, opties = {}) {
-    const nieuw = { ...parsed, id: uid(), aangemaaktOp: Date.now() };
+    const nieuw = { ...parsed, id: uid(), hoofdingredient: parsed.hoofdingredient || guessHoofdingredient(parsed.ingredienten), aangemaaktOp: Date.now() };
     persistData([...recepten, nieuw], weekmenu);
     showToast(`✅ "${nieuw.naam}" toegevoegd`);
     setAiResultaat(null);
@@ -858,10 +933,26 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   );
 
   const actieefRecept = recepten.find(r => r.id === actieefReceptId);
-  let gefilterd = zoekterm
-    ? recepten.filter(r => r.naam.toLowerCase().includes(zoekterm.toLowerCase()) || r.keuken?.toLowerCase().includes(zoekterm.toLowerCase()))
-    : recepten;
+  let gefilterd = recepten;
+  if (zoekterm.trim()) {
+    const z = zoekterm.toLowerCase();
+    gefilterd = gefilterd.filter(r =>
+      r.naam.toLowerCase().includes(z) ||
+      r.keuken?.toLowerCase().includes(z) ||
+      r.hoofdingredient?.toLowerCase().includes(z) ||
+      (r.ingredienten || []).some(i => i.naam.toLowerCase().includes(z))
+    );
+  }
   if (dieetFilter) gefilterd = gefilterd.filter(r => (r.dieet||[]).includes(dieetFilter));
+  if (keukenFilter) gefilterd = gefilterd.filter(r => (r.keuken || "Overig") === keukenFilter);
+  if (hoofdingredientFilter) gefilterd = gefilterd.filter(r => (r.hoofdingredient || guessHoofdingredient(r.ingredienten)) === hoofdingredientFilter);
+  if (bereidingstijdFilter) {
+    const optie = BEREIDINGSTIJD_OPTIES.find(o => o.id === bereidingstijdFilter);
+    gefilterd = gefilterd.filter(r => optie.test(+r.bereidingstijd || 0));
+  }
+  // Zodra er specifiek gefilterd/gezocht wordt, toont een platte lijst het
+  // duidelijker dan de keuken-groepering — vooral zodra de bibliotheek groeit.
+  const filtersActief = !!(zoekterm.trim() || dieetFilter || keukenFilter || hoofdingredientFilter || bereidingstijdFilter);
 
   // Groepeer op keuken (leidende categorie), in de vaste KEUKENS-volgorde;
   // onbekende/legacy keuken-waardes komen als eigen groep achteraan.
@@ -892,6 +983,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                 onChange={e => updateRecept(actieefRecept.id, { naam: e.target.value })} />
             : <h1 style={{ ...S.title, fontSize: 18, margin: 0, flex:1, textAlign:"center" }}>{actieefRecept.naam}</h1>
           }
+          {!bewerkModus && (
+            <button style={{ background:"none", border:"none", cursor:"pointer", padding:6, marginRight:2 }} onClick={() => deelRecept(actieefRecept)} title="Deel dit recept">
+              <Share2 size={18} color={C.orange} />
+            </button>
+          )}
           <button style={{ background: bewerkModus ? C.orange : C.card, color: bewerkModus ? "#FFF" : C.orange, border:`1px solid ${bewerkModus ? C.orange : C.border}`, borderRadius:10, padding:"6px 12px", fontSize:12, fontWeight:700, cursor:"pointer" }}
             onClick={() => { setBewerkReceptId(bewerkModus ? null : actieefRecept.id); if (bewerkModus) showToast("✅ Wijzigingen opgeslagen"); }}>
             {bewerkModus ? "Klaar" : "✏️ Bewerk"}
@@ -983,6 +1079,13 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                 <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Porties</label>
                 <input style={{ ...S.inp, padding:"8px 10px" }} type="number" value={actieefRecept.porties||""}
                   onChange={e => updateRecept(actieefRecept.id, { porties: +e.target.value })} />
+              </div>
+              <div>
+                <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Hoofdingrediënt</label>
+                <select style={{ ...S.inp, padding:"8px 10px" }} value={actieefRecept.hoofdingredient||"Overig"}
+                  onChange={e => updateRecept(actieefRecept.id, { hoofdingredient: e.target.value })}>
+                  {HOOFDINGREDIENTEN.map(h => <option key={h} value={h}>{h}</option>)}
+                </select>
               </div>
               <div>
                 <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Calorieën (kcal)</label>
@@ -1369,6 +1472,47 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
         </div>
       )}
 
+      {/* Meerdere recepten gevonden op één pagina — kies welke te importeren */}
+      {linkKeuzeRecepten && (() => {
+        const ChecklistPicker = () => {
+          const [gekozen, setGekozen] = useState(linkKeuzeRecepten.map((_, i) => i));
+          return (
+            <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:200, display:"flex", alignItems:"flex-end" }}
+              onClick={() => setLinkKeuzeRecepten(null)}>
+              <div style={{ background:"#FFF", width:"100%", maxHeight:"85vh", overflowY:"auto", padding:"20px 20px 28px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+                  <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.orange }}>📖 {linkKeuzeRecepten.length} recepten gevonden</p>
+                  <button onClick={() => setLinkKeuzeRecepten(null)} style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                    <X size={20} color={C.muted} />
+                  </button>
+                </div>
+                <p style={{ fontSize:12, color:C.muted, margin:"0 0 14px" }}>Deze pagina bevat meerdere recepten. Kies welke je wil toevoegen.</p>
+                {linkKeuzeRecepten.map((r, i) => {
+                  const actief = gekozen.includes(i);
+                  return (
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", background:actief?`${C.orange}10`:C.card, border:`1px solid ${actief?C.orange:C.border}`, borderRadius:10, marginBottom:8, cursor:"pointer" }}
+                      onClick={() => setGekozen(g => actief ? g.filter(x=>x!==i) : [...g, i])}>
+                      <span role="checkbox" aria-checked={actief} style={{ width:20, height:20, borderRadius:6, border:`2px solid ${actief?C.orange:C.border}`, background:actief?C.orange:"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                        {actief && <Check size={13} color="#FFF" />}
+                      </span>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <p style={{ margin:"0 0 2px", fontWeight:700, fontSize:14 }}>{r.naam}</p>
+                        <p style={{ margin:0, fontSize:11, color:C.muted }}>{r.keuken}{r.bereidingstijd ? ` · ⏱ ${r.bereidingstijd}min` : ""}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+                <button style={{ ...S.btn(C.orange), width:"100%", marginTop:8 }} disabled={gekozen.length === 0}
+                  onClick={() => importeerGekozenRecepten(gekozen)}>
+                  ✅ {gekozen.length} recept{gekozen.length === 1 ? "" : "en"} toevoegen
+                </button>
+              </div>
+            </div>
+          );
+        };
+        return <ChecklistPicker />;
+      })()}
+
       {/* Recept toevoegen overlay */}
       {showReceptForm && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => setShowReceptForm(false)}>
@@ -1404,6 +1548,10 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
               </select>
               <input style={S.inp} placeholder="Min. bereidingstijd" type="number" value={receptForm.bereidingstijd} onChange={e => setReceptForm(f=>({...f,bereidingstijd:e.target.value}))} />
             </div>
+            <select style={{ ...S.inp, marginBottom:10 }} value={receptForm.hoofdingredient || ""} onChange={e => setReceptForm(f=>({...f,hoofdingredient:e.target.value}))}>
+              <option value="">Hoofdingrediënt (automatisch als leeg)</option>
+              {HOOFDINGREDIENTEN.map(h => <option key={h} value={h}>{h}</option>)}
+            </select>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8, marginBottom:10 }}>
               <input style={S.inp} placeholder="Porties" type="number" value={receptForm.porties} onChange={e=>setReceptForm(f=>({...f,porties:e.target.value}))} />
               <input style={S.inp} placeholder="Kcal" type="number" value={receptForm.kcal} onChange={e=>setReceptForm(f=>({...f,kcal:e.target.value}))} />
@@ -1553,27 +1701,91 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
         )}
 
         {/* ── RECEPTEN ── */}
-        {tab === "recepten" && (
+        {tab === "recepten" && (() => {
+          const renderReceptKaart = r => {
+            const stats = receptStats(r);
+            const veelGemaakt = stats.aantal >= 3;
+            return (
+              <div key={r.id} style={{ ...S.card, cursor:"pointer", display:"flex", gap:12, alignItems:"center" }}
+                onClick={() => setActieefReceptId(r.id)}>
+                {r.foto ? (
+                  <img src={r.foto} alt="" style={{ width:52, height:52, borderRadius:12, objectFit:"cover", flexShrink:0 }} />
+                ) : (
+                  <div style={{ width:52, height:52, borderRadius:12, background:C.card, display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🍽️</div>
+                )}
+                <div style={{ flex:1, minWidth:0 }}>
+                  <p style={{ margin:"0 0 3px", fontWeight:700, fontSize:15 }}>{r.naam}</p>
+                  <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" }}>
+                    <span style={{ fontSize:12, color:C.muted }}>⏱ {r.bereidingstijd}min</span>
+                    <span style={{ fontSize:12, color:C.muted }}>👥 {r.porties}p</span>
+                    {r.hoofdingredient && r.hoofdingredient !== "Overig" && <span style={{ fontSize:12, color:C.muted }}>🥘 {r.hoofdingredient}</span>}
+                    {r.kcal ? <span style={{ fontSize:12, color:C.muted }}>🔥{r.kcal}kcal</span> : null}
+                    {weergaveReceptBeoordeling(r) > 0 && <span style={{ fontSize:11 }}>{"⭐".repeat(Math.round(weergaveReceptBeoordeling(r)))}</span>}
+                    {veelGemaakt && <span title="Vaak gemaakt" style={{ fontSize:11 }}>🔥 favoriet</span>}
+                    {stats.langNietGemaakt && <span title="Lang niet gemaakt" style={{ fontSize:11 }}>💤</span>}
+                  </div>
+                </div>
+                <ChevronLeft size={16} color={C.muted} style={{ transform:"rotate(180deg)" }} />
+              </div>
+            );
+          };
+
+          return (
           <>
-            <input style={{ ...S.inp, marginBottom:10 }} placeholder="🔍 Zoek recept…" value={zoekterm} onChange={e=>setZoekterm(e.target.value)} />
-            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:14, paddingBottom:2 }}>
+            <input style={{ ...S.inp, marginBottom:10 }} placeholder="🔍 Zoek op naam, keuken of ingrediënt…" value={zoekterm} onChange={e=>setZoekterm(e.target.value)} />
+
+            {/* Dieet-filter */}
+            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:8, paddingBottom:2 }}>
               <button style={{ border:`1px solid ${!dieetFilter?C.orange:C.border}`, background:!dieetFilter?C.orange:"#FFF", color:!dieetFilter?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
-                onClick={() => setDieetFilter(null)}>Alles</button>
+                onClick={() => setDieetFilter(null)}>Alle diëten</button>
               {DIEET_TAGS.map(tag => (
                 <button key={tag} style={{ border:`1px solid ${dieetFilter===tag?C.green:C.border}`, background:dieetFilter===tag?C.green:"#FFF", color:dieetFilter===tag?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
                   onClick={() => setDieetFilter(dieetFilter===tag?null:tag)}>{tag}</button>
               ))}
             </div>
+
+            {/* Bereidingstijd-filter */}
+            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:8, paddingBottom:2 }}>
+              {BEREIDINGSTIJD_OPTIES.map(o => (
+                <button key={o.id} style={{ border:`1px solid ${bereidingstijdFilter===o.id?C.orange:C.border}`, background:bereidingstijdFilter===o.id?C.orange:"#FFF", color:bereidingstijdFilter===o.id?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                  onClick={() => setBereidingstijdFilter(bereidingstijdFilter===o.id?null:o.id)}>{o.label}</button>
+              ))}
+            </div>
+
+            {/* Hoofdingrediënt-filter */}
+            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:8, paddingBottom:2 }}>
+              {HOOFDINGREDIENTEN.map(h => (
+                <button key={h} style={{ border:`1px solid ${hoofdingredientFilter===h?C.orange:C.border}`, background:hoofdingredientFilter===h?C.orange:"#FFF", color:hoofdingredientFilter===h?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                  onClick={() => setHoofdingredientFilter(hoofdingredientFilter===h?null:h)}>{h}</button>
+              ))}
+            </div>
+
+            {/* Keuken-filter */}
+            <div style={{ display:"flex", gap:6, overflowX:"auto", marginBottom:14, paddingBottom:2 }}>
+              {KEUKENS.map(k => (
+                <button key={k} style={{ border:`1px solid ${keukenFilter===k?C.orange:C.border}`, background:keukenFilter===k?C.orange:"#FFF", color:keukenFilter===k?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                  onClick={() => setKeukenFilter(keukenFilter===k?null:k)}>{k}</button>
+              ))}
+            </div>
+
             {gefilterd.length === 0 && (
               <div style={{ textAlign:"center", padding:"50px 20px" }}>
                 <div style={{ fontSize:48, marginBottom:12 }}>🍳</div>
                 <p style={{ fontWeight:700, fontSize:16, color:C.orange, margin:"0 0 6px" }}>
-                  {dieetFilter ? "Geen recepten met dit dieet-label" : "Nog geen recepten"}
+                  {filtersActief ? "Niks gevonden met deze filters" : "Nog geen recepten"}
                 </p>
-                <p style={{ fontSize:14, color:C.muted, margin:0 }}>Tik + of gebruik de AI-kok</p>
+                <p style={{ fontSize:14, color:C.muted, margin:0 }}>{filtersActief ? "Probeer een andere combinatie" : "Tik + of gebruik de AI-kok"}</p>
               </div>
             )}
-            {receptenPerKeuken.map(({ keuken, recepten: keukenRecepten }) => {
+
+            {filtersActief ? (
+              // Platte, gesorteerde lijst zodra er specifiek gezocht/gefilterd wordt —
+              // duidelijker dan groeperen zodra de bibliotheek groter wordt.
+              <>
+                {gefilterd.length > 0 && <p style={{ fontSize:12, color:C.muted, margin:"0 0 10px" }}>{gefilterd.length} recept{gefilterd.length===1?"":"en"} gevonden</p>}
+                {[...gefilterd].sort((a,b) => a.naam.localeCompare(b.naam)).map(renderReceptKaart)}
+              </>
+            ) : receptenPerKeuken.map(({ keuken, recepten: keukenRecepten }) => {
               const ingeklapt = !!ingeklapteKeukens[keuken];
               return (
                 <section key={keuken} style={{ marginBottom:16 }}>
@@ -1584,37 +1796,13 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                     </span>
                     <span style={{ fontSize:14, color:C.muted }}>{ingeklapt ? "▸" : "▾"}</span>
                   </div>
-                  {!ingeklapt && keukenRecepten.map(r => {
-                    const stats = receptStats(r);
-                    const veelGemaakt = stats.aantal >= 3;
-                    return (
-                    <div key={r.id} style={{ ...S.card, cursor:"pointer", display:"flex", gap:12, alignItems:"center" }}
-                      onClick={() => setActieefReceptId(r.id)}>
-                      {r.foto ? (
-                        <img src={r.foto} alt="" style={{ width:52, height:52, borderRadius:12, objectFit:"cover", flexShrink:0 }} />
-                      ) : (
-                        <div style={{ width:52, height:52, borderRadius:12, background:C.card, display:"flex", alignItems:"center", justifyContent:"center", fontSize:26, flexShrink:0 }}>🍽️</div>
-                      )}
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <p style={{ margin:"0 0 3px", fontWeight:700, fontSize:15 }}>{r.naam}</p>
-                        <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"center" }}>
-                          <span style={{ fontSize:12, color:C.muted }}>⏱ {r.bereidingstijd}min</span>
-                          <span style={{ fontSize:12, color:C.muted }}>👥 {r.porties}p</span>
-                          {r.kcal ? <span style={{ fontSize:12, color:C.muted }}>🔥{r.kcal}kcal</span> : null}
-                          {weergaveReceptBeoordeling(r) > 0 && <span style={{ fontSize:11 }}>{"⭐".repeat(Math.round(weergaveReceptBeoordeling(r)))}</span>}
-                          {veelGemaakt && <span title="Vaak gemaakt" style={{ fontSize:11 }}>🔥 favoriet</span>}
-                          {stats.langNietGemaakt && <span title="Lang niet gemaakt" style={{ fontSize:11 }}>💤</span>}
-                        </div>
-                      </div>
-                      <ChevronLeft size={16} color={C.muted} style={{ transform:"rotate(180deg)" }} />
-                    </div>
-                    );
-                  })}
+                  {!ingeklapt && keukenRecepten.map(renderReceptKaart)}
                 </section>
               );
             })}
           </>
-        )}
+          );
+        })()}
 
         {/* ── AI KOK ── */}
         {tab === "ai" && (
@@ -1679,13 +1867,13 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                   ) : (
                     <div style={{ padding:"30px 0" }}>
                       <div style={{ fontSize:40, marginBottom:10 }}>📷</div>
-                      <p style={{ fontSize:15, fontWeight:700, color:C.orange, margin:"0 0 6px" }}>Foto van kookboek</p>
-                      <p style={{ fontSize:13, color:C.muted, margin:0 }}>Maak een foto van een receptpagina of kies een afbeelding uit je bibliotheek</p>
+                      <p style={{ fontSize:15, fontWeight:700, color:C.orange, margin:"0 0 6px" }}>Foto('s) van kookboek</p>
+                      <p style={{ fontSize:13, color:C.muted, margin:0 }}>Loopt het recept over meerdere pagina's? Selecteer gerust meerdere foto's tegelijk — de AI leest ze als één recept</p>
                     </div>
                   )}
                 </div>
-                <input ref={fotoImportRef} type="file" accept="image/*" style={{ display:"none" }}
-                  onChange={e => importeerViaFoto(e.target.files[0])} />
+                <input ref={fotoImportRef} type="file" accept="image/*" multiple style={{ display:"none" }}
+                  onChange={e => importeerViaFoto(e.target.files)} />
                 <p style={{ fontSize:12, color:C.muted, textAlign:"center", marginTop:8 }}>
                   Zorg voor goede belichting en houd de camera recht boven de pagina
                 </p>

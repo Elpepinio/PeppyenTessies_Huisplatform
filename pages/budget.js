@@ -14,15 +14,17 @@ const THEMES = {
 };
 
 const ACC_COL  = { gezamenlijk:"#00D4FF", p1:"#B57BFF", p2:"#FF8C42" };
-const CAT_ICON = { Wonen:"🏠", Boodschappen:"🛒", Transport:"🚗", Abonnementen:"📺", "Uit eten":"🍽️", Gezondheid:"💊", Kleding:"👗", Entertainment:"🎭", Vakantie:"✈️", Kinderen:"👶", Sparen:"💰", Verzekering:"🛡️", "Goede doelen":"❤️", "Gezamenlijke rekening":"🏦", Overig:"📦" };
+const CAT_ICON = { Wonen:"🏠", Boodschappen:"🛒", Transport:"🚗", Abonnementen:"📺", "Uit eten":"🍽️", Gezondheid:"💊", Kleding:"👗", Entertainment:"🎭", Vakantie:"✈️", Kinderen:"👶", Sparen:"💰", Verzekering:"🛡️", "Goede doelen":"❤️", Bankkosten:"🏛️", "Cadeaus":"🎁", Broodjes:"🥪", Stappen:"🍻", "Gezamenlijke rekening":"🏦", Overig:"📦" };
 const CAT_COL  = {
   Wonen:"#6C63FF", Boodschappen:"#2ECC71", Transport:"#F39C12",
   Abonnementen:"#E74C3C", "Uit eten":"#1ABC9C", Gezondheid:"#E91E63",
   Kleding:"#FF9800", Entertainment:"#9C27B0", Vakantie:"#00BCD4",
-  Kinderen:"#FF6B9D", Sparen:"#3F51B5", Verzekering:"#795548", "Goede doelen":"#D81B60", "Gezamenlijke rekening":"#26A69A", Overig:"#607D8B",
+  Kinderen:"#FF6B9D", Sparen:"#3F51B5", Verzekering:"#795548", "Goede doelen":"#D81B60",
+  Bankkosten:"#546E7A", Cadeaus:"#EC407A", Broodjes:"#8D6E63", Stappen:"#7C4DFF",
+  "Gezamenlijke rekening":"#26A69A", Overig:"#607D8B",
 };
 
-const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Gezondheid","Kleding","Entertainment","Vakantie","Kinderen","Sparen","Verzekering","Goede doelen","Gezamenlijke rekening","Overig"];
+const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten","Broodjes","Gezondheid","Kleding","Entertainment","Stappen","Vakantie","Kinderen","Sparen","Verzekering","Goede doelen","Cadeaus","Bankkosten","Gezamenlijke rekening","Overig"];
 // ── Dynamische datum (altijd actueel) ────────────────────────────────────────
 const _now       = new Date();
 const NOW_MONTH  = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}`;
@@ -238,6 +240,10 @@ function guessCategory(t) {
   if (/bioscoop|theater|concert|ticketmaster|efteling|pretpark/.test(t)) return "Entertainment";
   if (/sparen|spaarrekening/.test(t)) return "Sparen";
   if (/unicef|artsen zonder grenzen|rode kruis|greenpeace|wnf|wereld natuur fonds|kwf|hartstichting|leger des heils|oxfam novib|amnesty|natuurmonumenten|dierenbescherming|goede doel|donatie|stichting.*fonds|giro555/.test(t)) return "Goede doelen";
+  if (/afschrijvingskosten|bankkosten|betaalpas|kosten betaalrekening|jaarlijkse.*kosten|pakketkosten|creditcardkosten/.test(t)) return "Bankkosten";
+  if (/bakker|broodje|lunchroom|croissanterie|broodzaak|belegd broodje/.test(t)) return "Broodjes";
+  if (/café|kroeg|nachtclub|bar\b|discotheek|borrel/.test(t)) return "Stappen";
+  if (/cadeau|cadeaubon|geschenk|bloemen.*cadeau/.test(t)) return "Cadeaus";
   if (/inleg|naar gezamenlijk|gezamenlijke rekening|extra inleg/.test(t)) return "Gezamenlijke rekening";
   return "Overig";
 }
@@ -254,6 +260,10 @@ const NAAM_SUGGESTIES = {
   Vakantie:     ["Vliegticket","Hotel","Airbnb","Camping","Autoverhuur","Dagje uit"],
   Wonen:        ["Huur","Energie","Gas","Water","Internet","Verzekering","Gemeentebelasting"],
   Abonnementen: ["Netflix","Spotify","Disney+","Ziggo","KPN","T-Mobile","Videoland"],
+  Broodjes:     ["Broodje bakker", "Lunchroom", "Lunch op werk"],
+  Stappen:      ["Café", "Kroeg", "Uitgaan", "Borrel"],
+  Cadeaus:      ["Verjaardagscadeau", "Cadeaubon", "Sinterklaas", "Kerstcadeau"],
+  Bankkosten:   ["Betaalpas kosten", "Jaarlijkse bankkosten", "Creditcardkosten"],
 };
 
 const BUDGET_SUGGESTIONS = {

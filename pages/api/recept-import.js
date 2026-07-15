@@ -51,16 +51,21 @@ export default async function handler(req, res) {
       try { afbeelding = new URL(ogImageMatch[1], url).toString(); } catch { /* ongeldige URL, negeren */ }
     }
 
-    // Strip HTML tags voor de AI — keep structuur maar verwijder scripts/styles
+    // Strip HTML tags voor de AI — houd structuur maar verwijder scripts/styles.
+    // Ruimer dan bij een los recept: sommige pagina's ("10x beste pastarecepten")
+    // bevatten meerdere recepten, dus er is meer tekst nodig om ze allemaal te vinden.
     const tekst = html
       .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
       .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 8000); // Max 8000 tekens voor de AI
+      .slice(0, 14000);
 
-    // AI extractie
+    // AI extractie — vraagt expliciet of er één of meerdere recepten op de
+    // pagina staan (bv. een "10 beste pastagerechten"-overzichtspagina) en
+    // geeft in beide gevallen een array terug, zodat de client hetzelfde
+    // afhandelt ongeacht of het er één of meerdere zijn.
     const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -70,29 +75,31 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 2000,
+        max_tokens: 4000,
         messages: [{
           role: "user",
-          content: `Extraheer het recept uit deze webpagina-tekst en geef het terug als JSON.
-Geef ALLEEN geldige JSON terug, geen uitleg of markdown.
+          content: `Bekijk deze webpagina-tekst. Er kan één recept op staan, of de pagina kan een overzicht/lijstje zijn met MEERDERE losse recepten (bv. "10 beste pastarecepten" of een blogpost met 3 varianten).
+
+Geef ALLEEN geldige JSON terug, geen uitleg of markdown, in dit exacte formaat — altijd een array, ook als het er maar één is:
+{
+  "recepten": [
+    {
+      "naam": "naam van het recept",
+      "keuken": "type keuken (Nederlands/Italiaans/etc)",
+      "bereidingstijd": 30,
+      "porties": 4,
+      "kcal": 0,
+      "beschrijving": "korte beschrijving",
+      "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
+      "stappen": ["stap 1", "stap 2"]
+    }
+  ]
+}
 
 Paginatekst:
 ${tekst}
 
-Gewenst JSON-formaat:
-{
-  "naam": "naam van het recept",
-  "keuken": "type keuken (Nederlands/Italiaans/etc)",
-  "bereidingstijd": 30,
-  "porties": 4,
-  "kcal": 0,
-  "beschrijving": "korte beschrijving",
-  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
-  "stappen": ["stap 1", "stap 2"],
-  "bron": "${url}"
-}
-
-Als er geen recept op de pagina staat, geef dan: {"fout": "Geen recept gevonden op deze pagina"}`
+Als er helemaal geen recept op de pagina staat: {"fout": "Geen recept gevonden op deze pagina"}`
         }],
       }),
     });
@@ -112,11 +119,16 @@ Als er geen recept op de pagina staat, geef dan: {"fout": "Geen recept gevonden 
       });
     }
 
-    if (parsed.fout) {
-      return res.status(400).json({ error: parsed.fout });
+    if (parsed.fout || !Array.isArray(parsed.recepten) || parsed.recepten.length === 0) {
+      return res.status(400).json({ error: parsed.fout || "Geen recept gevonden op deze pagina" });
     }
 
-    return res.status(200).json({ recept: { ...parsed, foto: afbeelding } });
+    // De og:image alleen meegeven als er precies één recept is gevonden —
+    // bij meerdere recepten op één pagina zou diezelfde ene afbeelding
+    // misleidend zijn voor alle recepten tegelijk.
+    const recepten = parsed.recepten.map((r, i) => ({ ...r, foto: parsed.recepten.length === 1 ? afbeelding : null }));
+
+    return res.status(200).json({ recepten });
   } catch (e) {
     if (e.name === "TimeoutError") {
       return res.status(400).json({ error: "Pagina duurde te lang — probeer een andere URL" });

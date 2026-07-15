@@ -5,6 +5,12 @@ const redis = Redis.fromEnv();
 const DATA_KEY = "huishouden:maaltijden";
 const FOTO_KEY = (id, veld) => `huishouden:maaltijden:foto:${id}:${veld}`;
 
+// Zonder deze instelling gebruikt Next.js de standaardlimiet van 1MB per
+// request — veel te weinig zodra er een paar recepten met foto's bijkomen,
+// want elke opslag stuurt de volledige receptenlijst (incl. alle foto's) in
+// één keer mee. Zelfde aanpak als bij Places, waar dit al langer goed staat.
+export const config = { api: { bodyParser: { sizeLimit: "20mb" } } };
+
 const EMPTY = { recepten: [], weekmenu: {}, boodschappenlijst: [] };
 // Fotovelden die apart van het hoofd-record opgeslagen worden, om de 1MB-
 // limiet per Redis-waarde nooit te raken naarmate er meer recepten met foto's bijkomen.

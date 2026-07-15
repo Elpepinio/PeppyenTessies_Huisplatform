@@ -15,6 +15,76 @@ const INTERVALLEN = [
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+function dagPlus(datum, dagen) {
+  const d = new Date(datum);
+  d.setDate(d.getDate() + dagen);
+  return d;
+}
+function dagVerschil(a, b) {
+  return Math.round((new Date(a) - new Date(b)) / 86400000);
+}
+function fmtDatum(d) {
+  const dt = new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
+}
+
+// ════════════════════════════════════════════════════════
+// PLANNINGSALGORITME — de kern van "als er iets uitloopt, schuift de rest
+// automatisch mee". Werkt als een vereenvoudigde CPM-planning (Critical Path
+// Method): elke taak start pas zodra AL zijn afhankelijkheden klaar zijn.
+//
+// - Nog niet gestarte/afgeronde taken worden berekend op basis van geschatte
+//   duur en de (eventueel al vertraagde) einddatum van hun afhankelijkheden.
+// - Taken met een werkelijke start/einddatum (al gestart of al klaar)
+//   gebruiken die ECHTE datums als basis in plaats van de schatting — dat is
+//   precies het mechanisme waardoor vertraging automatisch doorwerkt naar
+//   alles wat erna komt.
+// - `actueel: false` betekent puur-op-schema-als-alles-volgens-plan-gaat,
+//   gebruikt om te bepalen hoeveel vertraging een taak heeft opgelopen
+//   t.o.v. de oorspronkelijke inschatting.
+// ════════════════════════════════════════════════════════
+function berekenSchema(taken, projectStart, actueel = true) {
+  const perId = Object.fromEntries(taken.map(t => [t.id, t]));
+  const resultaat = {};
+
+  function berekenTaak(id, bezig) {
+    if (resultaat[id]) return resultaat[id];
+    if (bezig.has(id)) return { start: new Date(projectStart), eind: new Date(projectStart), circulair: true };
+    const taak = perId[id];
+    if (!taak) return null;
+    bezig.add(id);
+
+    let start;
+    if (actueel && taak.werkelijkeStart) {
+      start = new Date(taak.werkelijkeStart);
+    } else if (!taak.afhankelijkheden || taak.afhankelijkheden.length === 0) {
+      start = new Date(projectStart);
+    } else {
+      let laatsteEind = new Date(projectStart);
+      taak.afhankelijkheden.forEach(depId => {
+        const dep = berekenTaak(depId, bezig);
+        if (dep && dep.eind > laatsteEind) laatsteEind = dep.eind;
+      });
+      start = laatsteEind;
+    }
+
+    let eind;
+    if (actueel && taak.werkelijkEind) {
+      eind = new Date(taak.werkelijkEind);
+    } else {
+      eind = dagPlus(start, Math.max(1, +taak.duurDagen || 1));
+    }
+
+    const r = { start, eind };
+    resultaat[id] = r;
+    bezig.delete(id);
+    return r;
+  }
+
+  taken.forEach(t => berekenTaak(t.id, new Set()));
+  return resultaat;
+}
+
 async function loadData() {
   try {
     const res = await fetch("/api/onderhoud");
@@ -56,6 +126,8 @@ const S = {
 export default function OnderhoudApp() {
   const [objecten, setObjectenState] = useState([]);
   const [taken, setTakenState] = useState([]);
+  const [projecten, setProjectenState] = useState([]);
+  const [projectTaken, setProjectTakenState] = useState([]);
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
   const [actieefObjectId, setActieefObjectId] = useState(null);
@@ -70,15 +142,36 @@ export default function OnderhoudApp() {
   const [logTaakId, setLogTaakId] = useState(null);
   const [logForm, setLogForm] = useState({ datum: new Date().toISOString().slice(0,10), kosten: "", notitie: "", uitvoerder: "" });
 
-  const [tab, setTab] = useState("objecten"); // objecten | overzicht
+  const [tab, setTab] = useState("objecten"); // objecten | overzicht | verbouwing
   const [toast, setToast] = useState(null);
+
+  // ── Verbouwplanner ──────────────────────────────────────
+  const [actieefProjectId, setActieefProjectId] = useState(null);
+  const [showProjectForm, setShowProjectForm] = useState(false);
+  const [projectForm, setProjectForm] = useState({ naam: "", beschrijving: "", startDatum: new Date().toISOString().slice(0,10) });
+  const [showProjectTaakForm, setShowProjectTaakForm] = useState(false);
+  const [editProjectTaakId, setEditProjectTaakId] = useState(null);
+  const [projectTaakForm, setProjectTaakForm] = useState({ naam: "", duurDagen: 1, afhankelijkheden: [], uitvoerder: "", notitie: "" });
+  const [aiAdviesLoading, setAiAdviesLoading] = useState(false);
+  const [aiAdviesInput, setAiAdviesInput] = useState("");
+  const [showAiAdviesForm, setShowAiAdviesForm] = useState(false);
+  const [showKlaarForm, setShowKlaarForm] = useState(false);
+  const [klaarTaakId, setKlaarTaakId] = useState(null);
+  const [klaarDatum, setKlaarDatum] = useState(new Date().toISOString().slice(0,10));
 
   const persistData = useCallback((nextObjecten, nextTaken) => {
     lastWriteRef.current = Date.now();
     setObjectenState(nextObjecten);
     setTakenState(nextTaken);
-    saveData({ objecten: nextObjecten, taken: nextTaken });
-  }, []);
+    saveData({ objecten: nextObjecten, taken: nextTaken, projecten, projectTaken });
+  }, [projecten, projectTaken]);
+
+  const persistProjectData = useCallback((nextProjecten, nextProjectTaken) => {
+    lastWriteRef.current = Date.now();
+    setProjectenState(nextProjecten);
+    setProjectTakenState(nextProjectTaken);
+    saveData({ objecten, taken, projecten: nextProjecten, projectTaken: nextProjectTaken });
+  }, [objecten, taken]);
 
   useEffect(() => {
     let active = true;
@@ -88,6 +181,8 @@ export default function OnderhoudApp() {
       if (active && data) {
         setObjectenState(data.objecten || []);
         setTakenState(data.taken || []);
+        setProjectenState(data.projecten || []);
+        setProjectTakenState(data.projectTaken || []);
         setLoading(false);
       } else if (active) setLoading(false);
     };
@@ -196,6 +291,123 @@ export default function OnderhoudApp() {
       const db = dagenTotVolgende(b) ?? 9999;
       return da - db;
     });
+  }
+
+  // ── Verbouwplanner: projecten ──────────────────────────
+  function voegProjectToe() {
+    if (!projectForm.naam.trim()) return;
+    const nieuw = { ...projectForm, id: uid(), status: "actief", aangemaaktOp: Date.now() };
+    persistProjectData([...projecten, nieuw], projectTaken);
+    setProjectForm({ naam: "", beschrijving: "", startDatum: new Date().toISOString().slice(0,10) });
+    setShowProjectForm(false);
+    setActieefProjectId(nieuw.id);
+    showToast(`✅ ${nieuw.naam} aangemaakt`);
+  }
+
+  function verwijderProject(id) {
+    if (!window.confirm("Project en alle bijbehorende taken verwijderen?")) return;
+    persistProjectData(projecten.filter(p => p.id !== id), projectTaken.filter(t => t.projectId !== id));
+    if (actieefProjectId === id) setActieefProjectId(null);
+  }
+
+  // ── Verbouwplanner: taken ──────────────────────────────
+  function voegProjectTaakToe() {
+    if (!projectTaakForm.naam.trim() || !actieefProjectId) return;
+    if (editProjectTaakId) {
+      persistProjectData(projecten, projectTaken.map(t => t.id === editProjectTaakId ? { ...t, ...projectTaakForm, duurDagen: +projectTaakForm.duurDagen || 1 } : t));
+      showToast("✅ Taak bijgewerkt");
+    } else {
+      const nieuw = {
+        ...projectTaakForm, id: uid(), projectId: actieefProjectId,
+        duurDagen: +projectTaakForm.duurDagen || 1,
+        werkelijkeStart: null, werkelijkEind: null,
+        aangemaaktOp: Date.now(),
+      };
+      persistProjectData(projecten, [...projectTaken, nieuw]);
+      showToast("✅ Taak toegevoegd");
+    }
+    setProjectTaakForm({ naam: "", duurDagen: 1, afhankelijkheden: [], uitvoerder: "", notitie: "" });
+    setShowProjectTaakForm(false);
+    setEditProjectTaakId(null);
+  }
+
+  function bewerkProjectTaak(taak) {
+    setProjectTaakForm({ naam: taak.naam, duurDagen: taak.duurDagen, afhankelijkheden: taak.afhankelijkheden || [], uitvoerder: taak.uitvoerder || "", notitie: taak.notitie || "" });
+    setEditProjectTaakId(taak.id);
+    setShowProjectTaakForm(true);
+  }
+
+  function verwijderProjectTaak(id) {
+    // Haal deze taak ook overal als afhankelijkheid weg, anders verwijst er
+    // iets naar een taak die niet meer bestaat.
+    persistProjectData(
+      projecten,
+      projectTaken.filter(t => t.id !== id).map(t => ({ ...t, afhankelijkheden: (t.afhankelijkheden || []).filter(d => d !== id) }))
+    );
+  }
+
+  // Markeert een taak als gestart — vanaf nu telt de ECHTE startdatum mee in
+  // de berekening, niet meer de schatting.
+  function markeerGestart(taak) {
+    persistProjectData(projecten, projectTaken.map(t => t.id === taak.id ? { ...t, werkelijkeStart: fmtDatum(new Date()) } : t));
+    showToast(`▶️ ${taak.naam} gestart`);
+  }
+
+  // Markeert een taak als klaar op een (evt. handmatig gekozen) datum — dit is
+  // het moment waarop vertraging (of juist voorsprong) doorwerkt naar alles
+  // wat van deze taak afhankelijk is.
+  function markeerKlaar() {
+    const taak = projectTaken.find(t => t.id === klaarTaakId);
+    if (!taak) return;
+    persistProjectData(projecten, projectTaken.map(t => t.id === klaarTaakId
+      ? { ...t, werkelijkEind: klaarDatum, werkelijkeStart: t.werkelijkeStart || klaarDatum }
+      : t));
+    setShowKlaarForm(false);
+    setKlaarTaakId(null);
+    showToast(`✅ ${taak.naam} afgerond — planning bijgewerkt`);
+  }
+
+  function heropenTaak(taak) {
+    persistProjectData(projecten, projectTaken.map(t => t.id === taak.id ? { ...t, werkelijkEind: null } : t));
+  }
+
+  // Vraagt de AI om, op basis van de taaknamen (en evt. een korte
+  // beschrijving van de hele verbouwing), een logische volgorde en
+  // afhankelijkheden voor te stellen — generieke bouwkennis die lastig
+  // hard te coderen is, omdat elke verbouwing anders is.
+  async function vraagAiAdvies() {
+    const huidigeTaken = projectTaken.filter(t => t.projectId === actieefProjectId);
+    if (huidigeTaken.length < 2) { showToast("⚠️ Voeg eerst minstens 2 taken toe"); return; }
+    setAiAdviesLoading(true);
+    try {
+      const taaklijst = huidigeTaken.map(t => `- ${t.naam} (id: ${t.id})`).join("\n");
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: `Dit zijn de taken van een verbouwing${aiAdviesInput.trim() ? `: "${aiAdviesInput.trim()}"` : ""}:\n${taaklijst}\n\n` +
+            `Stel op basis van algemene bouwkennis (sloop vóór ruwbouw, leidingwerk/elektra vóór wandafwerking, vloerverwarming vóór vloerbedekking, schilderen als laatste, etc.) voor elke taak een realistische geschatte duur in dagen voor, en welke andere taken (uit deze lijst) eerst af moeten zijn (afhankelijkheden). ` +
+            `Gebruik ALLEEN de gegeven id's. Geef ALLEEN geldige JSON terug, geen uitleg of markdown:\n` +
+            `{"taken": [{"id": "...", "duurDagen": 3, "afhankelijkheden": ["id1","id2"]}]}`,
+          bron: "onderhoud-verbouwplanner-advies",
+          maxTokens: 1500,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "AI mislukt");
+      const clean = data.text.replace(/```json|```/g, "").trim();
+      const advies = JSON.parse(clean).taken || [];
+      const perId = Object.fromEntries(advies.map(a => [a.id, a]));
+      persistProjectData(projecten, projectTaken.map(t => perId[t.id]
+        ? { ...t, duurDagen: perId[t.id].duurDagen || t.duurDagen, afhankelijkheden: (perId[t.id].afhankelijkheden || []).filter(id => huidigeTaken.some(h => h.id === id)) }
+        : t));
+      showToast("✨ Volgorde en duur voorgesteld — controleer en pas aan waar nodig");
+      setShowAiAdviesForm(false);
+      setAiAdviesInput("");
+    } catch (e) {
+      showToast("❌ Kon geen advies ophalen, probeer het opnieuw");
+    }
+    setAiAdviesLoading(false);
   }
 
   if (loading) return (
@@ -415,6 +627,112 @@ export default function OnderhoudApp() {
         </div>
       )}
 
+      {/* Nieuw verbouwproject */}
+      {showProjectForm && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => setShowProjectForm(false)}>
+          <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>+ Nieuw verbouwproject</p>
+              <button onClick={() => setShowProjectForm(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={18} color={C.muted} />
+              </button>
+            </div>
+            <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam (bv. Verbouwing keuken)" value={projectForm.naam} onChange={e=>setProjectForm(f=>({...f,naam:e.target.value}))} autoFocus />
+            <textarea style={{ ...S.inp, height:60, resize:"none", marginBottom:10 }} placeholder="Korte beschrijving (optioneel)" value={projectForm.beschrijving} onChange={e=>setProjectForm(f=>({...f,beschrijving:e.target.value}))} />
+            <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Startdatum</label>
+            <input style={{ ...S.inp, marginBottom:14 }} type="date" value={projectForm.startDatum} onChange={e=>setProjectForm(f=>({...f,startDatum:e.target.value}))} />
+            <div style={{ display:"flex", gap:10 }}>
+              <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, flex:1 }} onClick={() => setShowProjectForm(false)}>Annuleer</button>
+              <button style={{ ...S.btn(), flex:2 }} onClick={voegProjectToe}>Aanmaken</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Taak toevoegen/bewerken binnen een verbouwproject */}
+      {showProjectTaakForm && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }}
+          onClick={() => { setShowProjectTaakForm(false); setEditProjectTaakId(null); }}>
+          <div style={{ background:"#FFF", width:"100%", maxHeight:"85vh", overflowY:"auto", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>{editProjectTaakId ? "Taak bewerken" : "+ Nieuwe taak"}</p>
+              <button onClick={() => { setShowProjectTaakForm(false); setEditProjectTaakId(null); }} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={18} color={C.muted} />
+              </button>
+            </div>
+            <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam (bv. Sloopwerk, Elektra, Tegelwerk)" value={projectTaakForm.naam} onChange={e=>setProjectTaakForm(f=>({...f,naam:e.target.value}))} autoFocus />
+            <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Geschatte duur (dagen)</label>
+            <input style={{ ...S.inp, marginBottom:10 }} type="number" min="1" value={projectTaakForm.duurDagen} onChange={e=>setProjectTaakForm(f=>({...f,duurDagen:e.target.value}))} />
+            <input style={{ ...S.inp, marginBottom:10 }} placeholder="Uitvoerder (optioneel — jijzelf, aannemer, etc.)" value={projectTaakForm.uitvoerder} onChange={e=>setProjectTaakForm(f=>({...f,uitvoerder:e.target.value}))} />
+
+            <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:6 }}>Moet eerst af zijn (afhankelijkheden)</label>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 }}>
+              {projectTaken.filter(t => t.projectId === actieefProjectId && t.id !== editProjectTaakId).length === 0 && (
+                <p style={{ fontSize:12, color:C.muted, margin:0 }}>Nog geen andere taken om aan te koppelen.</p>
+              )}
+              {projectTaken.filter(t => t.projectId === actieefProjectId && t.id !== editProjectTaakId).map(t => {
+                const actief = (projectTaakForm.afhankelijkheden||[]).includes(t.id);
+                return (
+                  <button key={t.id} style={{ border:`1px solid ${actief?C.purple:C.border}`, background:actief?C.purple:"transparent", color:actief?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, cursor:"pointer" }}
+                    onClick={() => setProjectTaakForm(f => ({ ...f, afhankelijkheden: actief ? f.afhankelijkheden.filter(id=>id!==t.id) : [...(f.afhankelijkheden||[]), t.id] }))}>
+                    {t.naam}
+                  </button>
+                );
+              })}
+            </div>
+            <textarea style={{ ...S.inp, height:60, resize:"none", marginBottom:14 }} placeholder="Notities (optioneel)" value={projectTaakForm.notitie} onChange={e=>setProjectTaakForm(f=>({...f,notitie:e.target.value}))} />
+            <div style={{ display:"flex", gap:10 }}>
+              <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, flex:1 }} onClick={() => { setShowProjectTaakForm(false); setEditProjectTaakId(null); }}>Annuleer</button>
+              <button style={{ ...S.btn(), flex:2 }} onClick={voegProjectTaakToe}>{editProjectTaakId ? "Opslaan" : "Toevoegen"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI-advies voor volgorde & duur */}
+      {showAiAdviesForm && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }}
+          onClick={() => !aiAdviesLoading && setShowAiAdviesForm(false)}>
+          <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>✨ AI-advies: volgorde &amp; duur</p>
+              {!aiAdviesLoading && (
+                <button onClick={() => setShowAiAdviesForm(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                  <X size={18} color={C.muted} />
+                </button>
+              )}
+            </div>
+            <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px", lineHeight:1.6 }}>
+              De AI bekijkt je huidige taken en stelt op basis van algemene bouwkennis (sloop vóór ruwbouw, elektra vóór afwerking, etc.) een duur en logische afhankelijkheden voor. Je kunt daarna alles nog handmatig aanpassen.
+            </p>
+            <textarea style={{ ...S.inp, height:70, resize:"none", marginBottom:14 }} placeholder="Extra context (optioneel), bv. 'volledige renovatie van de badkamer'" value={aiAdviesInput} onChange={e=>setAiAdviesInput(e.target.value)} />
+            <button style={{ ...S.btn(C.purple), width:"100%" }} onClick={vraagAiAdvies} disabled={aiAdviesLoading}>
+              {aiAdviesLoading ? "🤖 Advies wordt bedacht…" : "Advies toepassen"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Taak klaar melden */}
+      {showKlaarForm && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }}
+          onClick={() => setShowKlaarForm(false)}>
+          <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.green }}>✅ Taak afronden</p>
+              <button onClick={() => setShowKlaarForm(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={18} color={C.muted} />
+              </button>
+            </div>
+            <p style={{ fontSize:12, color:C.muted, margin:"0 0 10px" }}>
+              Op welke datum was deze taak echt klaar? Wijkt dit af van de planning, dan schuift de rest van het project automatisch mee.
+            </p>
+            <input style={{ ...S.inp, marginBottom:14 }} type="date" value={klaarDatum} onChange={e=>setKlaarDatum(e.target.value)} />
+            <button style={{ ...S.btn(C.green), width:"100%" }} onClick={markeerKlaar}>Afronden</button>
+          </div>
+        </div>
+      )}
+
       <header style={S.header}>
         <div>
           <Link href="/" style={S.switchBtn}>← Overzicht</Link>
@@ -423,9 +741,9 @@ export default function OnderhoudApp() {
       </header>
 
       {/* Tabs */}
-      <div style={{ display:"flex", gap:4, background:"#FFFFFF", borderRadius:12, margin:"0 20px 16px", border:`1px solid ${C.border}`, padding:"4px" }}>
-        {[["objecten","🏠 Objecten"],["overzicht","📅 Planning"],["kosten","💰 Kosten"]].map(([t,l]) => (
-          <button key={t} style={{ flex:1, border:"none", background:tab===t?C.purple:"transparent", color:tab===t?"#FFF":C.muted, borderRadius:9, padding:"9px 0", fontSize:12, fontWeight:600, cursor:"pointer" }} onClick={()=>setTab(t)}>{l}</button>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:4, background:"#FFFFFF", borderRadius:12, margin:"0 20px 16px", border:`1px solid ${C.border}`, padding:"4px" }}>
+        {[["objecten","🏠 Objecten"],["overzicht","📅 Planning"],["kosten","💰 Kosten"],["verbouwing","🏗️ Verbouwing"]].map(([t,l]) => (
+          <button key={t} style={{ flex:"1 1 45%", border:"none", background:tab===t?C.purple:"transparent", color:tab===t?"#FFF":C.muted, borderRadius:9, padding:"9px 0", fontSize:12, fontWeight:600, cursor:"pointer" }} onClick={()=>setTab(t)}>{l}</button>
         ))}
       </div>
 
@@ -579,9 +897,151 @@ export default function OnderhoudApp() {
             </>
           );
         })()}
+
+        {tab === "verbouwing" && (() => {
+          const project = projecten.find(p => p.id === actieefProjectId);
+
+          // ── Projectenlijst (geen project geopend) ──
+          if (!project) {
+            return (
+              <>
+                <h3 style={{ margin:"0 0 4px", fontSize:15, fontWeight:700, color:C.purple }}>🏗️ Verbouwplanning</h3>
+                <p style={{ margin:"0 0 14px", fontSize:12, color:C.muted }}>Taken met onderlinge afhankelijkheden — loopt er iets uit, dan schuift de rest automatisch mee</p>
+                {projecten.length === 0 ? (
+                  <div style={{ textAlign:"center", padding:"60px 20px" }}>
+                    <div style={{ fontSize:48, marginBottom:16 }}>🏗️</div>
+                    <p style={{ fontWeight:700, fontSize:17, color:C.purple, margin:"0 0 6px" }}>Nog geen verbouwproject</p>
+                    <p style={{ fontSize:14, color:C.muted, margin:0 }}>Tik + om je verbouwplanning te starten</p>
+                  </div>
+                ) : projecten.map(p => {
+                  const pTaken = projectTaken.filter(t => t.projectId === p.id);
+                  const klaar = pTaken.filter(t => t.werkelijkEind).length;
+                  return (
+                    <div key={p.id} style={{ ...S.card, cursor:"pointer" }} onClick={() => setActieefProjectId(p.id)}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                        <div>
+                          <p style={{ margin:"0 0 4px", fontWeight:700, fontSize:15, color:C.text }}>{p.naam}</p>
+                          <p style={{ margin:0, fontSize:12, color:C.muted }}>{pTaken.length} taken · {klaar} klaar</p>
+                        </div>
+                        <button onClick={(e) => { e.stopPropagation(); verwijderProject(p.id); }} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", padding:4 }}>
+                          <X size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            );
+          }
+
+          // ── Projectdetail: tijdlijn met automatische herplanning ──
+          const pTaken = projectTaken.filter(t => t.projectId === project.id);
+          const actueelSchema = berekenSchema(pTaken, project.startDatum, true);
+          const basisSchema = berekenSchema(pTaken, project.startDatum, false);
+          const vandaag = fmtDatum(new Date());
+
+          const taakInfo = pTaken.map(t => {
+            const act = actueelSchema[t.id];
+            const basis = basisSchema[t.id];
+            const vertragingDagen = act && basis ? dagVerschil(fmtDatum(act.eind), fmtDatum(basis.eind)) : 0;
+            const status = t.werkelijkEind ? "klaar" : t.werkelijkeStart ? "bezig" : "todo";
+            return { taak: t, start: act?.start, eind: act?.eind, vertragingDagen, status };
+          }).sort((a,b) => (a.start||0) - (b.start||0));
+
+          const projectEind = taakInfo.length ? taakInfo.reduce((max, ti) => ti.eind > max ? ti.eind : max, taakInfo[0].eind) : null;
+          const totaalVertraging = taakInfo.length ? Math.max(...taakInfo.map(ti => ti.vertragingDagen), 0) : 0;
+
+          return (
+            <>
+              <button style={{ background:"none", border:"none", color:C.muted, fontSize:12, fontWeight:600, cursor:"pointer", padding:0, marginBottom:10 }}
+                onClick={() => setActieefProjectId(null)}>← Alle projecten</button>
+              <h3 style={{ margin:"0 0 4px", fontSize:17, fontWeight:800, color:C.purple }}>{project.naam}</h3>
+              {project.beschrijving && <p style={{ margin:"0 0 10px", fontSize:13, color:C.muted }}>{project.beschrijving}</p>}
+
+              {/* Samenvattingskaart */}
+              {projectEind && (
+                <div style={{ ...S.card, background:`${C.purple}10`, border:`1px solid ${C.purple}44` }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <div>
+                      <p style={{ margin:"0 0 2px", fontSize:11, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em" }}>Verwachte oplevering</p>
+                      <p style={{ margin:0, fontSize:18, fontWeight:800, color:C.purple }}>{fmtDatum(projectEind)}</p>
+                    </div>
+                    {totaalVertraging > 0 && (
+                      <div style={{ textAlign:"right" }}>
+                        <p style={{ margin:"0 0 2px", fontSize:11, color:C.red, fontWeight:700 }}>⚠️ {totaalVertraging}d vertraging</p>
+                        <p style={{ margin:0, fontSize:10, color:C.muted }}>t.o.v. oorspronkelijke inschatting</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <button style={{ ...S.btn(C.card, C.purple), border:`1px solid ${C.border}`, width:"100%", marginBottom:14, fontSize:13 }}
+                onClick={() => setShowAiAdviesForm(true)}>
+                ✨ Laat AI volgorde &amp; duur voorstellen
+              </button>
+
+              {pTaken.length === 0 && (
+                <p style={{ color:C.muted, textAlign:"center", padding:"30px 0", fontSize:14 }}>Nog geen taken — tik + om te beginnen</p>
+              )}
+
+              {/* Tijdlijn */}
+              {taakInfo.map(({ taak: t, start, eind, vertragingDagen, status }, i) => {
+                const kleur = status === "klaar" ? C.green : status === "bezig" ? C.purple : vertragingDagen > 0 ? C.red : C.muted;
+                const afhankelijkNamen = (t.afhankelijkheden || []).map(id => pTaken.find(x => x.id === id)?.naam).filter(Boolean);
+                return (
+                  <div key={t.id} style={{ display:"flex", gap:10, marginBottom:4 }}>
+                    {/* Tijdlijn-lijn */}
+                    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", width:16, flexShrink:0 }}>
+                      <div style={{ width:12, height:12, borderRadius:"50%", background:kleur, marginTop:6, flexShrink:0 }} />
+                      {i < taakInfo.length - 1 && <div style={{ width:2, flex:1, background:C.border, marginTop:2 }} />}
+                    </div>
+                    <div style={{ ...S.card, flex:1, marginBottom:14, borderLeft:`3px solid ${kleur}` }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <p style={{ margin:"0 0 3px", fontWeight:700, fontSize:14, color:C.text }}>{t.naam}</p>
+                          <p style={{ margin:0, fontSize:11, color:C.muted }}>
+                            {fmtDatum(start)} → {fmtDatum(eind)} · {t.duurDagen}d
+                            {vertragingDagen > 0 && <span style={{ color:C.red, fontWeight:700 }}> · +{vertragingDagen}d vertraging</span>}
+                          </p>
+                          {afhankelijkNamen.length > 0 && (
+                            <p style={{ margin:"3px 0 0", fontSize:10, color:C.muted }}>⛓️ Na: {afhankelijkNamen.join(", ")}</p>
+                          )}
+                          {t.uitvoerder && <p style={{ margin:"3px 0 0", fontSize:10, color:C.muted }}>👷 {t.uitvoerder}</p>}
+                        </div>
+                        <span style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:20, background:`${kleur}22`, color:kleur, whiteSpace:"nowrap" }}>
+                          {status === "klaar" ? "✅ Klaar" : status === "bezig" ? "▶️ Bezig" : "⏳ Nog te doen"}
+                        </span>
+                      </div>
+                      <div style={{ display:"flex", gap:6, marginTop:10, flexWrap:"wrap" }}>
+                        {status === "todo" && (
+                          <button style={{ ...S.btn(C.purple), fontSize:11, padding:"6px 10px" }} onClick={() => markeerGestart(t)}>▶️ Start</button>
+                        )}
+                        {status !== "klaar" && (
+                          <button style={{ ...S.btn(C.green), fontSize:11, padding:"6px 10px" }}
+                            onClick={() => { setKlaarTaakId(t.id); setKlaarDatum(vandaag); setShowKlaarForm(true); }}>✅ Klaar melden</button>
+                        )}
+                        {status === "klaar" && (
+                          <button style={{ ...S.btn(C.card, C.muted), border:`1px solid ${C.border}`, fontSize:11, padding:"6px 10px" }} onClick={() => heropenTaak(t)}>↩️ Heropen</button>
+                        )}
+                        <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, fontSize:11, padding:"6px 10px" }} onClick={() => bewerkProjectTaak(t)}>✏️ Bewerk</button>
+                        <button style={{ ...S.btn(C.card, C.red), border:`1px solid ${C.border}`, fontSize:11, padding:"6px 10px" }} onClick={() => verwijderProjectTaak(t.id)}>🗑</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          );
+        })()}
       </main>
 
-      <button style={S.fab} onClick={() => setShowObjectForm(true)}>
+      <button style={S.fab} onClick={() => {
+        if (tab === "verbouwing") {
+          if (actieefProjectId) { setEditProjectTaakId(null); setProjectTaakForm({ naam:"", duurDagen:1, afhankelijkheden:[], uitvoerder:"", notitie:"" }); setShowProjectTaakForm(true); }
+          else setShowProjectForm(true);
+        } else setShowObjectForm(true);
+      }}>
         <Plus size={22} color="#FFFFFF" strokeWidth={2.4} />
       </button>
     </div>
