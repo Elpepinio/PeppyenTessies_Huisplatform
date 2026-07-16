@@ -5,7 +5,7 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from "react"
 import Link from "next/link";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, BarChart, Bar, Cell, ReferenceLine,
+  CartesianGrid, BarChart, Bar, Cell, ReferenceLine, PieChart, Pie,
 } from "recharts";
 
 const THEMES = {
@@ -264,6 +264,7 @@ const NAAM_SUGGESTIES = {
   Entertainment:["Bioscoop","Concert","Museum","Theater","Boeken","Spelletjes","Pretpark"],
   Vakantie:     ["Vliegticket","Hotel","Airbnb","Camping","Autoverhuur","Dagje uit"],
   Wonen:        ["Huur","Energie","Gas","Water","Internet","Verzekering","Gemeentebelasting"],
+  Verzekering:  ["Zorgverzekering","Inboedelverzekering","Aansprakelijkheidsverzekering (WA)","Autoverzekering","Reisverzekering","Rechtsbijstandverzekering"],
   Abonnementen: ["Netflix","Spotify","Disney+","Ziggo","KPN","T-Mobile","Videoland"],
   Broodjes:     ["Broodje bakker", "Lunchroom", "Lunch op werk"],
   Stappen:      ["Café", "Kroeg", "Uitgaan", "Borrel"],
@@ -285,7 +286,42 @@ const BUDGET_SUGGESTIONS = {
   Gezondheid:    [{period:"maand",amount:50,label:"Apotheek + sport"},{period:"maand",amount:100,label:"Incl. sportschool"},{period:"jaar",amount:500,label:"Eigen risico buffer"}],
 };
 
+// Veelvoorkomende terugkerende kosten (gas/water/licht, verzekeringen, huur,
+// abonnementen). Een klik vult het uitgavenformulier vooraf in mét "Vaste
+// last" én "Elke maand herhalen" al aangevinkt — dat is precies de
+// combinatie die nodig is om elke maand automatisch mee te tellen.
+const VASTE_LASTEN_PRESETS = [
+  { naam: "Huur / hypotheek",                      categorie: "Wonen" },
+  { naam: "Gas, water & licht",                     categorie: "Wonen" },
+  { naam: "Gemeentebelasting",                      categorie: "Wonen" },
+  { naam: "Waterschapsbelasting",                   categorie: "Wonen" },
+  { naam: "Zorgverzekering",                        categorie: "Verzekering" },
+  { naam: "Inboedelverzekering",                    categorie: "Verzekering" },
+  { naam: "Aansprakelijkheidsverzekering (WA)",     categorie: "Verzekering" },
+  { naam: "Autoverzekering",                        categorie: "Verzekering" },
+  { naam: "Internet & TV",                          categorie: "Abonnementen" },
+  { naam: "Mobiele telefoon",                       categorie: "Abonnementen" },
+  { naam: "Netflix",                                categorie: "Abonnementen" },
+  { naam: "HBO Max",                                categorie: "Abonnementen" },
+  { naam: "NPO Plus",                                categorie: "Abonnementen" },
+  { naam: "Sportschool",                            categorie: "Gezondheid" },
+];
+
 const prevMonth = ym => { const [y,m]=ym.split("-").map(Number); return m===1?`${y-1}-12`:`${y}-${String(m-1).padStart(2,"0")}`; };
+
+// De 6 maanden vóórafgaand aan `ym` (ym zelf niet inbegrepen) — gebruikt als
+// stabielere basislijn dan alleen "vorige maand", die te veel kan schommelen
+// door bv. een eenmalige grote uitgave.
+const last6Months = ym => {
+  const [y,m] = ym.split("-").map(Number);
+  return Array.from({length:6}, (_,i) => {
+    const d = new Date(y, m - 2 - i, 1); // maand vóór ym, dan 5 verder terug
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  });
+};
+
+// Dezelfde maand, één jaar eerder — voor jaar-op-jaar vergelijking.
+const sameMonthLastYear = ym => { const [y,m] = ym.split("-").map(Number); return `${y-1}-${String(m).padStart(2,"0")}`; };
 
 const fmtM = ym => { const [y,m] = ym.split("-"); return `${["Jan","Feb","Mrt","Apr","Mei","Jun","Jul","Aug","Sep","Okt","Nov","Dec"][+m-1]} '${y.slice(2)}`; };
 const euro  = n  => `€${(+n).toLocaleString("nl-NL",{minimumFractionDigits:0,maximumFractionDigits:0})}`;
@@ -344,13 +380,24 @@ function buildAlerts(expenses, budgets, savingsGoals, incomes, maand = NOW_MONTH
     if (spent > b.amount) alerts.push({id:`over-${b.id}`,level:"rood",icon:"🚨",title:`Budget overschreden: ${b.category}`,body:`${euro(spent-b.amount)} meer dan budget van ${euro(b.amount)}.`,tab:"budgetten"});
     else if (pct > 0.8) alerts.push({id:`warn-${b.id}`,level:"oranje",icon:"⚠️",title:`${b.category} ${Math.round(pct*100)}% vol`,body:`Nog ${euro(b.amount-spent)} resterend.`,tab:"budgetten"});
   });
-  const PREV = prevMonth(maand);
-  const catNow={}, catPrev={};
+  // Categorie-stijging t.o.v. het 6-maands gemiddelde — stabieler dan alleen
+  // "vorige maand", waar één eenmalige uitgave (bv. vakantie) al voor een
+  // valse alert kon zorgen.
+  const catNow={};
   expenses.filter(e=>e.month===maand).forEach(e=>{catNow[e.category]=(catNow[e.category]||0)+e.amount;});
-  expenses.filter(e=>e.month===PREV).forEach(e=>{catPrev[e.category]=(catPrev[e.category]||0)+e.amount;});
+  const baselineMaanden = last6Months(maand);
+  const maandenMetData = baselineMaanden.filter(m => expenses.some(e=>e.month===m));
+  const catBaseline = {};
+  baselineMaanden.forEach(m => {
+    expenses.filter(e=>e.month===m).forEach(e=>{catBaseline[e.category]=(catBaseline[e.category]||0)+e.amount;});
+  });
+  const deler = Math.max(1, maandenMetData.length);
   Object.keys(catNow).forEach(cat => {
-    const rise = catPrev[cat]>0 ? (catNow[cat]-catPrev[cat])/catPrev[cat] : 0;
-    if (rise>0.25 && catNow[cat]>50) alerts.push({id:`rise-${cat}`,level:"oranje",icon:"📈",title:`${cat} +${Math.round(rise*100)}% vs vorige maand`,body:`${euro(catPrev[cat])} → ${euro(catNow[cat])}`,tab:"dashboard"});
+    const basis = (catBaseline[cat]||0) / deler;
+    const rise = basis>0 ? (catNow[cat]-basis)/basis : 0;
+    if (rise>0.25 && catNow[cat]>50 && basis>=20) {
+      alerts.push({id:`rise-${cat}`,level:"oranje",icon:"📈",title:`${cat} +${Math.round(rise*100)}% vs gemiddelde`,body:`Gemiddeld ${euro(basis)}/mnd → nu ${euro(catNow[cat])}`,tab:"dashboard"});
+    }
   });
   if (savingsGoals) savingsGoals.forEach(g => {
     if (!g.deadline) return;
@@ -597,6 +644,7 @@ export default function BudgetApp() {
   const _prevMonth = prevMonth(NOW_MONTH);
   const [cmpMonth,     setCmpMonth]     = useState(_prevMonth);
   const [editNote,     setEditNote]     = useState(null);
+  const vasteBedragRef = useRef(null);
   const [goalForm,     setGoalForm]     = useState({name:"",target:"",current:"0",deadline:"",account:"gezamenlijk",icon:"🎯"});
   const [taskForm,     setTaskForm]     = useState({title:"",due:"",account:"alle",priority:"middel"});
 
@@ -695,6 +743,19 @@ export default function BudgetApp() {
     a.href = url; a.download = `budget-export-${selectedMonth}.csv`; a.click();
     URL.revokeObjectURL(url);
     showToast("✅ CSV geëxporteerd");
+  }
+
+  function kiesVasteLast(preset) {
+    setExpForm(p => ({
+      ...p,
+      name: preset.naam,
+      category: preset.categorie,
+      account: "gezamenlijk",
+      month: selectedMonth,
+      fixed: true,
+      recurring: true,
+    }));
+    setTimeout(() => { vasteBedragRef.current?.focus(); vasteBedragRef.current?.select(); }, 50);
   }
 
   // ── Mutations ─────────────────────────────────────────────────────────────
@@ -985,7 +1046,7 @@ export default function BudgetApp() {
         {/* ── Tabs ── */}
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:4, margin:"12px 0" }}>
           <div style={{ display:"flex", gap:2, background:C.surf, borderRadius:9, padding:3, border:`1px solid ${C.border}`, width:"max-content" }}>
-            {[["dashboard","🏠 Dashboard"],["uitgaven","💳 Uitgaven"],["bank","🏦 Bank"],[`meldingen`,`🔔${alerts.length > 0 ? " "+alerts.length : ""} Meldingen`],["budgetten","🎯 Budgetten"],["vergelijk","📊 Vergelijk"],["doelen","💰 Doelen"],["taken","✅ Taken"],["afsluiting","📅 Maand"]]
+            {[["dashboard","🏠 Dashboard"],["inzichten","💡 Inzichten"],["uitgaven","💳 Uitgaven"],["bank","🏦 Bank"],[`meldingen`,`🔔${alerts.length > 0 ? " "+alerts.length : ""} Meldingen`],["budgetten","🎯 Budgetten"],["vergelijk","📊 Vergelijk"],["doelen","💰 Doelen"],["taken","✅ Taken"],["afsluiting","📅 Maand"]]
               .map(([t,l]) => <button key={t} style={tabBtn(t)} onClick={() => setTab(t)}>{l}</button>)}
           </div>
         </div>
@@ -1117,6 +1178,10 @@ export default function BudgetApp() {
             <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
               <h2 style={{ margin:0, fontSize:15, fontWeight:800, flex:1 }}>📊 Maandvergelijking</h2>
               <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                <span style={{ fontSize:12, color:C.muted }}>Maand</span>
+                <input type="month" value={selectedMonth} max={NOW_MONTH} onChange={e=>setSelectedMonth(e.target.value)} style={{ ...S.inp, width:"auto" }}/>
+              </div>
+              <div style={{ display:"flex", gap:6, alignItems:"center" }}>
                 <span style={{ fontSize:12, color:C.muted }}>vs</span>
                 <input type="month" value={cmpMonth} onChange={e=>setCmpMonth(e.target.value)} style={{ ...S.inp, width:"auto" }}/>
               </div>
@@ -1129,6 +1194,42 @@ export default function BudgetApp() {
                 </button>
               ))}
             </div>
+
+            {/* Jaar-op-jaar */}
+            {(() => {
+              const ymly = sameMonthLastYear(selectedMonth);
+              const heeftData = expenses.some(e => e.month === ymly);
+              const inScope = e => !drillCat || e.category === drillCat;
+              const totaalNu   = expenses.filter(e => e.month === selectedMonth && inScope(e)).reduce((s,e)=>s+e.amount,0);
+              const totaalVorig = expenses.filter(e => e.month === ymly && inScope(e)).reduce((s,e)=>s+e.amount,0);
+              const delta = totaalVorig>0 ? (totaalNu-totaalVorig)/totaalVorig : null;
+              return (
+                <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                  <h3 style={{ margin:"0 0 6px", fontSize:13, fontWeight:700 }}>📅 Jaar-op-jaar{drillCat?`: ${drillCat}`:""}</h3>
+                  {!heeftData ? (
+                    <p style={{ margin:0, fontSize:12, color:C.muted }}>Nog geen data van {fmtM(ymly)} — komt vanzelf zodra jullie een jaar verder zijn.</p>
+                  ) : (
+                    <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+                      <div>
+                        <div style={{ fontSize:10, color:C.muted }}>{fmtM(ymly)}</div>
+                        <div style={{ fontWeight:700, fontSize:15 }}>{euro(totaalVorig)}</div>
+                      </div>
+                      <span style={{ color:C.muted }}>→</span>
+                      <div>
+                        <div style={{ fontSize:10, color:C.muted }}>{fmtM(selectedMonth)}</div>
+                        <div style={{ fontWeight:700, fontSize:15 }}>{euro(totaalNu)}</div>
+                      </div>
+                      {delta !== null && (
+                        <span style={{ marginLeft:"auto", fontWeight:700, fontSize:13, color:delta>0?C.red:C.green }}>
+                          {delta>0?"+":""}{Math.round(delta*100)}%
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {drillCat === null ? (
               <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:16 }}>
                 <h3 style={{ margin:"0 0 12px", fontSize:14, fontWeight:700 }}>{fmtM(selectedMonth)} vs {fmtM(cmpMonth)}</h3>
@@ -1149,7 +1250,8 @@ export default function BudgetApp() {
               </div>
             ) : (()=>{
               const catExp = expenses.filter(e=>e.category===drillCat&&e.month===selectedMonth).sort((a,b)=>b.amount-a.amount);
-              const months = Array.from({length:6},(_,i)=>{const d=new Date(NOW_YEAR,+NOW_MONTH.split("-")[1]-1-i,1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;}).reverse();
+              const [selJ, selM] = selectedMonth.split("-").map(Number);
+              const months = Array.from({length:6},(_,i)=>{const d=new Date(selJ,selM-1-i,1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;}).reverse();
               const trendData = months.map(m=>({label:fmtM(m),total:expenses.filter(e=>e.category===drillCat&&e.month===m).reduce((s,e)=>s+e.amount,0)}));
               return <>
                 <div style={{ background:C.surf, borderRadius:13, border:`2px solid ${CAT_COL[drillCat]||C.accent}44`, overflow:"hidden" }}>
@@ -1397,6 +1499,308 @@ export default function BudgetApp() {
           </div>
         )}
 
+        {/* ══ INZICHTEN ══ */}
+        {tab === "inzichten" && (() => {
+          const totalIncome  = incomes.p1 + incomes.p2;
+          const maandExp     = expenses.filter(e => e.month === selectedMonth);
+          const totalSpent   = maandExp.reduce((s,e) => s+e.amount, 0);
+          const vastTotaal   = maandExp.filter(e => e.fixed).reduce((s,e) => s+e.amount, 0);
+          const vrijBesteed  = totalIncome - vastTotaal;
+          const spaarquote   = totalIncome > 0 ? (totalIncome - totalSpent) / totalIncome : 0;
+
+          // Grootste categorieën deze maand
+          const catNow = {};
+          maandExp.forEach(e => { catNow[e.category] = (catNow[e.category]||0) + e.amount; });
+          const grootsteCats = Object.entries(catNow).sort((a,b) => b[1]-a[1]).slice(0,5);
+
+          // Stijgers & dalers t.o.v. vorige maand
+          const PREV = prevMonth(selectedMonth);
+          const catPrev = {};
+          expenses.filter(e => e.month === PREV).forEach(e => { catPrev[e.category] = (catPrev[e.category]||0) + e.amount; });
+          const alleCats = new Set([...Object.keys(catNow), ...Object.keys(catPrev)]);
+          const bewegingen = [...alleCats].map(cat => {
+            const nu = catNow[cat]||0, vorig = catPrev[cat]||0;
+            return { cat, nu, vorig, delta: nu - vorig };
+          }).filter(m => Math.abs(m.delta) >= 15 && (m.nu >= 30 || m.vorig >= 30))
+            .sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0,6);
+
+          // Terugkerende kosten: expliciet gemarkeerd (fixed/recurring) of 3+ maanden achter elkaar herkend
+          const laatsteByKey = {};
+          expenses.forEach(e => {
+            const k = `${e.name}|${e.account}|${e.category}`;
+            if (!laatsteByKey[k] || e.month > laatsteByKey[k].month) laatsteByKey[k] = e;
+          });
+          const terugkerend = Object.entries(laatsteByKey)
+            .map(([k,e]) => ({ ...e, key:k, herhaaltVast: recurring.has(k) }))
+            .filter(e => e.fixed || e.recurring || e.herhaaltVast)
+            .sort((a,b) => b.amount - a.amount);
+          const terugkerendTotaal = terugkerend.reduce((s,e) => s+e.amount, 0);
+
+          const attentieAlerts = alerts.filter(a => a.level==="rood" || a.level==="oranje");
+
+          // ── Data voor de nieuwe visuals ──────────────────────────────────
+          // 6 maanden inclusief de geselecteerde maand, chronologisch — basis
+          // voor zowel de gestapelde maandgrafiek als de heatmap.
+          const maandenBereik = Array.from({length:6}, (_,i) => {
+            const [y,m] = selectedMonth.split("-").map(Number);
+            const d = new Date(y, m-1-i, 1);
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+          }).reverse();
+          const somPerCatBereik = {};
+          maandenBereik.forEach(m => {
+            expenses.filter(e => e.month===m).forEach(e => { somPerCatBereik[e.category] = (somPerCatBereik[e.category]||0) + e.amount; });
+          });
+          const catRanking = Object.entries(somPerCatBereik).sort((a,b) => b[1]-a[1]).map(([c])=>c);
+
+          // Donut: categorieverdeling deze maand (top 6 + "Overig")
+          const donutRaw = Object.entries(catNow).sort((a,b) => b[1]-a[1]);
+          const donutData = donutRaw.slice(0,6).map(([name,value]) => ({ name, value }));
+          const donutRest = donutRaw.slice(6).reduce((s,[,v]) => s+v, 0);
+          if (donutRest > 0) donutData.push({ name:"Overig", value:donutRest });
+
+          // Gestapelde maandgrafiek: top 5 categorieën uit het 6-maands bereik + "Overig"
+          const stackCats = catRanking.slice(0,5);
+          const stackData = maandenBereik.map(m => {
+            const maandExpM = expenses.filter(e => e.month===m);
+            const row = { label: fmtM(m) };
+            stackCats.forEach(c => { row[c] = maandExpM.filter(e => e.category===c).reduce((s,e)=>s+e.amount,0); });
+            row["Overig"] = maandExpM.filter(e => !stackCats.includes(e.category)).reduce((s,e)=>s+e.amount,0);
+            return row;
+          });
+
+          // Heatmap: top 8 categorieën × 6 maanden, kleurintensiteit relatief per categorie
+          const heatmapCats = catRanking.slice(0,8);
+
+          // Inkomensverdeling-balk
+          const overigeUitgaven = Math.max(0, totalSpent - vastTotaal);
+          const overschot = totalIncome - totalSpent;
+          const inkBasis = Math.max(totalIncome, totalSpent, 1);
+          const inkSegments = [
+            { label:"Vaste lasten",     bedrag:vastTotaal,          kleur:C.accent },
+            { label:"Overige uitgaven", bedrag:overigeUitgaven,     kleur:C.orange },
+            { label: overschot>=0 ? "Gespaard" : "Tekort", bedrag:Math.abs(overschot), kleur: overschot>=0 ? C.green : C.red },
+          ].filter(s => s.bedrag > 0);
+
+          return (
+            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+              <h2 style={{ margin:0, fontSize:15, fontWeight:800 }}>💡 Inzichten — {fmtM(selectedMonth)}</h2>
+
+              {/* Samenvatting */}
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:8 }}>
+                <div style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 14px" }}>
+                  <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Vaste lasten</div>
+                  <div style={{ fontWeight:800, fontSize:17, color:C.text, marginTop:2 }}>{euro(vastTotaal)}</div>
+                </div>
+                <div style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 14px" }}>
+                  <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Vrij besteedbaar</div>
+                  <div style={{ fontWeight:800, fontSize:17, color:vrijBesteed>=0?C.green:C.red, marginTop:2 }}>{euro(Math.max(0,vrijBesteed))}</div>
+                </div>
+                <div style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 14px" }}>
+                  <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Spaarquote</div>
+                  <div style={{ fontWeight:800, fontSize:17, color:spaarquote>=0.2?C.green:spaarquote>=0?C.yellow:C.red, marginTop:2 }}>{Math.round(spaarquote*100)}%</div>
+                </div>
+              </div>
+
+              {/* Inkomensverdeling */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <h3 style={{ margin:"0 0 10px", fontSize:13, fontWeight:700, color:C.text }}>💶 Waar gaat het inkomen naartoe</h3>
+                {inkSegments.length === 0 ? (
+                  <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen inkomen of uitgaven ingesteld voor {fmtM(selectedMonth)}</div>
+                ) : (
+                  <>
+                    <div style={{ display:"flex", height:22, borderRadius:8, overflow:"hidden", background:C.card }}>
+                      {inkSegments.map(s => (
+                        <div key={s.label} title={`${s.label}: ${euro(s.bedrag)}`} style={{ width:`${Math.max(2,s.bedrag/inkBasis*100)}%`, background:s.kleur }}/>
+                      ))}
+                    </div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:12, marginTop:10 }}>
+                      {inkSegments.map(s => (
+                        <div key={s.label} style={{ display:"flex", alignItems:"center", gap:5, fontSize:11 }}>
+                          <span style={{ width:9, height:9, borderRadius:2, background:s.kleur, display:"inline-block" }}/>
+                          <span style={{ color:C.muted }}>{s.label}</span>
+                          <span style={{ fontWeight:700 }}>{euro(s.bedrag)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Vraagt aandacht */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <h3 style={{ margin:"0 0 9px", fontSize:13, fontWeight:700, color:C.text }}>⚠️ Vraagt aandacht</h3>
+                {attentieAlerts.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Niets dat opvalt — het staat er goed voor. 🎉</div>}
+                {attentieAlerts.map(a => {
+                  const col = a.level==="rood" ? C.red : C.yellow;
+                  return (
+                    <div key={a.id} style={{ display:"flex", alignItems:"center", gap:9, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
+                      <span style={{ fontSize:16 }}>{a.icon}</span>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{a.title}</div>
+                        <div style={{ fontSize:11, color:C.muted }}>{a.body}</div>
+                      </div>
+                      {a.tab && <button style={{ background:`${col}22`, color:col, border:`1px solid ${col}44`, borderRadius:7, padding:"3px 8px", cursor:"pointer", fontSize:11, fontWeight:700 }} onClick={()=>setTab(a.tab)}>Bekijk →</button>}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Grootste categorieën */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <h3 style={{ margin:"0 0 9px", fontSize:13, fontWeight:700, color:C.text }}>🍩 Categorieverdeling deze maand</h3>
+                {donutData.length === 0 ? (
+                  <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen uitgaven in {fmtM(selectedMonth)}</div>
+                ) : (
+                  <>
+                    <div style={{ position:"relative" }}>
+                      <ResponsiveContainer width="100%" height={190}>
+                        <PieChart>
+                          <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={52} outerRadius={82} paddingAngle={2} strokeWidth={0}>
+                            {donutData.map((d,i) => <Cell key={i} fill={CAT_COL[d.name]||C.muted}/>)}
+                          </Pie>
+                          <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v,n)=>[euro(v),n]}/>
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)", textAlign:"center", pointerEvents:"none" }}>
+                        <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Totaal</div>
+                        <div style={{ fontWeight:800, fontSize:15, color:C.text }}>{euro(totalSpent)}</div>
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:8, justifyContent:"center", marginTop:4 }}>
+                      {donutData.map(d => (
+                        <div key={d.name} style={{ display:"flex", alignItems:"center", gap:4, fontSize:10 }}>
+                          <span style={{ width:8, height:8, borderRadius:2, background:CAT_COL[d.name]||C.muted, display:"inline-block" }}/>
+                          <span style={{ color:C.muted }}>{d.name==="Overig"?"Overig":`${CAT_ICON[d.name]||""} ${d.name}`}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <h3 style={{ margin:"16px 0 9px", fontSize:13, fontWeight:700, color:C.text, borderTop:`1px solid ${C.border}`, paddingTop:12 }}>🏆 Grootste categorieën</h3>
+                {grootsteCats.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen uitgaven in {fmtM(selectedMonth)}</div>}
+                {grootsteCats.map(([cat,bedrag]) => {
+                  const pct = totalSpent>0 ? Math.round(bedrag/totalSpent*100) : 0;
+                  return (
+                    <div key={cat} style={{ padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:4 }}>
+                        <span>{CAT_ICON[cat]||"📦"} {cat}</span>
+                        <span style={{ fontWeight:700 }}>{euro(bedrag)} <span style={{ color:C.muted, fontWeight:400 }}>({pct}%)</span></span>
+                      </div>
+                      <div style={{ background:C.card, borderRadius:4, height:5 }}>
+                        <div style={{ height:"100%", width:`${pct}%`, background:CAT_COL[cat]||C.accent, borderRadius:4 }}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Stijgers & dalers */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <h3 style={{ margin:"0 0 9px", fontSize:13, fontWeight:700, color:C.text }}>📈 Stijgers & dalers t.o.v. {fmtM(PREV)}</h3>
+                {bewegingen.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Geen opvallende verschuivingen — vrij stabiel maandje.</div>}
+                {bewegingen.map(m => (
+                  <div key={m.cat} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
+                    <span style={{ fontSize:14 }}>{m.delta>0?"📈":"📉"}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:600 }}>{CAT_ICON[m.cat]||"📦"} {m.cat}</div>
+                      <div style={{ fontSize:11, color:C.muted }}>{euro(m.vorig)} → {euro(m.nu)}</div>
+                    </div>
+                    <span style={{ fontWeight:700, fontSize:13, color:m.delta>0?C.red:C.green }}>{m.delta>0?"+":""}{euro(m.delta)}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Gestapelde maandgrafiek: samenstelling over tijd */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <h3 style={{ margin:"0 0 12px", fontSize:13, fontWeight:700, color:C.text }}>📊 Samenstelling per maand</h3>
+                <ResponsiveContainer width="100%" height={190}>
+                  <BarChart data={stackData} barCategoryGap="25%">
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
+                    <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false}/>
+                    <YAxis tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`€${v}`}/>
+                    <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v,n)=>[euro(v),n]}/>
+                    {stackCats.map(c => <Bar key={c} dataKey={c} stackId="a" fill={CAT_COL[c]||C.accent}/>)}
+                    <Bar dataKey="Overig" stackId="a" fill={C.muted} radius={[3,3,0,0]}/>
+                  </BarChart>
+                </ResponsiveContainer>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:8, justifyContent:"center", marginTop:6 }}>
+                  {[...stackCats,"Overig"].map(c => (
+                    <div key={c} style={{ display:"flex", alignItems:"center", gap:4, fontSize:10 }}>
+                      <span style={{ width:8, height:8, borderRadius:2, background:c==="Overig"?C.muted:(CAT_COL[c]||C.accent), display:"inline-block" }}/>
+                      <span style={{ color:C.muted }}>{c==="Overig"?"Overig":`${CAT_ICON[c]||""} ${c}`}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Heatmap: categorie × maand */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14, overflowX:"auto" }}>
+                <h3 style={{ margin:"0 0 10px", fontSize:13, fontWeight:700, color:C.text }}>🔥 Patronen per categorie</h3>
+                <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted }}>
+                  Kleurintensiteit is relatief per categorie — zo zie je pieken, ook bij kleinere categorieën.
+                </p>
+                {heatmapCats.length === 0 ? (
+                  <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog niet genoeg data voor een patroon.</div>
+                ) : (
+                  <div style={{ display:"grid", gridTemplateColumns:`88px repeat(${maandenBereik.length}, 1fr)`, gap:3, minWidth:340 }}>
+                    <div/>
+                    {maandenBereik.map(m => (
+                      <div key={m} style={{ fontSize:9, color:C.muted, textAlign:"center" }}>{fmtM(m).split(" ")[0]}</div>
+                    ))}
+                    {heatmapCats.map(cat => {
+                      const rowVals = maandenBereik.map(m => expenses.filter(e => e.category===cat && e.month===m).reduce((s,e)=>s+e.amount,0));
+                      const maxVal = Math.max(...rowVals, 1);
+                      return (
+                        <React.Fragment key={cat}>
+                          <div style={{ fontSize:10, color:C.text, display:"flex", alignItems:"center", gap:3, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                            {CAT_ICON[cat]||"📦"} {cat.length>9?cat.slice(0,8)+"…":cat}
+                          </div>
+                          {rowVals.map((v,i) => {
+                            const intensity = v / maxVal;
+                            const alphaHex = v===0 ? "00" : Math.round(35 + intensity*180).toString(16).padStart(2,"0");
+                            return (
+                              <div key={i} title={`${cat} · ${fmtM(maandenBereik[i])}: ${euro(v)}`}
+                                style={{ height:26, borderRadius:5, background:v===0?C.card:`${CAT_COL[cat]||C.accent}${alphaHex}`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                                {v>0 && <span style={{ fontSize:8, color:C.text, opacity:0.85 }}>{v>=1000?Math.round(v/1000)+"k":Math.round(v)}</span>}
+                              </div>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Terugkerende kosten */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:9 }}>
+                  <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>🔁 Terugkerende kosten</h3>
+                  <div style={{ textAlign:"right" }}>
+                    <div style={{ fontWeight:800, fontSize:14, color:C.text }}>{euro(terugkerendTotaal)}/mnd</div>
+                    <div style={{ fontSize:10, color:C.muted }}>≈ {euro(terugkerendTotaal*12)}/jaar</div>
+                  </div>
+                </div>
+                <p style={{ margin:"0 0 8px", fontSize:11, color:C.muted }}>
+                  Abonnementen en vaste lasten — handig om sluimerende kosten te spotten die je niet meer actief gebruikt.
+                </p>
+                {terugkerend.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog niets gemarkeerd als vast of herhalend.</div>}
+                {terugkerend.map(e => (
+                  <div key={e.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
+                    <span style={{ fontSize:13 }}>{CAT_ICON[e.category]||"📦"}</span>
+                    <span style={{ flex:1, fontSize:12, color:C.text }}>{e.name}</span>
+                    <AccountBadge accountId={e.account} names={names} C={C} small/>
+                    {!e.fixed && !e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>patroon</span>}
+                    <span style={{ fontSize:10, color:C.muted }}>≈{euro(e.amount*12)}/jr</span>
+                    <span style={{ fontWeight:700, fontSize:13 }}>{euro(e.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ══ DASHBOARD ══ */}
         {tab === "dashboard" && (
           <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
@@ -1562,7 +1966,7 @@ export default function BudgetApp() {
                       <span style={{ fontWeight:700, fontSize:13, color:C.text }}>{euro(e.amount)}</span>
                     </div>
                   ))}
-                  {vast.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen vaste lasten — vink "Vaste last" aan bij een uitgave</div>}
+                  {vast.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen vaste lasten — ga naar "Uitgaven" en klik een preset aan bij "Snel een vaste last toevoegen"</div>}
                 </div>
               );
             })()}
@@ -1668,10 +2072,25 @@ export default function BudgetApp() {
             </div>
 
             <div style={{ background:C.surf, borderRadius:11, border:`1px solid ${C.border}`, padding:13 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:3 }}>📌 Snel een vaste last toevoegen</div>
+              <p style={{ margin:"0 0 9px", fontSize:11, color:C.muted }}>
+                Klik een terugkerende kost aan — "Vaste last" en "Elke maand herhalen" worden dan alvast aangevinkt, vul alleen nog het bedrag in.
+              </p>
+              <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+                {VASTE_LASTEN_PRESETS.map(p => (
+                  <button key={p.naam} onClick={()=>kiesVasteLast(p)}
+                    style={{ background:expForm.name===p.naam?`${CAT_COL[p.categorie]||C.accent}33`:C.card, border:`1px solid ${expForm.name===p.naam?CAT_COL[p.categorie]||C.accent:C.border}`, borderRadius:20, padding:"5px 11px", fontSize:11, cursor:"pointer", color:expForm.name===p.naam?CAT_COL[p.categorie]||C.accent:C.text, fontWeight:expForm.name===p.naam?700:500, whiteSpace:"nowrap" }}>
+                    {CAT_ICON[p.categorie]||"📦"} {p.naam}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ background:C.surf, borderRadius:11, border:`1px solid ${C.border}`, padding:13 }}>
               <div style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:9 }}>+ Nieuwe uitgave</div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))", gap:7, alignItems:"end" }}>
                 <div><Label C={C}>Naam</Label><input style={S.inp} placeholder="Omschrijving" value={expForm.name} onChange={e=>setExpForm(p=>({...p,name:e.target.value}))}/></div>
-                <div><Label C={C}>€</Label><input style={S.inp} type="number" min="0" step="0.01" placeholder="0.00" value={expForm.amount} onChange={e=>setExpForm(p=>({...p,amount:e.target.value}))}/></div>
+                <div><Label C={C}>€</Label><input ref={vasteBedragRef} style={S.inp} type="number" min="0" step="0.01" placeholder="0.00" value={expForm.amount} onChange={e=>setExpForm(p=>({...p,amount:e.target.value}))}/></div>
                 <div><Label C={C}>Categorie</Label><select style={S.inp} value={expForm.category} onChange={e=>setExpForm(p=>({...p,category:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
                     {NAAM_SUGGESTIES[expForm.category] && (
                       <div style={{ display:"flex", gap:3, flexWrap:"wrap", marginTop:4 }}>

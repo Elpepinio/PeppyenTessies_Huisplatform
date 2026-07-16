@@ -68,6 +68,13 @@ const TOOLS = [
     color: "#7A2E3B",
   },
   {
+    href: "/schoolinfo",
+    label: "Schoolinfo",
+    description: "Schoolagenda, vrije dagen en vaste weekitems",
+    emoji: "🏫",
+    color: "#2C6E8C",
+  },
+  {
     href: "/ai-kosten",
     label: "AI-kosten",
     description: "Wat de AI-functies in de tools ons kosten",
