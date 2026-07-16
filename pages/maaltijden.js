@@ -32,6 +32,29 @@ const STEAK_TIJDEN = {
   gemiddeld: { blue: 1.5, rare: 2,   "medium-rare": 2.5, medium: 3.5, "medium-well": 4.5, doorbakken: 5.5 },
   dik:       { blue: 2,   rare: 2.5, "medium-rare": 3.5, medium: 4.5, "medium-well": 5.5, doorbakken: 7 },
 };
+
+// Indicatieve richtlijnen — kijk bij droge pasta en rijst altijd even op de
+// verpakking, want dat verschilt per merk/formaat; dit zijn gangbare
+// gemiddeldes voor "al dente" resp. gaar.
+const PASTA_PRESETS = [
+  { id: "vers", naam: "Verse pasta", minuten: 3, sub: "bv. tortellini vers", emoji: "🟡" },
+  { id: "gevuld", naam: "Gevuld (vers)", minuten: 4, sub: "ravioli, tot ze drijven", emoji: "🟠" },
+  { id: "droog-dun", naam: "Droog, dun", minuten: 9, sub: "spaghetti, tagliatelle", emoji: "🔴" },
+  { id: "droog-dik", naam: "Droog, dik", minuten: 11, sub: "penne, fusilli, macaroni", emoji: "🟤" },
+];
+const RIJST_PRESETS = [
+  { id: "wit", naam: "Witte rijst", minuten: 13, emoji: "⚪" },
+  { id: "basmati", naam: "Basmati", minuten: 11, emoji: "🟡" },
+  { id: "zilvervlies", naam: "Zilvervlies", minuten: 27, emoji: "🟤" },
+];
+const GROENTE_PRESETS = [
+  { id: "broccoli", naam: "Broccoli", minuten: 4.5, emoji: "🥦" },
+  { id: "bloemkool", naam: "Bloemkool", minuten: 5, emoji: "⚪" },
+  { id: "sperziebonen", naam: "Sperziebonen", minuten: 9, emoji: "🫛" },
+  { id: "wortel", naam: "Wortel (stukjes)", minuten: 11, emoji: "🥕" },
+  { id: "doperwten", naam: "Doperwten", minuten: 2.5, emoji: "🟢" },
+];
+
 const BEREIDINGSTIJD_OPTIES = [
   { id: "kort", label: "⚡ < 20 min", test: t => t > 0 && t <= 20 },
   { id: "middel", label: "⏱ 20-45 min", test: t => t > 20 && t <= 45 },
@@ -65,6 +88,19 @@ const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 function minutenUitStap(tekst) {
   const match = tekst.match(/(\d+)\s*(minuten|minuut|min)\b/i);
   return match ? parseInt(match[1], 10) : null;
+}
+
+// Leest een bereidingsstap hardop voor via de ingebouwde spraakfunctie van de
+// browser (Web Speech API) — werkt zonder internet/externe dienst, handig als
+// je handen vies zijn tijdens het koken. Stopt eerst altijd wat er nog loopt,
+// zodat stappen elkaar nooit overlappen.
+function spreekStap(tekst) {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(tekst);
+  utterance.lang = "nl-NL";
+  utterance.rate = 0.95;
+  window.speechSynthesis.speak(utterance);
 }
 
 // Gemiddelde van de per-persoon beoordelingen van een recept, voor gebruik in
@@ -200,6 +236,7 @@ export default function MaaltijdApp() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiResultaat, setAiResultaat] = useState(null);
+  const [aiImportLoading, setAiImportLoading] = useState(false);
   const [zoekterm, setZoekterm] = useState("");
   const [ingeklapteKeukens, setIngeklapteKeukens] = useState({});
   const [dieetFilter, setDieetFilter] = useState(null);
@@ -233,6 +270,7 @@ export default function MaaltijdApp() {
   const [bewerkReceptId, setBewerkReceptId] = useState(null); // recept-id -> porties override
   const [toast, setToast] = useState(null);
   const [kookModusActief, setKookModusActief] = useState(false);
+  const [spraakAan, setSpraakAan] = useState(true);
   const [showEiTimer, setShowEiTimer] = useState(false);
   const [kookwekkerTab, setKookwekkerTab] = useState("ei"); // "ei" | "steak"
   const [keukenTimers, setKeukenTimers] = useState([]); // [{id, naam, type, eindTijd, duurSeconden}]
@@ -628,6 +666,7 @@ ${aiPrompt.toLowerCase().includes("recept") || aiPrompt.toLowerCase().includes("
 
   async function importeerAIRecept() {
     if (!aiResultaat) return;
+    setAiImportLoading(true);
     try {
       const tekst = await callAI(
         `Zet dit recept om naar JSON. Geef ALLEEN geldige JSON terug, niets anders:
@@ -651,6 +690,7 @@ Format:
       const parsed = JSON.parse(clean);
       slaReceptOp(parsed);
     } catch (e) { showToast("❌ Kon recept niet importeren — kopieer handmatig"); }
+    setAiImportLoading(false);
   }
 
   // Zet elke foto (ook HEIC vanaf iPhone-bibliotheek) om naar een gecomprimeerde
@@ -1117,7 +1157,10 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
         {!bewerkModus && (
           <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 20px 12px" }}>
             <button style={{ ...S.btn(C.orange), flex:"1 1 30%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
-              onClick={() => { setKookStapIndex(0); setKookTimerSec(0); setKookTimerLopend(false); setKookModusActief(true); }}>
+              onClick={() => {
+                setKookStapIndex(0); setKookTimerSec(0); setKookTimerLopend(false); setKookModusActief(true);
+                if (spraakAan && actieefRecept.stappen?.[0]) spreekStap(actieefRecept.stappen[0]);
+              }}>
               🍳 Kookmodus
             </button>
             <button style={{ ...S.btn(C.card, C.green), border:`1px solid ${C.border}`, flex:"1 1 30%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
@@ -1472,14 +1515,24 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
             <div style={{ position:"fixed", inset:0, background:"#1A120A", zIndex:300, display:"flex", flexDirection:"column", color:"#FFF" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"20px 20px 10px" }}>
                 <span style={{ fontSize:13, opacity:0.7 }}>Stap {kookStapIndex + 1} / {actieefRecept.stappen.length}</span>
-                <button onClick={() => { setKookModusActief(false); setKookTimerLopend(false); }} aria-label="Sluiten"
-                  style={{ background:"rgba(255,255,255,.15)", border:"none", borderRadius:"50%", width:32, height:32, cursor:"pointer", color:"#FFF" }}>
-                  <X size={16} color="#FFF" style={{ margin:"auto" }} />
-                </button>
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={() => setSpraakAan(a => { const nieuw = !a; if (!nieuw && typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel(); return nieuw; })}
+                    aria-label={spraakAan ? "Spraak uitzetten" : "Spraak aanzetten"} title={spraakAan ? "Spraak staat aan" : "Spraak staat uit"}
+                    style={{ background:"rgba(255,255,255,.15)", border:"none", borderRadius:"50%", width:32, height:32, cursor:"pointer", color:"#FFF", fontSize:14, opacity: spraakAan ? 1 : 0.5 }}>
+                    {spraakAan ? "🔊" : "🔇"}
+                  </button>
+                  <button onClick={() => { setKookModusActief(false); setKookTimerLopend(false); if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel(); }} aria-label="Sluiten"
+                    style={{ background:"rgba(255,255,255,.15)", border:"none", borderRadius:"50%", width:32, height:32, cursor:"pointer", color:"#FFF" }}>
+                    <X size={16} color="#FFF" style={{ margin:"auto" }} />
+                  </button>
+                </div>
               </div>
 
               <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"0 28px", textAlign:"center" }}>
-                <p style={{ fontSize:22, lineHeight:1.5, fontWeight:600, margin:"0 0 24px" }}>{stap}</p>
+                <p style={{ fontSize:22, lineHeight:1.5, fontWeight:600, margin:"0 0 10px" }}>{stap}</p>
+                <button onClick={() => spreekStap(stap)} style={{ background:"none", border:"none", color:"rgba(255,255,255,.6)", fontSize:12, cursor:"pointer", padding:"4px 10px", marginBottom:14 }}>
+                  🔁 Lees nog eens voor
+                </button>
 
                 {stapMinuten && (
                   <div style={{ marginTop:8 }}>
@@ -1506,17 +1559,25 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
               <div style={{ display:"flex", gap:10, padding:20 }}>
                 <button style={{ ...S.btn("rgba(255,255,255,.12)", "#FFF"), flex:1, opacity: kookStapIndex===0 ? 0.4 : 1 }}
                   disabled={kookStapIndex===0}
-                  onClick={() => { setKookStapIndex(i => i-1); setKookTimerSec(0); setKookTimerLopend(false); }}>
+                  onClick={() => {
+                    const vorigeIndex = kookStapIndex - 1;
+                    setKookStapIndex(vorigeIndex); setKookTimerSec(0); setKookTimerLopend(false);
+                    if (spraakAan && actieefRecept.stappen[vorigeIndex]) spreekStap(actieefRecept.stappen[vorigeIndex]);
+                  }}>
                   ← Vorige
                 </button>
                 {laatsteStap ? (
                   <button style={{ ...S.btn(C.green), flex:1 }}
-                    onClick={() => { setKookModusActief(false); setKookTimerLopend(false); setDagboekNotitie(""); setShowDagboekForm(true); }}>
+                    onClick={() => { setKookModusActief(false); setKookTimerLopend(false); setDagboekNotitie(""); setShowDagboekForm(true); if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel(); }}>
                     ✅ Klaar!
                   </button>
                 ) : (
                   <button style={{ ...S.btn(C.orange), flex:1 }}
-                    onClick={() => { setKookStapIndex(i => i+1); setKookTimerSec(0); setKookTimerLopend(false); }}>
+                    onClick={() => {
+                      const volgendeIndex = kookStapIndex + 1;
+                      setKookStapIndex(volgendeIndex); setKookTimerSec(0); setKookTimerLopend(false);
+                      if (spraakAan && actieefRecept.stappen[volgendeIndex]) spreekStap(actieefRecept.stappen[volgendeIndex]);
+                    }}>
                     Volgende →
                   </button>
                 )}
@@ -1552,11 +1613,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
             </div>
 
             {/* Tab-wissel */}
-            <div style={{ display:"flex", gap:4, background:C.card, borderRadius:12, padding:4, marginBottom:16 }}>
-              <button style={{ flex:1, border:"none", background:kookwekkerTab==="ei"?C.orange:"transparent", color:kookwekkerTab==="ei"?"#FFF":C.muted, borderRadius:9, padding:"9px 0", fontSize:13, fontWeight:600, cursor:"pointer" }}
-                onClick={() => setKookwekkerTab("ei")}>🥚 Ei</button>
-              <button style={{ flex:1, border:"none", background:kookwekkerTab==="steak"?C.orange:"transparent", color:kookwekkerTab==="steak"?"#FFF":C.muted, borderRadius:9, padding:"9px 0", fontSize:13, fontWeight:600, cursor:"pointer" }}
-                onClick={() => setKookwekkerTab("steak")}>🥩 Steak</button>
+            <div style={{ display:"flex", gap:4, background:C.card, borderRadius:12, padding:4, marginBottom:16, overflowX:"auto" }}>
+              {[["ei","🥚 Ei"],["steak","🥩 Steak"],["pasta","🍝 Pasta"],["rijst","🍚 Rijst"],["groenten","🥦 Groenten"]].map(([t,l]) => (
+                <button key={t} style={{ flex:"1 0 auto", border:"none", background:kookwekkerTab===t?C.orange:"transparent", color:kookwekkerTab===t?"#FFF":C.muted, borderRadius:9, padding:"9px 12px", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}
+                  onClick={() => setKookwekkerTab(t)}>{l}</button>
+              ))}
             </div>
 
             {kookwekkerTab === "ei" && (
@@ -1636,6 +1697,65 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
               );
             })()}
 
+            {kookwekkerTab === "pasta" && (
+              <>
+                <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
+                  Vanaf het moment dat de pasta het kokende water ingaat. Richttijden voor "al dente" — proef gerust een minuutje eerder, dat verschilt per merk.
+                </p>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(2, 1fr)", gap:8, marginBottom:8 }}>
+                  {PASTA_PRESETS.map(p => (
+                    <button key={p.id} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 8px", cursor:"pointer", textAlign:"center" }}
+                      onClick={() => { startEiTimer(p.naam, p.minuten, "pasta"); showToast(`🍝 ${p.naam} gestart (${p.minuten} min)`); }}>
+                      <div style={{ fontSize:20, marginBottom:4 }}>{p.emoji}</div>
+                      <div style={{ fontWeight:700, fontSize:13, color:C.text }}>{p.naam}</div>
+                      <div style={{ fontSize:10, color:C.muted }}>{p.minuten} min</div>
+                      <div style={{ fontSize:9, color:C.muted, marginTop:2 }}>{p.sub}</div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {kookwekkerTab === "rijst" && (
+              <>
+                <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
+                  Vanaf het moment dat het water kookt en de rijst erbij gaat. Laat na het koken het liefst nog 5 min met deksel erop rusten voor het mooiste resultaat.
+                </p>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:8 }}>
+                  {RIJST_PRESETS.map(p => (
+                    <button key={p.id} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 6px", cursor:"pointer", textAlign:"center" }}
+                      onClick={() => { startEiTimer(p.naam, p.minuten, "rijst"); showToast(`🍚 ${p.naam} gestart (${p.minuten} min)`); }}>
+                      <div style={{ fontSize:20, marginBottom:4 }}>{p.emoji}</div>
+                      <div style={{ fontWeight:700, fontSize:12, color:C.text }}>{p.naam}</div>
+                      <div style={{ fontSize:10, color:C.muted }}>{p.minuten} min</div>
+                    </button>
+                  ))}
+                </div>
+                <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, width:"100%", marginBottom:8, fontSize:13 }}
+                  onClick={() => { startEiTimer("Rijst — laten rusten", 5, "rijst"); showToast("🍚 Rusttijd gestart (5 min)"); }}>
+                  😴 Start rusttijd (5 min, deksel op)
+                </button>
+              </>
+            )}
+
+            {kookwekkerTab === "groenten" && (
+              <>
+                <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
+                  Vanaf het moment dat de groente het kokende water ingaat. Voor beetgaar iets korter, voor zachter iets langer.
+                </p>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:8 }}>
+                  {GROENTE_PRESETS.map(p => (
+                    <button key={p.id} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 6px", cursor:"pointer", textAlign:"center" }}
+                      onClick={() => { startEiTimer(p.naam, p.minuten, "groenten"); showToast(`🥦 ${p.naam} gestart (${p.minuten} min)`); }}>
+                      <div style={{ fontSize:20, marginBottom:4 }}>{p.emoji}</div>
+                      <div style={{ fontWeight:700, fontSize:11, color:C.text }}>{p.naam}</div>
+                      <div style={{ fontSize:10, color:C.muted }}>{p.minuten} min</div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
             {/* Actieve timers — toont alle lopende kookwekkers samen, ongeacht type */}
             {keukenTimers.length > 0 && (
               <>
@@ -1647,7 +1767,9 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                   return (
                     <div key={t.id} style={{ background: klaar ? `${C.green}15` : C.card, border:`1px solid ${klaar ? C.green : C.border}`, borderRadius:12, padding:"10px 14px", marginBottom:8 }}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                        <span style={{ fontWeight:700, fontSize:14, color:klaar ? C.green : C.text }}>{klaar ? "✅ " : t.type === "steak" ? "🥩 " : "🥚 "}{t.naam}</span>
+                        <span style={{ fontWeight:700, fontSize:14, color:klaar ? C.green : C.text }}>
+                          {klaar ? "✅ " : { steak:"🥩 ", pasta:"🍝 ", rijst:"🍚 ", groenten:"🥦 " }[t.type] || "🥚 "}{t.naam}
+                        </span>
                         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                           <span style={{ fontVariantNumeric:"tabular-nums", fontWeight:700, fontSize:15, color:klaar ? C.green : C.orange }}>
                             {klaar ? "Klaar!" : `${String(Math.floor(resterend/60)).padStart(2,"0")}:${String(resterend%60).padStart(2,"0")}`}
@@ -2228,11 +2350,9 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                 {aiResultaat && (
                   <div style={{ ...S.card, border:`1px solid ${C.border}` }}>
                     <div style={{ fontSize:13, color:C.text, lineHeight:1.8, whiteSpace:"pre-wrap", marginBottom:14 }}>{aiResultaat}</div>
-                    {aiResultaat.includes("Ingrediënten") && (
-                      <button style={{ ...S.btn(), width:"100%", fontSize:13 }} onClick={importeerAIRecept}>
-                        ➕ Importeer als recept
-                      </button>
-                    )}
+                    <button style={{ ...S.btn(), width:"100%", fontSize:13 }} onClick={importeerAIRecept} disabled={aiImportLoading}>
+                      {aiImportLoading ? "⏳ Bezig met importeren…" : "➕ Importeer als recept"}
+                    </button>
                   </div>
                 )}
               </>
