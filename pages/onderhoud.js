@@ -28,6 +28,39 @@ function fmtDatum(d) {
   return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
 }
 
+// ── Werkdagen-helpers (optioneel per project) ──────────────────────────────
+function isWeekend(datum) {
+  const dag = new Date(datum).getDay();
+  return dag === 0 || dag === 6; // zondag = 0, zaterdag = 6
+}
+// Schuift een datum die op een weekend valt door naar de eerstvolgende maandag.
+function naarWerkdag(datum) {
+  const d = new Date(datum);
+  while (isWeekend(d)) d.setDate(d.getDate() + 1);
+  return d;
+}
+// Telt een aantal WERKdagen op bij een datum (weekend telt niet mee).
+function werkdagPlus(datum, aantalWerkdagen) {
+  let d = naarWerkdag(datum);
+  let geteld = 0;
+  while (geteld < aantalWerkdagen) {
+    d.setDate(d.getDate() + 1);
+    if (!isWeekend(d)) geteld++;
+  }
+  return d;
+}
+// Telt een aantal WERKdagen af van een datum (achterwaarts, voor het
+// kritiek-pad-algoritme).
+function werkdagMin(datum, aantalWerkdagen) {
+  let d = naarWerkdag(datum);
+  let geteld = 0;
+  while (geteld < aantalWerkdagen) {
+    d.setDate(d.getDate() - 1);
+    if (!isWeekend(d)) geteld++;
+  }
+  return d;
+}
+
 // ════════════════════════════════════════════════════════
 // PLANNINGSALGORITME — de kern van "als er iets uitloopt, schuift de rest
 // automatisch mee". Werkt als een vereenvoudigde CPM-planning (Critical Path
@@ -42,8 +75,12 @@ function fmtDatum(d) {
 // - `actueel: false` betekent puur-op-schema-als-alles-volgens-plan-gaat,
 //   gebruikt om te bepalen hoeveel vertraging een taak heeft opgelopen
 //   t.o.v. de oorspronkelijke inschatting.
+// - `werkdagenOnly: true` (per project instelbaar) telt weekenden niet mee:
+//   een taak van "3 dagen" die op vrijdag start, is dan pas op woensdag klaar
+//   in plaats van maandag, en een berekende start die op een weekend zou
+//   vallen, schuift automatisch door naar de eerstvolgende maandag.
 // ════════════════════════════════════════════════════════
-function berekenSchema(taken, projectStart, actueel = true) {
+function berekenSchema(taken, projectStart, actueel = true, werkdagenOnly = false) {
   const perId = Object.fromEntries(taken.map(t => [t.id, t]));
   const resultaat = {};
 
@@ -67,12 +104,14 @@ function berekenSchema(taken, projectStart, actueel = true) {
       });
       start = laatsteEind;
     }
+    if (werkdagenOnly) start = naarWerkdag(start);
 
     let eind;
     if (actueel && taak.werkelijkEind) {
       eind = new Date(taak.werkelijkEind);
     } else {
-      eind = dagPlus(start, Math.max(1, +taak.duurDagen || 1));
+      const duur = Math.max(1, +taak.duurDagen || 1);
+      eind = werkdagenOnly ? werkdagPlus(start, duur) : dagPlus(start, duur);
     }
 
     const r = { start, eind };
@@ -83,6 +122,57 @@ function berekenSchema(taken, projectStart, actueel = true) {
 
   taken.forEach(t => berekenTaak(t.id, new Set()));
   return resultaat;
+}
+
+// ════════════════════════════════════════════════════════
+// KRITIEK PAD — welke taken hebben NUL speling (vertraging ervan vertraagt
+// gegarandeerd de hele opleverdatum), en welke hebben nog wat marge? Dit is
+// de "backward pass" van CPM: waar berekenSchema van voor naar achter werkt
+// (vroegst mogelijke start/eind), rekent dit van achter naar voren terug
+// vanaf de project-einddatum (laatst toelaatbare start/eind), gebaseerd op
+// het huidige, actuele schema (dus inclusief eventuele al opgelopen
+// vertraging).
+function berekenKritiekPad(taken, schema, werkdagenOnly = false) {
+  if (taken.length === 0) return {};
+  const perId = Object.fromEntries(taken.map(t => [t.id, t]));
+  // Wie hangt van wie af, omgekeerd opgezocht (opvolgers per taak).
+  const opvolgers = {};
+  taken.forEach(t => (t.afhankelijkheden || []).forEach(depId => {
+    if (!opvolgers[depId]) opvolgers[depId] = [];
+    opvolgers[depId].push(t.id);
+  }));
+
+  const projectEind = taken.reduce((max, t) => {
+    const eind = schema[t.id]?.eind;
+    return eind && eind > max ? eind : max;
+  }, schema[taken[0].id]?.eind || new Date());
+
+  const laatsteEind = {};
+  function berekenLaatsteEind(id, bezig) {
+    if (laatsteEind[id]) return laatsteEind[id];
+    if (bezig.has(id)) return projectEind; // circulair: geen zinvolle speling te bepalen
+    bezig.add(id);
+    const opv = opvolgers[id] || [];
+    const waarde = opv.length === 0
+      ? projectEind
+      : new Date(Math.min(...opv.map(opvId => {
+          const opvLaatsteEind = berekenLaatsteEind(opvId, bezig);
+          const opvTaak = perId[opvId];
+          const opvDuur = Math.max(1, +opvTaak?.duurDagen || 1);
+          return (werkdagenOnly ? werkdagMin(opvLaatsteEind, opvDuur) : dagPlus(opvLaatsteEind, -opvDuur)).getTime();
+        })));
+    laatsteEind[id] = waarde;
+    bezig.delete(id);
+    return waarde;
+  }
+
+  const speling = {};
+  taken.forEach(t => {
+    const le = berekenLaatsteEind(t.id, new Set());
+    const werkelijkEind = schema[t.id]?.eind;
+    speling[t.id] = werkelijkEind ? Math.max(0, dagVerschil(fmtDatum(le), fmtDatum(werkelijkEind))) : 0;
+  });
+  return speling; // { taakId: aantal dagen speling (0 = kritiek pad) }
 }
 
 async function loadData() {
@@ -107,7 +197,7 @@ const C = {
   bg: "#F5F0FF", surf: "#FFFFFF", card: "#EDE8FF",
   border: "#D4C8F0", purple: "#5B3FA6", accent: "#7B5CC8",
   text: "#1A1230", muted: "#7B6FA8", red: "#D63353",
-  yellow: "#CC8800", green: "#2D6A4F",
+  yellow: "#CC8800", green: "#2D6A4F", orange: "#D4791A",
 };
 
 const S = {
@@ -148,7 +238,9 @@ export default function OnderhoudApp() {
   // ── Verbouwplanner ──────────────────────────────────────
   const [actieefProjectId, setActieefProjectId] = useState(null);
   const [showProjectForm, setShowProjectForm] = useState(false);
-  const [projectForm, setProjectForm] = useState({ naam: "", beschrijving: "", startDatum: new Date().toISOString().slice(0,10) });
+  const [editProjectId, setEditProjectId] = useState(null);
+  const [projectWeergave, setProjectWeergave] = useState("lijst"); // "lijst" | "tijdlijn"
+  const [projectForm, setProjectForm] = useState({ naam: "", beschrijving: "", startDatum: new Date().toISOString().slice(0,10), werkdagenOnly: false });
   const [showProjectTaakForm, setShowProjectTaakForm] = useState(false);
   const [editProjectTaakId, setEditProjectTaakId] = useState(null);
   const [projectTaakForm, setProjectTaakForm] = useState({ naam: "", duurDagen: 1, afhankelijkheden: [], uitvoerder: "", notitie: "" });
@@ -158,20 +250,24 @@ export default function OnderhoudApp() {
   const [showKlaarForm, setShowKlaarForm] = useState(false);
   const [klaarTaakId, setKlaarTaakId] = useState(null);
   const [klaarDatum, setKlaarDatum] = useState(new Date().toISOString().slice(0,10));
+  const [mijlpalen, setMijlpalenState] = useState([]);
+  const [showMijlpaalForm, setShowMijlpaalForm] = useState(false);
+  const [mijlpaalForm, setMijlpaalForm] = useState({ naam: "", datum: new Date().toISOString().slice(0,10) });
 
   const persistData = useCallback((nextObjecten, nextTaken) => {
     lastWriteRef.current = Date.now();
     setObjectenState(nextObjecten);
     setTakenState(nextTaken);
-    saveData({ objecten: nextObjecten, taken: nextTaken, projecten, projectTaken });
-  }, [projecten, projectTaken]);
+    saveData({ objecten: nextObjecten, taken: nextTaken, projecten, projectTaken, mijlpalen });
+  }, [projecten, projectTaken, mijlpalen]);
 
-  const persistProjectData = useCallback((nextProjecten, nextProjectTaken) => {
+  const persistProjectData = useCallback((nextProjecten, nextProjectTaken, nextMijlpalen) => {
     lastWriteRef.current = Date.now();
     setProjectenState(nextProjecten);
     setProjectTakenState(nextProjectTaken);
-    saveData({ objecten, taken, projecten: nextProjecten, projectTaken: nextProjectTaken });
-  }, [objecten, taken]);
+    if (nextMijlpalen !== undefined) setMijlpalenState(nextMijlpalen);
+    saveData({ objecten, taken, projecten: nextProjecten, projectTaken: nextProjectTaken, mijlpalen: nextMijlpalen !== undefined ? nextMijlpalen : mijlpalen });
+  }, [objecten, taken, mijlpalen]);
 
   useEffect(() => {
     let active = true;
@@ -183,6 +279,7 @@ export default function OnderhoudApp() {
         setTakenState(data.taken || []);
         setProjectenState(data.projecten || []);
         setProjectTakenState(data.projectTaken || []);
+        setMijlpalenState(data.mijlpalen || []);
         setLoading(false);
       } else if (active) setLoading(false);
     };
@@ -296,17 +393,29 @@ export default function OnderhoudApp() {
   // ── Verbouwplanner: projecten ──────────────────────────
   function voegProjectToe() {
     if (!projectForm.naam.trim()) return;
-    const nieuw = { ...projectForm, id: uid(), status: "actief", aangemaaktOp: Date.now() };
-    persistProjectData([...projecten, nieuw], projectTaken);
-    setProjectForm({ naam: "", beschrijving: "", startDatum: new Date().toISOString().slice(0,10) });
+    if (editProjectId) {
+      persistProjectData(projecten.map(p => p.id === editProjectId ? { ...p, ...projectForm } : p), projectTaken);
+      showToast(`✅ ${projectForm.naam} bijgewerkt`);
+    } else {
+      const nieuw = { ...projectForm, id: uid(), status: "actief", aangemaaktOp: Date.now() };
+      persistProjectData([...projecten, nieuw], projectTaken);
+      setActieefProjectId(nieuw.id);
+      showToast(`✅ ${nieuw.naam} aangemaakt`);
+    }
+    setProjectForm({ naam: "", beschrijving: "", startDatum: new Date().toISOString().slice(0,10), werkdagenOnly: false });
     setShowProjectForm(false);
-    setActieefProjectId(nieuw.id);
-    showToast(`✅ ${nieuw.naam} aangemaakt`);
+    setEditProjectId(null);
+  }
+
+  function bewerkProject(project) {
+    setProjectForm({ naam: project.naam, beschrijving: project.beschrijving || "", startDatum: project.startDatum, werkdagenOnly: !!project.werkdagenOnly });
+    setEditProjectId(project.id);
+    setShowProjectForm(true);
   }
 
   function verwijderProject(id) {
     if (!window.confirm("Project en alle bijbehorende taken verwijderen?")) return;
-    persistProjectData(projecten.filter(p => p.id !== id), projectTaken.filter(t => t.projectId !== id));
+    persistProjectData(projecten.filter(p => p.id !== id), projectTaken.filter(t => t.projectId !== id), mijlpalen.filter(m => m.projectId !== id));
     if (actieefProjectId === id) setActieefProjectId(null);
   }
 
@@ -375,6 +484,23 @@ export default function OnderhoudApp() {
   // beschrijving van de hele verbouwing), een logische volgorde en
   // afhankelijkheden voor te stellen — generieke bouwkennis die lastig
   // hard te coderen is, omdat elke verbouwing anders is.
+  // ── Verbouwplanner: mijlpalen ───────────────────────────
+  // Een mijlpaal is een losstaande belangrijke datum (bv. "Keuring gemeente"
+  // of "Meubels geleverd") — niet gekoppeld aan een taakduur of
+  // afhankelijkheden, gewoon een vaste datum die je op de tijdlijn wil zien.
+  function voegMijlpaalToe() {
+    if (!mijlpaalForm.naam.trim() || !actieefProjectId) return;
+    const nieuw = { ...mijlpaalForm, id: uid(), projectId: actieefProjectId, aangemaaktOp: Date.now() };
+    persistProjectData(projecten, projectTaken, [...mijlpalen, nieuw]);
+    setMijlpaalForm({ naam: "", datum: new Date().toISOString().slice(0,10) });
+    setShowMijlpaalForm(false);
+    showToast(`🚩 ${nieuw.naam} toegevoegd`);
+  }
+
+  function verwijderMijlpaal(id) {
+    persistProjectData(projecten, projectTaken, mijlpalen.filter(m => m.id !== id));
+  }
+
   async function vraagAiAdvies() {
     const huidigeTaken = projectTaken.filter(t => t.projectId === actieefProjectId);
     if (huidigeTaken.length < 2) { showToast("⚠️ Voeg eerst minstens 2 taken toe"); return; }
@@ -627,23 +753,38 @@ export default function OnderhoudApp() {
         </div>
       )}
 
-      {/* Nieuw verbouwproject */}
+      {/* Nieuw / bewerk verbouwproject */}
       {showProjectForm && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => setShowProjectForm(false)}>
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => { setShowProjectForm(false); setEditProjectId(null); }}>
           <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
-              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>+ Nieuw verbouwproject</p>
-              <button onClick={() => setShowProjectForm(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>{editProjectId ? "✏️ Project bewerken" : "+ Nieuw verbouwproject"}</p>
+              <button onClick={() => { setShowProjectForm(false); setEditProjectId(null); }} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
                 <X size={18} color={C.muted} />
               </button>
             </div>
             <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam (bv. Verbouwing keuken)" value={projectForm.naam} onChange={e=>setProjectForm(f=>({...f,naam:e.target.value}))} autoFocus />
             <textarea style={{ ...S.inp, height:60, resize:"none", marginBottom:10 }} placeholder="Korte beschrijving (optioneel)" value={projectForm.beschrijving} onChange={e=>setProjectForm(f=>({...f,beschrijving:e.target.value}))} />
             <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Startdatum</label>
-            <input style={{ ...S.inp, marginBottom:14 }} type="date" value={projectForm.startDatum} onChange={e=>setProjectForm(f=>({...f,startDatum:e.target.value}))} />
+            <input style={{ ...S.inp, marginBottom:6 }} type="date" value={projectForm.startDatum} onChange={e=>setProjectForm(f=>({...f,startDatum:e.target.value}))} />
+            {editProjectId && (
+              <p style={{ fontSize:11, color:C.muted, margin:"0 0 14px", lineHeight:1.5 }}>
+                ℹ️ Alle taken zonder eigen gestarte/afgeronde datum herberekenen automatisch mee vanaf deze nieuwe startdatum.
+              </p>
+            )}
+            <button type="button" onClick={() => setProjectForm(f => ({ ...f, werkdagenOnly: !f.werkdagenOnly }))}
+              style={{ display:"flex", alignItems:"center", gap:10, width:"100%", background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"11px 14px", marginBottom:14, cursor:"pointer", textAlign:"left" }}>
+              <span role="checkbox" aria-checked={projectForm.werkdagenOnly} style={{ width:20, height:20, borderRadius:6, border:`2px solid ${projectForm.werkdagenOnly?C.purple:C.border}`, background:projectForm.werkdagenOnly?C.purple:"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                {projectForm.werkdagenOnly && <Check size={13} color="#FFF" />}
+              </span>
+              <span>
+                <span style={{ display:"block", fontSize:13, fontWeight:600, color:C.text }}>📅 Alleen werkdagen (ma–vr)</span>
+                <span style={{ display:"block", fontSize:11, color:C.muted }}>Taken lopen niet door in het weekend</span>
+              </span>
+            </button>
             <div style={{ display:"flex", gap:10 }}>
-              <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, flex:1 }} onClick={() => setShowProjectForm(false)}>Annuleer</button>
-              <button style={{ ...S.btn(), flex:2 }} onClick={voegProjectToe}>Aanmaken</button>
+              <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, flex:1 }} onClick={() => { setShowProjectForm(false); setEditProjectId(null); }}>Annuleer</button>
+              <button style={{ ...S.btn(), flex:2 }} onClick={voegProjectToe}>{editProjectId ? "Opslaan" : "Aanmaken"}</button>
             </div>
           </div>
         </div>
@@ -729,6 +870,28 @@ export default function OnderhoudApp() {
             </p>
             <input style={{ ...S.inp, marginBottom:14 }} type="date" value={klaarDatum} onChange={e=>setKlaarDatum(e.target.value)} />
             <button style={{ ...S.btn(C.green), width:"100%" }} onClick={markeerKlaar}>Afronden</button>
+          </div>
+        </div>
+      )}
+
+      {/* Mijlpaal toevoegen */}
+      {showMijlpaalForm && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:100, display:"flex", alignItems:"flex-end" }}
+          onClick={() => setShowMijlpaalForm(false)}>
+          <div style={{ background:"#FFF", width:"100%", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.orange }}>🚩 Nieuwe mijlpaal</p>
+              <button onClick={() => setShowMijlpaalForm(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
+                <X size={18} color={C.muted} />
+              </button>
+            </div>
+            <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
+              Een losse belangrijke datum, niet gekoppeld aan een taakduur — bijvoorbeeld een keuring, levering, of de opleverdatum zelf.
+            </p>
+            <input style={{ ...S.inp, marginBottom:10 }} placeholder="Naam (bv. Keuring gemeente)" value={mijlpaalForm.naam} onChange={e=>setMijlpaalForm(f=>({...f,naam:e.target.value}))} autoFocus />
+            <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>Datum</label>
+            <input style={{ ...S.inp, marginBottom:14 }} type="date" value={mijlpaalForm.datum} onChange={e=>setMijlpaalForm(f=>({...f,datum:e.target.value}))} />
+            <button style={{ ...S.btn(C.orange), width:"100%" }} onClick={voegMijlpaalToe}>Toevoegen</button>
           </div>
         </div>
       )}
@@ -936,8 +1099,10 @@ export default function OnderhoudApp() {
 
           // ── Projectdetail: tijdlijn met automatische herplanning ──
           const pTaken = projectTaken.filter(t => t.projectId === project.id);
-          const actueelSchema = berekenSchema(pTaken, project.startDatum, true);
-          const basisSchema = berekenSchema(pTaken, project.startDatum, false);
+          const pMijlpalen = mijlpalen.filter(m => m.projectId === project.id).sort((a,b) => a.datum.localeCompare(b.datum));
+          const actueelSchema = berekenSchema(pTaken, project.startDatum, true, project.werkdagenOnly);
+          const basisSchema = berekenSchema(pTaken, project.startDatum, false, project.werkdagenOnly);
+          const speling = berekenKritiekPad(pTaken, actueelSchema, project.werkdagenOnly);
           const vandaag = fmtDatum(new Date());
 
           const taakInfo = pTaken.map(t => {
@@ -945,7 +1110,8 @@ export default function OnderhoudApp() {
             const basis = basisSchema[t.id];
             const vertragingDagen = act && basis ? dagVerschil(fmtDatum(act.eind), fmtDatum(basis.eind)) : 0;
             const status = t.werkelijkEind ? "klaar" : t.werkelijkeStart ? "bezig" : "todo";
-            return { taak: t, start: act?.start, eind: act?.eind, vertragingDagen, status };
+            const kritiek = status !== "klaar" && (speling[t.id] ?? 0) === 0;
+            return { taak: t, start: act?.start, eind: act?.eind, vertragingDagen, status, kritiek, speling: speling[t.id] ?? 0 };
           }).sort((a,b) => (a.start||0) - (b.start||0));
 
           const projectEind = taakInfo.length ? taakInfo.reduce((max, ti) => ti.eind > max ? ti.eind : max, taakInfo[0].eind) : null;
@@ -955,8 +1121,19 @@ export default function OnderhoudApp() {
             <>
               <button style={{ background:"none", border:"none", color:C.muted, fontSize:12, fontWeight:600, cursor:"pointer", padding:0, marginBottom:10 }}
                 onClick={() => setActieefProjectId(null)}>← Alle projecten</button>
-              <h3 style={{ margin:"0 0 4px", fontSize:17, fontWeight:800, color:C.purple }}>{project.naam}</h3>
-              {project.beschrijving && <p style={{ margin:"0 0 10px", fontSize:13, color:C.muted }}>{project.beschrijving}</p>}
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+                <div>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                    <h3 style={{ margin:"0 0 4px", fontSize:17, fontWeight:800, color:C.purple }}>{project.naam}</h3>
+                    {project.werkdagenOnly && (
+                      <span style={{ fontSize:10, fontWeight:700, color:C.purple, background:`${C.purple}18`, borderRadius:20, padding:"2px 8px" }}>📅 werkdagen</span>
+                    )}
+                  </div>
+                  {project.beschrijving && <p style={{ margin:"0 0 10px", fontSize:13, color:C.muted }}>{project.beschrijving}</p>}
+                </div>
+                <button style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:9, padding:"6px 11px", fontSize:12, fontWeight:600, color:C.text, cursor:"pointer", whiteSpace:"nowrap" }}
+                  onClick={() => bewerkProject(project)}>✏️ Bewerk</button>
+              </div>
 
               {/* Samenvattingskaart */}
               {projectEind && (
@@ -976,17 +1153,122 @@ export default function OnderhoudApp() {
                 </div>
               )}
 
-              <button style={{ ...S.btn(C.card, C.purple), border:`1px solid ${C.border}`, width:"100%", marginBottom:14, fontSize:13 }}
-                onClick={() => setShowAiAdviesForm(true)}>
-                ✨ Laat AI volgorde &amp; duur voorstellen
-              </button>
+              <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+                <button style={{ ...S.btn(C.card, C.purple), border:`1px solid ${C.border}`, flex:1, fontSize:13 }}
+                  onClick={() => setShowAiAdviesForm(true)}>
+                  ✨ AI-advies
+                </button>
+                <button style={{ ...S.btn(C.card, C.purple), border:`1px solid ${C.border}`, flex:1, fontSize:13 }}
+                  onClick={() => { setMijlpaalForm({ naam: "", datum: vandaag }); setShowMijlpaalForm(true); }}>
+                  🚩 Mijlpaal
+                </button>
+              </div>
 
               {pTaken.length === 0 && (
                 <p style={{ color:C.muted, textAlign:"center", padding:"30px 0", fontSize:14 }}>Nog geen taken — tik + om te beginnen</p>
               )}
 
-              {/* Tijdlijn */}
-              {taakInfo.map(({ taak: t, start, eind, vertragingDagen, status }, i) => {
+              {pMijlpalen.length > 0 && (
+                <div style={{ marginBottom:14 }}>
+                  <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em", margin:"0 0 8px" }}>🚩 Mijlpalen</p>
+                  {pMijlpalen.map(m => {
+                    const dagenTot = dagVerschil(m.datum, vandaag);
+                    return (
+                      <div key={m.id} style={{ display:"flex", alignItems:"center", gap:10, background:`${C.orange}12`, border:`1px solid ${C.orange}44`, borderRadius:10, padding:"9px 12px", marginBottom:6 }}>
+                        <span style={{ fontSize:16 }}>🚩</span>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <p style={{ margin:0, fontWeight:700, fontSize:13, color:C.text }}>{m.naam}</p>
+                          <p style={{ margin:0, fontSize:11, color:C.muted }}>
+                            {m.datum}{dagenTot === 0 ? " · vandaag" : dagenTot > 0 ? ` · over ${dagenTot}d` : ` · ${Math.abs(dagenTot)}d geleden`}
+                          </p>
+                        </div>
+                        <button onClick={() => verwijderMijlpaal(m.id)} style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, padding:2 }}>
+                          <X size={15} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {pTaken.length > 0 && (
+                <div style={{ display:"flex", gap:4, background:C.card, borderRadius:11, padding:3, marginBottom:14 }}>
+                  <button style={{ flex:1, border:"none", background:projectWeergave==="lijst"?C.purple:"transparent", color:projectWeergave==="lijst"?"#FFF":C.muted, borderRadius:8, padding:"8px 0", fontSize:12, fontWeight:600, cursor:"pointer" }}
+                    onClick={() => setProjectWeergave("lijst")}>📋 Lijst</button>
+                  <button style={{ flex:1, border:"none", background:projectWeergave==="tijdlijn"?C.purple:"transparent", color:projectWeergave==="tijdlijn"?"#FFF":C.muted, borderRadius:8, padding:"8px 0", fontSize:12, fontWeight:600, cursor:"pointer" }}
+                    onClick={() => setProjectWeergave("tijdlijn")}>📊 Tijdlijn</button>
+                </div>
+              )}
+
+              {/* Tijdlijn (Gantt-weergave) */}
+              {projectWeergave === "tijdlijn" && pTaken.length > 0 && (() => {
+                const projectStart = new Date(project.startDatum);
+                let laatsteEind = taakInfo.reduce((max, ti) => ti.eind > max ? ti.eind : max, taakInfo[0].eind);
+                pMijlpalen.forEach(m => { if (new Date(m.datum) > laatsteEind) laatsteEind = new Date(m.datum); });
+                const totaalDagen = Math.max(7, dagVerschil(fmtDatum(laatsteEind), fmtDatum(projectStart)) + 2);
+                const dagBreedte = 26; // px per dag — scrollbaar, dus geen probleem op smalle schermen
+                const vandaagOffset = dagVerschil(vandaag, fmtDatum(projectStart));
+
+                // Weeklabels boven de tijdlijn (elke 7 dagen een datum)
+                const weekLabels = [];
+                for (let d = 0; d <= totaalDagen; d += 7) {
+                  weekLabels.push({ dag: d, label: fmtDatum(dagPlus(projectStart, d)).slice(5) });
+                }
+
+                return (
+                  <div style={{ ...S.card, overflowX:"auto", paddingBottom:12 }}>
+                    <div style={{ position:"relative", width: totaalDagen * dagBreedte + 140, minWidth:"100%" }}>
+                      {/* Datumas */}
+                      <div style={{ position:"relative", height:22, marginLeft:140, marginBottom:6, borderBottom:`1px solid ${C.border}` }}>
+                        {weekLabels.map(w => (
+                          <span key={w.dag} style={{ position:"absolute", left:w.dag*dagBreedte, fontSize:9, color:C.muted, whiteSpace:"nowrap" }}>{w.label}</span>
+                        ))}
+                      </div>
+                      {/* Vandaag-lijn */}
+                      {vandaagOffset >= 0 && vandaagOffset <= totaalDagen && (
+                        <div style={{ position:"absolute", top:22, bottom:0, left:140 + vandaagOffset*dagBreedte, width:2, background:C.red, zIndex:2 }} />
+                      )}
+                      {/* Mijlpaal-lijnen */}
+                      {pMijlpalen.map(m => {
+                        const offset = dagVerschil(m.datum, fmtDatum(projectStart));
+                        if (offset < 0 || offset > totaalDagen) return null;
+                        return (
+                          <div key={m.id} style={{ position:"absolute", top:0, bottom:0, left:140 + offset*dagBreedte, width:2, borderLeft:`2px dashed ${C.orange}`, zIndex:2 }} title={m.naam}>
+                            <span style={{ position:"absolute", top:-2, left:4, fontSize:11, whiteSpace:"nowrap" }}>🚩</span>
+                          </div>
+                        );
+                      })}
+                      {/* Taakbalken */}
+                      {taakInfo.map(({ taak: t, start, eind, status, kritiek }, i) => {
+                        const offsetDagen = Math.max(0, dagVerschil(fmtDatum(start), fmtDatum(projectStart)));
+                        const breedteDagen = Math.max(1, dagVerschil(fmtDatum(eind), fmtDatum(start)));
+                        const kleur = status === "klaar" ? C.green : status === "bezig" ? C.purple : kritiek ? C.red : C.muted;
+                        return (
+                          <div key={t.id} style={{ display:"flex", alignItems:"center", height:34, position:"relative" }}>
+                            <div style={{ width:140, flexShrink:0, fontSize:11, fontWeight:600, color:C.text, paddingRight:8, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={t.naam}>
+                              {kritiek && "🔥 "}{t.naam}
+                            </div>
+                            <div style={{ position:"absolute", left:140 + offsetDagen*dagBreedte, width:breedteDagen*dagBreedte, height:20, background:kleur, borderRadius:6, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                              <span style={{ fontSize:9, color:"#FFF", fontWeight:700, whiteSpace:"nowrap", padding:"0 4px" }}>{t.duurDagen}d</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display:"flex", gap:14, marginTop:14, marginLeft:4, flexWrap:"wrap" }}>
+                      {[["🔴 Kritiek pad", C.red], ["🟣 Bezig", C.purple], ["🟢 Klaar", C.green], ["⚪ Speling", C.muted]].map(([label, kleur]) => (
+                        <span key={label} style={{ fontSize:10, color:C.muted, display:"flex", alignItems:"center", gap:4 }}>
+                          <span style={{ width:8, height:8, borderRadius:2, background:kleur, display:"inline-block" }} />{label.slice(2)}
+                        </span>
+                      ))}
+                      {pMijlpalen.length > 0 && <span style={{ fontSize:10, color:C.muted, display:"flex", alignItems:"center", gap:4 }}>🚩 Mijlpaal</span>}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Lijstweergave */}
+              {projectWeergave === "lijst" && taakInfo.map(({ taak: t, start, eind, vertragingDagen, status, kritiek }, i) => {
                 const kleur = status === "klaar" ? C.green : status === "bezig" ? C.purple : vertragingDagen > 0 ? C.red : C.muted;
                 const afhankelijkNamen = (t.afhankelijkheden || []).map(id => pTaken.find(x => x.id === id)?.naam).filter(Boolean);
                 return (
@@ -1009,9 +1291,16 @@ export default function OnderhoudApp() {
                           )}
                           {t.uitvoerder && <p style={{ margin:"3px 0 0", fontSize:10, color:C.muted }}>👷 {t.uitvoerder}</p>}
                         </div>
-                        <span style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:20, background:`${kleur}22`, color:kleur, whiteSpace:"nowrap" }}>
-                          {status === "klaar" ? "✅ Klaar" : status === "bezig" ? "▶️ Bezig" : "⏳ Nog te doen"}
-                        </span>
+                        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+                          <span style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:20, background:`${kleur}22`, color:kleur, whiteSpace:"nowrap" }}>
+                            {status === "klaar" ? "✅ Klaar" : status === "bezig" ? "▶️ Bezig" : "⏳ Nog te doen"}
+                          </span>
+                          {kritiek && (
+                            <span style={{ fontSize:9, fontWeight:700, padding:"2px 7px", borderRadius:20, background:`${C.red}22`, color:C.red, whiteSpace:"nowrap" }} title="Geen speling — vertraging hier vertraagt gegarandeerd de hele oplevering">
+                              🔥 Kritiek pad
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <div style={{ display:"flex", gap:6, marginTop:10, flexWrap:"wrap" }}>
                         {status === "todo" && (

@@ -4,11 +4,34 @@ import { Plus, X, ChevronLeft, Search, ShoppingCart, Clock, Users, Flame, Check,
 
 // ── Constanten ─────────────────────────────────────────
 const DAGEN = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"];
-const MAALTIJDMOMENTEN = ["Ontbijt","Lunch","Diner"];
+const MAALTIJDMOMENTEN = ["Diner", "Jimmy"];
 const KEUKENS = ["Nederlands","Italiaans","Aziatisch","Oosters","Mediterraan","Spaans","Mexicaans","Frans","Indisch","Kamado","Overig"];
 const DIEET_TAGS = ["Vegetarisch","Veganistisch","Glutenvrij","Lactosevrij"];
 const HOOFDINGREDIENTEN = ["Pasta","Orzo","Rijst","Risotto","Aardappelen","Kip","Vlees","Vis","Peulvruchten","Ei","Overig"];
 const GANGTYPES = ["Voorgerecht","Hoofdgerecht","Nagerecht","Soep","Stoofpotje","Salade"];
+
+// Indicatieve steak-bereidingstijd in minuten, per kant, op een hete pan/grill.
+// Sterk afhankelijk van hittebron en starttemperatuur van het vlees — bedoeld
+// als goed uitgangspunt, geen garantie. Voor een zekere uitkomst blijft een
+// kernthermometer het betrouwbaarst.
+const STEAK_DIKTES = [
+  { id: "dun", naam: "Dun", sub: "~1,5 cm" },
+  { id: "gemiddeld", naam: "Gemiddeld", sub: "~2,5 cm" },
+  { id: "dik", naam: "Dik", sub: "~3,5 cm+" },
+];
+const STEAK_GAARHEDEN = [
+  { id: "blue", naam: "Blue", emoji: "🟣" },
+  { id: "rare", naam: "Rare", emoji: "🔴" },
+  { id: "medium-rare", naam: "Medium-rare", emoji: "🟠" },
+  { id: "medium", naam: "Medium", emoji: "🟡" },
+  { id: "medium-well", naam: "Medium-well", emoji: "🟤" },
+  { id: "doorbakken", naam: "Doorbakken", emoji: "⚫" },
+];
+const STEAK_TIJDEN = {
+  dun:       { blue: 1,   rare: 1.5, "medium-rare": 2,   medium: 2.5, "medium-well": 3,   doorbakken: 4 },
+  gemiddeld: { blue: 1.5, rare: 2,   "medium-rare": 2.5, medium: 3.5, "medium-well": 4.5, doorbakken: 5.5 },
+  dik:       { blue: 2,   rare: 2.5, "medium-rare": 3.5, medium: 4.5, "medium-well": 5.5, doorbakken: 7 },
+};
 const BEREIDINGSTIJD_OPTIES = [
   { id: "kort", label: "⚡ < 20 min", test: t => t > 0 && t <= 20 },
   { id: "middel", label: "⏱ 20-45 min", test: t => t > 20 && t <= 45 },
@@ -211,8 +234,11 @@ export default function MaaltijdApp() {
   const [toast, setToast] = useState(null);
   const [kookModusActief, setKookModusActief] = useState(false);
   const [showEiTimer, setShowEiTimer] = useState(false);
-  const [eiTimers, setEiTimers] = useState([]); // [{id, naam, eindTijd, duurSeconden}]
+  const [kookwekkerTab, setKookwekkerTab] = useState("ei"); // "ei" | "steak"
+  const [keukenTimers, setKeukenTimers] = useState([]); // [{id, naam, type, eindTijd, duurSeconden}]
   const [customEiMinuten, setCustomEiMinuten] = useState("7");
+  const [steakDikte, setSteakDikte] = useState("gemiddeld");
+  const [steakGaarheid, setSteakGaarheid] = useState("medium-rare");
   const [, setEiTick] = useState(0); // forceert elke seconde een her-render zolang er timers lopen
   const [kookStapIndex, setKookStapIndex] = useState(0);
   const [kookTimerSec, setKookTimerSec] = useState(0);
@@ -220,6 +246,9 @@ export default function MaaltijdApp() {
   const [showDagboekForm, setShowDagboekForm] = useState(false);
   const [dagboekNotitie, setDagboekNotitie] = useState("");
   const [showWeekSuggestie, setShowWeekSuggestie] = useState(false);
+  const [weekVoorkeurVlees, setWeekVoorkeurVlees] = useState(4);
+  const [weekVoorkeurVega, setWeekVoorkeurVega] = useState(3);
+  const [weekMaxTijd, setWeekMaxTijd] = useState(0); // 0 = geen limiet
   const [weekSuggestieLoading, setWeekSuggestieLoading] = useState(false);
 
   // Timer-countdown voor Kookmodus
@@ -239,31 +268,33 @@ export default function MaaltijdApp() {
     return () => clearInterval(interval);
   }, [kookTimerLopend]);
 
-  // Eierkookwekker — telt op basis van een vast eindtijdstip terug (niet door
-  // gewoon elke seconde -1 te doen), zodat het ook klopt als het tabblad even
-  // op de achtergrond stond en de browser de interval heeft vertraagd.
+  // Kookwekker-motor — telt op basis van een vast eindtijdstip terug (niet
+  // door gewoon elke seconde -1 te doen), zodat het ook klopt als het
+  // tabblad even op de achtergrond stond en de browser de interval heeft
+  // vertraagd. Generiek gehouden zodat zowel de eier- als de steak-timers
+  // (en eventuele toekomstige kookwekkers) dezelfde motor delen.
   useEffect(() => {
-    if (eiTimers.length === 0) return;
+    if (keukenTimers.length === 0) return;
     const interval = setInterval(() => {
       setEiTick(t => t + 1);
       const nu = Date.now();
-      const klaar = eiTimers.filter(t => t.eindTijd <= nu && !t.klaarGemeld);
+      const klaar = keukenTimers.filter(t => t.eindTijd <= nu && !t.klaarGemeld);
       if (klaar.length > 0) {
-        setEiTimers(prev => prev.map(t => klaar.some(k => k.id === t.id) ? { ...t, klaarGemeld: true } : t));
+        setKeukenTimers(prev => prev.map(t => klaar.some(k => k.id === t.id) ? { ...t, klaarGemeld: true } : t));
         if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 300]);
         klaar.forEach(t => showToast(`⏰ ${t.naam} is klaar!`));
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [eiTimers]);
+  }, [keukenTimers]);
 
-  function startEiTimer(naam, minuten) {
+  function startEiTimer(naam, minuten, type = "ei") {
     const duurSeconden = Math.round(minuten * 60);
-    setEiTimers(prev => [...prev, { id: uid(), naam, eindTijd: Date.now() + duurSeconden * 1000, duurSeconden, klaarGemeld: false }]);
+    setKeukenTimers(prev => [...prev, { id: uid(), naam, type, eindTijd: Date.now() + duurSeconden * 1000, duurSeconden, klaarGemeld: false }]);
   }
 
   function stopEiTimer(id) {
-    setEiTimers(prev => prev.filter(t => t.id !== id));
+    setKeukenTimers(prev => prev.filter(t => t.id !== id));
   }
 
   const persistData = useCallback((nextRecepten, nextWeekmenu) => {
@@ -510,27 +541,74 @@ ${aiPrompt.toLowerCase().includes("recept") || aiPrompt.toLowerCase().includes("
   }
 
   // Stelt op basis van de bestaande receptenbibliotheek een gevarieerd
-  // weekmenu voor (verschillende keukens, niet 3x hetzelfde) en plant dat
-  // meteen in als diner voor de huidige week.
+  // weekmenu voor (verschillende keukens, niet 3x hetzelfde) en vult daarmee
+  // alleen de nog OPEN dagen aan. Dagen die je zelf al hebt ingepland (bv.
+  // een vaste terugkerende favoriet op een vaste dag) worden nooit
+  // overschreven — die tel je gewoon zelf in via de normale dag-planning
+  // vóórdat je op deze knop drukt.
   async function stelWeekmenuVoor() {
     if (recepten.length < 3) { showToast("⚠️ Voeg eerst een paar recepten toe voor een zinvolle suggestie"); return; }
+
+    // Welke dagen staan al vast (handmatig ingepland), en welke staan nog open?
+    const vasteDagen = DAGEN.filter(dag => weekmenu[weekKey(dag, "Diner")]);
+    const openDagen = DAGEN.filter(dag => !weekmenu[weekKey(dag, "Diner")]);
+    if (openDagen.length === 0) {
+      showToast("✅ Alle dagen staan al ingepland — niks voor de AI te doen");
+      return;
+    }
+
+    // Filter eerst hard op de maximale bereidingstijd — dat garandeert dat de
+    // AI sowieso geen recept kan voorstellen dat te lang duurt, in plaats van
+    // dat alleen "vriendelijk te vragen" in de prompt.
+    const kandidaten = weekMaxTijd > 0 ? recepten.filter(r => (+r.bereidingstijd || 999) <= weekMaxTijd) : recepten;
+    if (kandidaten.length < openDagen.length) {
+      showToast(`⚠️ Te weinig recepten van ≤${weekMaxTijd} min (${kandidaten.length} gevonden voor ${openDagen.length} open dagen) — verhoog de tijdslimiet of voeg recepten toe`);
+      return;
+    }
+
     setWeekSuggestieLoading(true);
     try {
-      const bibliotheek = recepten.map(r => `${r.naam} (${r.keuken || "Overig"})`).join("\n");
+      const isVegaRecept = r => (r.dieet || []).includes("Vegetarisch") || (r.dieet || []).includes("Veganistisch");
+      const bibliotheek = kandidaten.map(r =>
+        `${r.naam} (${r.keuken || "Overig"}, ${isVegaRecept(r) ? "vegetarisch" : "vlees/vis"}, ${r.bereidingstijd || "?"} min)`
+      ).join("\n");
+
+      // Wat er al vaststaat, telt mee in de vlees/vega-balans en de
+      // keuken-variatie, ook al hoeft de AI er niks meer voor te verzinnen.
+      const vasteInfo = vasteDagen.map(dag => {
+        const recept = recepten.find(r => r.id === weekmenu[weekKey(dag, "Diner")]);
+        if (!recept) return null;
+        return { dag, recept, isVega: isVegaRecept(recept) };
+      }).filter(Boolean);
+      const vasteVleesCount = vasteInfo.filter(v => !v.isVega).length;
+      const vasteVegaCount = vasteInfo.filter(v => v.isVega).length;
+      const resterendVlees = Math.max(0, weekVoorkeurVlees - vasteVleesCount);
+      const resterendVega = Math.max(0, weekVoorkeurVega - vasteVegaCount);
+
+      const vasteBeschrijving = vasteInfo.length > 0
+        ? `Deze dagen staan al vast en hoef je NIET in te vullen (die blijven ongewijzigd, maar houd er wel rekening mee voor variatie in keuken):\n${vasteInfo.map(v => `- ${v.dag}: ${v.recept.naam} (${v.recept.keuken || "Overig"}, ${v.isVega ? "vegetarisch" : "vlees/vis"})`).join("\n")}\n\n`
+        : "";
+
+      const totaalOpgegevenResterend = resterendVlees + resterendVega;
+      const verdelingInstructie = totaalOpgegevenResterend <= openDagen.length
+        ? `Kies voor de open dagen precies ${resterendVlees} dag(en) met een recept gelabeld "vlees/vis" en precies ${resterendVega} dag(en) met een recept gelabeld "vegetarisch" (dit houdt al rekening met wat er bij de vaste dagen al aan vlees/vega gepland stond). ${totaalOpgegevenResterend < openDagen.length ? `De overige ${openDagen.length - totaalOpgegevenResterend} open dag(en) mag je vrij kiezen.` : ""}`
+        : `Streef voor de open dagen zo dicht mogelijk naar een verhouding van ${resterendVlees} dagen "vlees/vis" en ${resterendVega} dagen "vegetarisch" (dit is niet exact haalbaar binnen ${openDagen.length} open dagen — kom zo dicht mogelijk in de buurt).`;
+
       const tekst = await callAI(
-        `Hier is een receptenbibliotheek (naam en keukentype):\n${bibliotheek}\n\n` +
-        `Stel een gevarieerd weekmenu voor het diner voor, één recept per dag voor Maandag t/m Zondag, gekozen UIT bovenstaande lijst. ` +
-        `Zorg voor variatie in keukentype (niet meerdere dagen achter elkaar dezelfde keuken). ` +
-        `Geef ALLEEN een JSON-object terug, zonder uitleg of markdown, in dit exacte formaat: ` +
-        `{"Maandag":"receptnaam","Dinsdag":"receptnaam","Woensdag":"receptnaam","Donderdag":"receptnaam","Vrijdag":"receptnaam","Zaterdag":"receptnaam","Zondag":"receptnaam"}. ` +
-        `Gebruik de namen exact zoals ze in de bibliotheek staan.`,
+        `${vasteBeschrijving}Hier is een receptenbibliotheek (naam, keukentype, vlees/vis-of-vegetarisch, bereidingstijd in minuten)${weekMaxTijd > 0 ? `, al gefilterd op maximaal ${weekMaxTijd} minuten bereidingstijd` : ""}:\n${bibliotheek}\n\n` +
+        `Stel een gevarieerd dinermenu voor voor ALLEEN deze open dagen: ${openDagen.join(", ")}. Kies steeds UIT bovenstaande bibliotheek. ` +
+        `Zorg voor variatie in keukentype (niet meerdere dagen achter elkaar dezelfde keuken, en hou ook rekening met de al vaststaande dagen hierboven). ` +
+        `${verdelingInstructie} ` +
+        `Geef ALLEEN een JSON-object terug, zonder uitleg of markdown, met UITSLUITEND de open dagen als sleutels, bv: ` +
+        `{${openDagen.map(d => `"${d}":"receptnaam"`).join(",")}}. ` +
+        `Gebruik de namen exact zoals ze in de bibliotheek staan (zonder de toevoegingen tussen haakjes).`,
         "maaltijden-weekmenu-suggestie"
       );
       const schoon = tekst.replace(/```json|```/g, "").trim();
       const suggestie = JSON.parse(schoon);
       const nieuweWeekmenu = { ...weekmenu };
       let aantalGepland = 0;
-      DAGEN.forEach(dag => {
+      openDagen.forEach(dag => {
         const naam = suggestie[dag];
         if (!naam) return;
         const match = recepten.find(r => r.naam.toLowerCase() === naam.toLowerCase());
@@ -540,7 +618,7 @@ ${aiPrompt.toLowerCase().includes("recept") || aiPrompt.toLowerCase().includes("
         }
       });
       persistData(recepten, nieuweWeekmenu);
-      showToast(`✅ ${aantalGepland} dagen ingepland`);
+      showToast(vasteDagen.length > 0 ? `✅ ${aantalGepland} open dagen ingevuld, ${vasteDagen.length} vaste dagen ongewijzigd` : `✅ ${aantalGepland} dagen ingepland`);
       setShowWeekSuggestie(false);
     } catch (e) {
       showToast("❌ Kon geen weekmenu voorstellen, probeer opnieuw");
@@ -1467,53 +1545,109 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:150, display:"flex", alignItems:"flex-end" }} onClick={() => setShowEiTimer(false)}>
           <div style={{ background:"#FFF", width:"100%", maxHeight:"85vh", overflowY:"auto", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20, boxSizing:"border-box" }} onClick={e => e.stopPropagation()}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
-              <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.orange }}>🥚 Eierkookwekker</p>
+              <p style={{ margin:0, fontWeight:700, fontSize:16, color:C.orange }}>⏱ Kookwekkers</p>
               <button onClick={() => setShowEiTimer(false)} aria-label="Sluiten" style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
                 <X size={20} color={C.muted} />
               </button>
             </div>
-            <p style={{ fontSize:12, color:C.muted, margin:"0 0 14px" }}>
-              Tik op een gaarheid zodra je het ei in het kokende water legt — de timer start meteen vanaf dat moment. Je kunt meerdere eieren tegelijk timen, ook met verschillende gaarheid.
-            </p>
 
-            {/* Voorgeprogrammeerde standen */}
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:14 }}>
-              {[
-                { naam:"Zacht", minuten:6, sub:"lopend eigeel", emoji:"🟡" },
-                { naam:"Halfhard", minuten:8, sub:"licht gebonden", emoji:"🟠" },
-                { naam:"Hard", minuten:10, sub:"volledig gaar", emoji:"🔴" },
-              ].map(preset => (
-                <button key={preset.naam} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 6px", cursor:"pointer", textAlign:"center" }}
-                  onClick={() => { startEiTimer(`${preset.naam} ei`, preset.minuten); showToast(`🥚 ${preset.naam} ei gestart (${preset.minuten} min)`); }}>
-                  <div style={{ fontSize:22, marginBottom:4 }}>{preset.emoji}</div>
-                  <div style={{ fontWeight:700, fontSize:13, color:C.text }}>{preset.naam}</div>
-                  <div style={{ fontSize:10, color:C.muted }}>{preset.minuten} min</div>
-                  <div style={{ fontSize:9, color:C.muted, marginTop:2 }}>{preset.sub}</div>
-                </button>
-              ))}
+            {/* Tab-wissel */}
+            <div style={{ display:"flex", gap:4, background:C.card, borderRadius:12, padding:4, marginBottom:16 }}>
+              <button style={{ flex:1, border:"none", background:kookwekkerTab==="ei"?C.orange:"transparent", color:kookwekkerTab==="ei"?"#FFF":C.muted, borderRadius:9, padding:"9px 0", fontSize:13, fontWeight:600, cursor:"pointer" }}
+                onClick={() => setKookwekkerTab("ei")}>🥚 Ei</button>
+              <button style={{ flex:1, border:"none", background:kookwekkerTab==="steak"?C.orange:"transparent", color:kookwekkerTab==="steak"?"#FFF":C.muted, borderRadius:9, padding:"9px 0", fontSize:13, fontWeight:600, cursor:"pointer" }}
+                onClick={() => setKookwekkerTab("steak")}>🥩 Steak</button>
             </div>
 
-            {/* Zelf een duur instellen */}
-            <div style={{ display:"flex", gap:8, marginBottom:18 }}>
-              <input type="number" min="1" max="30" style={{ ...S.inp, flex:1 }} value={customEiMinuten} onChange={e => setCustomEiMinuten(e.target.value)} placeholder="Minuten" />
-              <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, whiteSpace:"nowrap" }}
-                onClick={() => { const m = +customEiMinuten || 0; if (m <= 0) return; startEiTimer(`Ei (${m} min)`, m); showToast(`🥚 Timer gestart (${m} min)`); }}>
-                ⏱ Eigen tijd starten
-              </button>
-            </div>
+            {kookwekkerTab === "ei" && (
+              <>
+                <p style={{ fontSize:12, color:C.muted, margin:"0 0 14px" }}>
+                  Tik op een gaarheid zodra je het ei in het kokende water legt — de timer start meteen vanaf dat moment. Je kunt meerdere eieren tegelijk timen, ook met verschillende gaarheid.
+                </p>
 
-            {/* Actieve timers */}
-            {eiTimers.length > 0 && (
+                {/* Voorgeprogrammeerde standen */}
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:14 }}>
+                  {[
+                    { naam:"Zacht", minuten:6, sub:"lopend eigeel", emoji:"🟡" },
+                    { naam:"Halfhard", minuten:8, sub:"licht gebonden", emoji:"🟠" },
+                    { naam:"Hard", minuten:10, sub:"volledig gaar", emoji:"🔴" },
+                  ].map(preset => (
+                    <button key={preset.naam} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 6px", cursor:"pointer", textAlign:"center" }}
+                      onClick={() => { startEiTimer(`${preset.naam} ei`, preset.minuten, "ei"); showToast(`🥚 ${preset.naam} ei gestart (${preset.minuten} min)`); }}>
+                      <div style={{ fontSize:22, marginBottom:4 }}>{preset.emoji}</div>
+                      <div style={{ fontWeight:700, fontSize:13, color:C.text }}>{preset.naam}</div>
+                      <div style={{ fontSize:10, color:C.muted }}>{preset.minuten} min</div>
+                      <div style={{ fontSize:9, color:C.muted, marginTop:2 }}>{preset.sub}</div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Zelf een duur instellen */}
+                <div style={{ display:"flex", gap:8, marginBottom:18 }}>
+                  <input type="number" min="1" max="30" style={{ ...S.inp, flex:1 }} value={customEiMinuten} onChange={e => setCustomEiMinuten(e.target.value)} placeholder="Minuten" />
+                  <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, whiteSpace:"nowrap" }}
+                    onClick={() => { const m = +customEiMinuten || 0; if (m <= 0) return; startEiTimer(`Ei (${m} min)`, m, "ei"); showToast(`🥚 Timer gestart (${m} min)`); }}>
+                    ⏱ Eigen tijd starten
+                  </button>
+                </div>
+              </>
+            )}
+
+            {kookwekkerTab === "steak" && (() => {
+              const minutenPerKant = STEAK_TIJDEN[steakDikte][steakGaarheid];
+              const gaarheidInfo = STEAK_GAARHEDEN.find(g => g.id === steakGaarheid);
+              return (
+                <>
+                  <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
+                    Kies dikte en gewenste gaarheid, start de timer zodra de steak de pan/grill ingaat, en start 'm nog een keer voor de tweede kant na het draaien. Richtlijn op basis van een hete pan — bij twijfel is een kernthermometer het zekerst.
+                  </p>
+
+                  <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em", margin:"0 0 8px" }}>Dikte</p>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:14 }}>
+                    {STEAK_DIKTES.map(d => (
+                      <button key={d.id} style={{ background:steakDikte===d.id?C.orange:C.card, color:steakDikte===d.id?"#FFF":C.text, border:`1px solid ${steakDikte===d.id?C.orange:C.border}`, borderRadius:12, padding:"10px 6px", cursor:"pointer", textAlign:"center" }}
+                        onClick={() => setSteakDikte(d.id)}>
+                        <div style={{ fontWeight:700, fontSize:13 }}>{d.naam}</div>
+                        <div style={{ fontSize:10, opacity:0.85 }}>{d.sub}</div>
+                      </button>
+                    ))}
+                  </div>
+
+                  <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em", margin:"0 0 8px" }}>Gaarheid</p>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:16 }}>
+                    {STEAK_GAARHEDEN.map(g => (
+                      <button key={g.id} style={{ background:steakGaarheid===g.id?C.orange:C.card, color:steakGaarheid===g.id?"#FFF":C.text, border:`1px solid ${steakGaarheid===g.id?C.orange:C.border}`, borderRadius:12, padding:"9px 4px", cursor:"pointer", textAlign:"center" }}
+                        onClick={() => setSteakGaarheid(g.id)}>
+                        <div style={{ fontSize:16 }}>{g.emoji}</div>
+                        <div style={{ fontWeight:700, fontSize:11 }}>{g.naam}</div>
+                      </button>
+                    ))}
+                  </div>
+
+                  <button style={{ ...S.btn(C.orange), width:"100%", marginBottom:8, fontSize:14 }}
+                    onClick={() => { startEiTimer(`Steak (${gaarheidInfo.naam}) — per kant`, minutenPerKant, "steak"); showToast(`🥩 Timer gestart: ${minutenPerKant} min per kant`); }}>
+                    🥩 Start timer per kant ({minutenPerKant} min)
+                  </button>
+                  <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, width:"100%", marginBottom:18, fontSize:13 }}
+                    onClick={() => { startEiTimer("Steak — laten rusten", 5, "steak"); showToast("🥩 Rusttijd gestart (5 min)"); }}>
+                    😴 Start rusttijd (5 min)
+                  </button>
+                </>
+              );
+            })()}
+
+            {/* Actieve timers — toont alle lopende kookwekkers samen, ongeacht type */}
+            {keukenTimers.length > 0 && (
               <>
                 <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em", margin:"0 0 8px" }}>Lopende timers</p>
-                {eiTimers.map(t => {
+                {keukenTimers.map(t => {
                   const resterend = Math.max(0, Math.ceil((t.eindTijd - Date.now()) / 1000));
                   const klaar = resterend === 0;
                   const voortgang = Math.min(1, Math.max(0, 1 - resterend / t.duurSeconden));
                   return (
                     <div key={t.id} style={{ background: klaar ? `${C.green}15` : C.card, border:`1px solid ${klaar ? C.green : C.border}`, borderRadius:12, padding:"10px 14px", marginBottom:8 }}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                        <span style={{ fontWeight:700, fontSize:14, color:klaar ? C.green : C.text }}>{klaar ? "✅ " : "🥚 "}{t.naam}</span>
+                        <span style={{ fontWeight:700, fontSize:14, color:klaar ? C.green : C.text }}>{klaar ? "✅ " : t.type === "steak" ? "🥩 " : "🥚 "}{t.naam}</span>
                         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                           <span style={{ fontVariantNumeric:"tabular-nums", fontWeight:700, fontSize:15, color:klaar ? C.green : C.orange }}>
                             {klaar ? "Klaar!" : `${String(Math.floor(resterend/60)).padStart(2,"0")}:${String(resterend%60).padStart(2,"0")}`}
@@ -1542,7 +1676,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.55)", zIndex:100, display:"flex", alignItems:"flex-end" }} onClick={() => { setShowPlanOverlay(false); setPlanZoek(""); }}>
           <div style={{ background:"#FFF", width:"100%", maxHeight:"80vh", overflowY:"auto", padding:"20px 20px 36px", borderTopLeftRadius:20, borderTopRightRadius:20, boxSizing:"border-box" }} onClick={e => e.stopPropagation()}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
-              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.orange }}>📅 {planDag} — {planMoment}</p>
+              <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.orange }}>{planMoment === "Jimmy" ? "👦 Apart voor Jimmy" : "📅 Avondeten"} — {planDag}</p>
               <button onClick={() => { setShowPlanOverlay(false); setPlanZoek(""); }} aria-label="Sluiten"
                 style={{ background:"none", border:"none", cursor:"pointer", padding:4 }}>
                 <X size={18} color={C.muted} />
@@ -1585,10 +1719,62 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                 </button>
               )}
             </div>
-            <p style={{ fontSize:13, color:C.muted, margin:"0 0 16px", lineHeight:1.6 }}>
-              De AI-kok kiest 7 gevarieerde diners uit je eigen receptenbibliotheek (verschillende keukens) en plant ze in als diner voor Maandag t/m Zondag van de huidige week.
-              Bestaande diner-planningen voor deze week worden overschreven.
+            <p style={{ fontSize:13, color:C.muted, margin:"0 0 12px", lineHeight:1.6 }}>
+              De AI-kok vult alleen de nog <strong>open</strong> dagen van deze week in — dagen die je zelf al hebt ingepland (bijvoorbeeld een vaste terugkerende favoriet) blijven gewoon staan.
             </p>
+            {(() => {
+              const vasteDagenPreview = DAGEN.filter(dag => weekmenu[weekKey(dag, "Diner")]);
+              const openDagenPreview = DAGEN.filter(dag => !weekmenu[weekKey(dag, "Diner")]);
+              return (
+                <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+                  {vasteDagenPreview.length > 0 && (
+                    <span style={{ fontSize:11, background:`${C.green}15`, color:C.green, borderRadius:20, padding:"4px 10px", fontWeight:600 }}>
+                      🔒 {vasteDagenPreview.length} dag{vasteDagenPreview.length===1?"":"en"} al vast
+                    </span>
+                  )}
+                  <span style={{ fontSize:11, background:`${C.orange}15`, color:C.orange, borderRadius:20, padding:"4px 10px", fontWeight:600 }}>
+                    ✨ {openDagenPreview.length} dag{openDagenPreview.length===1?"":"en"} open voor AI
+                  </span>
+                </div>
+              );
+            })()}
+
+            <div style={{ display:"flex", gap:10, marginBottom:12 }}>
+              <div style={{ flex:1 }}>
+                <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>🥩 Keer vlees/vis</label>
+                <div style={{ display:"flex", alignItems:"center", border:`1px solid ${C.border}`, borderRadius:10 }}>
+                  <button style={{ background:"none", border:"none", fontSize:16, padding:"8px 12px", cursor:"pointer", color:C.orange }}
+                    onClick={() => setWeekVoorkeurVlees(v => Math.max(0, v-1))}>–</button>
+                  <span style={{ flex:1, textAlign:"center", fontWeight:700, fontSize:14 }}>{weekVoorkeurVlees}</span>
+                  <button style={{ background:"none", border:"none", fontSize:16, padding:"8px 12px", cursor:"pointer", color:C.orange }}
+                    onClick={() => setWeekVoorkeurVlees(v => Math.min(7, v+1))}>+</button>
+                </div>
+              </div>
+              <div style={{ flex:1 }}>
+                <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>🥬 Keer vegetarisch</label>
+                <div style={{ display:"flex", alignItems:"center", border:`1px solid ${C.border}`, borderRadius:10 }}>
+                  <button style={{ background:"none", border:"none", fontSize:16, padding:"8px 12px", cursor:"pointer", color:C.orange }}
+                    onClick={() => setWeekVoorkeurVega(v => Math.max(0, v-1))}>–</button>
+                  <span style={{ flex:1, textAlign:"center", fontWeight:700, fontSize:14 }}>{weekVoorkeurVega}</span>
+                  <button style={{ background:"none", border:"none", fontSize:16, padding:"8px 12px", cursor:"pointer", color:C.orange }}
+                    onClick={() => setWeekVoorkeurVega(v => Math.min(7, v+1))}>+</button>
+                </div>
+              </div>
+            </div>
+            {(weekVoorkeurVlees + weekVoorkeurVega) > 7 && (
+              <p style={{ fontSize:11, color:C.red, margin:"-6px 0 12px" }}>⚠️ Samen meer dan 7 dagen — de AI komt zo dicht mogelijk in de buurt, maar niet exact.</p>
+            )}
+            <p style={{ fontSize:10, color:C.muted, margin:"-4px 0 14px" }}>Geldt voor de hele week — vaste dagen tellen al mee, de AI vult alleen het verschil aan.</p>
+
+            <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:4 }}>⏱ Maximale bereidingstijd per dag</label>
+            <select style={{ ...S.inp, marginBottom:16 }} value={weekMaxTijd} onChange={e => setWeekMaxTijd(+e.target.value)}>
+              <option value={0}>Geen limiet</option>
+              <option value={20}>≤ 20 minuten</option>
+              <option value={30}>≤ 30 minuten</option>
+              <option value={45}>≤ 45 minuten</option>
+              <option value={60}>≤ 60 minuten</option>
+            </select>
+
             <button style={{ ...S.btn(C.orange), width:"100%" }} onClick={stelWeekmenuVoor} disabled={weekSuggestieLoading}>
               {weekSuggestieLoading ? "🤖 Menu wordt bedacht…" : "✨ Weekmenu voorstellen en inplannen"}
             </button>
@@ -1761,11 +1947,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
           <Link href="/" style={S.switchBtn}>← Overzicht</Link>
           <h1 style={S.title}>🍽️ Maaltijden</h1>
         </div>
-        <button onClick={() => setShowEiTimer(true)} style={{ position:"relative", background:C.card, border:`1px solid ${C.border}`, borderRadius:12, width:44, height:44, fontSize:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Eierkookwekker">
-          🥚
-          {eiTimers.length > 0 && (
+        <button onClick={() => setShowEiTimer(true)} style={{ position:"relative", background:C.card, border:`1px solid ${C.border}`, borderRadius:12, width:44, height:44, fontSize:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Kookwekkers">
+          ⏱
+          {keukenTimers.length > 0 && (
             <span style={{ position:"absolute", top:-4, right:-4, background:C.orange, color:"#FFF", borderRadius:"50%", width:18, height:18, fontSize:10, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>
-              {eiTimers.length}
+              {keukenTimers.length}
             </span>
           )}
         </button>
@@ -1801,21 +1987,41 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                     const key = weekKey(dag, moment);
                     const recept = recepten.find(r => r.id === weekmenu[key]);
                     const alGemaaktVandaag = recept && (recept.dagboek || []).some(e => e.datum === dagDatumStr);
+                    const isJimmy = moment === "Jimmy";
+
+                    // Jimmy's aparte gerecht is optioneel: staat er niks, dan
+                    // gewoon een klein onopvallend linkje in plaats van een
+                    // volle rij — de meeste dagen eet hij toch gewoon mee.
+                    if (isJimmy && !recept) {
+                      return (
+                        <button key={moment} onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}
+                          style={{ display:"block", background:"none", border:"none", padding:"4px 0 2px", cursor:"pointer", fontSize:11, color:C.muted, textAlign:"left" }}>
+                          + Apart voor Jimmy
+                        </button>
+                      );
+                    }
+
                     return (
                       <div key={moment} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
-                        <span style={{ fontSize:12, color:C.muted, width:56, cursor:"pointer" }}
-                          onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>{moment}</span>
+                        <span style={{ fontSize:15, cursor:"pointer" }}
+                          onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>{isJimmy ? "👦" : "🍽️"}</span>
                         {recept
-                          ? <span style={{ flex:1, fontSize:13, fontWeight:600, color:C.text, cursor:"pointer" }}
+                          ? <span style={{ flex:1, fontSize:14, fontWeight:600, color:C.text, cursor:"pointer" }}
                               onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>{recept.naam}</span>
-                          : <span style={{ flex:1, fontSize:13, color:C.muted, cursor:"pointer", fontStyle:"italic" }}
-                              onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>+ Plannen</span>}
+                          : <span style={{ flex:1, fontSize:14, color:C.muted, cursor:"pointer", fontStyle:"italic" }}
+                              onClick={() => { setPlanDag(dag); setPlanMoment(moment); setShowPlanOverlay(true); }}>+ Avondeten plannen</span>}
                         {recept && <span style={{ fontSize:11, color:C.muted }}>⏱{recept.bereidingstijd}m</span>}
                         {recept && (
                           <button onClick={() => markeerGemaakt(recept, "", dagDatumStr)} disabled={alGemaaktVandaag}
                             title={alGemaaktVandaag ? "Al gemaakt op deze dag" : "Markeer als gemaakt"}
                             style={{ background:"none", border:"none", cursor: alGemaaktVandaag ? "default" : "pointer", fontSize:16, padding:2, opacity: alGemaaktVandaag ? 1 : 0.4 }}>
                             {alGemaaktVandaag ? "✅" : "⬜"}
+                          </button>
+                        )}
+                        {isJimmy && recept && (
+                          <button onClick={() => planRecept(dag, moment, null)} title="Jimmy eet toch hetzelfde — verwijder apart gerecht"
+                            style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, padding:2 }}>
+                            <X size={14} />
                           </button>
                         )}
                       </div>

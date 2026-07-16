@@ -4,7 +4,7 @@ import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
 const redis = Redis.fromEnv();
 const DATA_KEY = "huishouden:onderhoud";
 
-const EMPTY = { objecten: [], taken: [], projecten: [], projectTaken: [] };
+const EMPTY = { objecten: [], taken: [], projecten: [], projectTaken: [], mijlpalen: [] };
 
 export default async function handler(req, res) {
   const token = getSessionTokenFromReq(req);

@@ -3,11 +3,16 @@ const { laadFuncties } = require("./extractie");
 const { sectie, test } = require("./testhulp");
 
 const BESTAND = path.join(__dirname, "..", "pages", "onderhoud.js");
-const { dagPlus, dagVerschil, fmtDatum, berekenSchema } = laadFuncties(BESTAND, [
+const { dagPlus, dagVerschil, fmtDatum, berekenSchema, berekenKritiekPad } = laadFuncties(BESTAND, [
   /function dagPlus\(/,
   /function dagVerschil\(/,
   /function fmtDatum\(/,
+  /function isWeekend\(/,
+  /function naarWerkdag\(/,
+  /function werkdagPlus\(/,
+  /function werkdagMin\(/,
   /function berekenSchema\(/,
+  /function berekenKritiekPad\(/,
 ]);
 
 const START = "2026-08-01";
@@ -94,4 +99,60 @@ sectie("Verbouwplanning — verwijzing naar niet-bestaande taak crasht niet");
   let gelukt = false;
   try { berekenSchema(taken, START, true); gelukt = true; } catch {}
   test("crasht niet bij verwijzing naar verwijderde/niet-bestaande taak", gelukt);
+}
+
+sectie("Kritiek pad — bottleneck-tak is kritiek, snellere parallelle tak heeft speling");
+{
+  // A (2d) -> B (5d, bottleneck) -> D (2d)
+  //        -> C (1d, sneller)    ->
+  const taken = [
+    { id: "a", duurDagen: 2, afhankelijkheden: [] },
+    { id: "b", duurDagen: 5, afhankelijkheden: ["a"] },
+    { id: "c", duurDagen: 1, afhankelijkheden: ["a"] },
+    { id: "d", duurDagen: 2, afhankelijkheden: ["b", "c"] },
+  ];
+  const schema = berekenSchema(taken, START, true);
+  const speling = berekenKritiekPad(taken, schema);
+  test("A (voedt beide takken) zit op het kritieke pad", speling.a === 0);
+  test("B (de langzame/bepalende tak) zit op het kritieke pad", speling.b === 0);
+  test("D (eindtaak) zit op het kritieke pad", speling.d === 0);
+  test("C (de snellere, parallelle tak) heeft speling — is niet kritiek", speling.c > 0);
+  test("C heeft precies het verschil in tak-duur als speling (4 dagen)", speling.c === 4);
+}
+
+sectie("Kritiek pad — één enkele taak is altijd kritiek");
+{
+  const taken = [{ id: "a", duurDagen: 5, afhankelijkheden: [] }];
+  const schema = berekenSchema(taken, START, true);
+  const speling = berekenKritiekPad(taken, schema);
+  test("de enige taak in het project heeft geen speling", speling.a === 0);
+}
+
+sectie("Werkdagen — taak van 3 dagen die op vrijdag start, is pas woensdag klaar (weekend overgeslagen)");
+{
+  // 2026-07-31 is een vrijdag, 2026-08-05 is de daaropvolgende woensdag.
+  const taken = [{ id: "a", duurDagen: 3, afhankelijkheden: [] }];
+  const kalender = berekenSchema(taken, "2026-07-31", true, false);
+  const werkdagen = berekenSchema(taken, "2026-07-31", true, true);
+  test("kalenderdagen: vrijdag + 3 dagen = maandag (loopt door het weekend)", fmtDatum(kalender.a.eind) === "2026-08-03");
+  test("werkdagen: vrijdag + 3 werkdagen = woensdag (weekend overgeslagen)", fmtDatum(werkdagen.a.eind) === "2026-08-05");
+}
+
+sectie("Werkdagen — start op een weekend schuift automatisch naar de eerstvolgende maandag");
+{
+  // 2026-08-01 is een zaterdag, 2026-08-03 is de eerstvolgende maandag.
+  const taken = [{ id: "a", duurDagen: 2, afhankelijkheden: [] }];
+  const werkdagen = berekenSchema(taken, "2026-08-01", true, true);
+  test("start schuift van zaterdag naar maandag", fmtDatum(werkdagen.a.start) === "2026-08-03");
+  test("eind is maandag + 2 werkdagen = woensdag", fmtDatum(werkdagen.a.eind) === "2026-08-05");
+}
+
+sectie("Werkdagen — cascade werkt ook correct door met werkdagen-modus aan");
+{
+  const taken = [
+    { id: "a", duurDagen: 3, afhankelijkheden: [] },
+    { id: "b", duurDagen: 2, afhankelijkheden: ["a"] },
+  ];
+  const werkdagen = berekenSchema(taken, "2026-07-31", true, true); // vrijdag start
+  test("b start exact waar a (in werkdagen) eindigt", fmtDatum(werkdagen.b.start) === fmtDatum(werkdagen.a.eind));
 }
