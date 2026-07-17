@@ -462,19 +462,23 @@ function detectRecurring(expenses) {
 function nettoExpensesFilter(expenses) {
   const maandenMetItemisatie = new Set(expenses.filter(e => e.bron === "creditcard").map(e => e.month));
   return expenses.filter(e =>
+    !e.genegeerd &&
     !(e.category === "Afschrijving creditcard" && e.bron !== "creditcard" && maandenMetItemisatie.has(e.month))
   );
 }
 
-// Herkent interne overboekingen (sparen, beleggen, gezamenlijke rekening) op
-// basis van de OMSCHRIJVING zelf, niet alleen de opgeslagen categorie. Nodig
-// omdat een transactie soms al maanden geleden is geïmporteerd met een
-// verouderde categorie-gok (bv. vóór een categorie-regel bestond) — de
-// categorie op de transactie zelf verandert dan niet met terugwerkende
-// kracht mee, ook al zou een nieuwe import het nu wél goed herkennen.
-const OVERBOEKING_PATROON = /spaarrekening|opbouwspaar|\bsparen\b|spaarpot|\bpeaks\b|derdengeld|beheer derden|vermogensbeheer|beleggingsrekening|effectenrekening|\binleg\b|naar gezamenlijk|extra inleg/i;
+// Herkent interne overboekingen naar sparen/beleggen op basis van de
+// OMSCHRIJVING zelf, niet alleen de opgeslagen categorie. Nodig omdat een
+// transactie soms al maanden geleden is geïmporteerd met een verouderde
+// categorie-gok (bv. vóór een categorie-regel bestond) — de categorie op de
+// transactie zelf verandert dan niet met terugwerkende kracht mee, ook al
+// zou een nieuwe import het nu wél goed herkennen.
+// Let op: de vaste overdracht naar de Gezamenlijke rekening telt WEL mee als
+// terugkerende kost — dat is voor de inbrenger een echte, vaste maandelijkse
+// afdracht, ook al blijft het geld binnen het huishouden.
+const OVERBOEKING_PATROON = /spaarrekening|opbouwspaar|\bsparen\b|spaarpot|\bpeaks\b|derdengeld|beheer derden|vermogensbeheer|beleggingsrekening|effectenrekening/i;
 function isVermoedelijkOverboeking(naam, categorie) {
-  if (categorie === "Sparen" || categorie === "Gezamenlijke rekening") return true;
+  if (categorie === "Sparen") return true;
   return OVERBOEKING_PATROON.test(naam || "");
 }
 
@@ -901,6 +905,12 @@ export default function BudgetApp() {
     setExpenses(prev => prev.map(e => e.id === id ? { ...e, fixed: !e.fixed } : e));
     const item = expenses.find(e => e.id === id);
     if (item) showToast(item.fixed ? `${item.name} is geen vaste last meer` : `✅ ${item.name} is nu een vaste last`);
+  }
+
+  function toggleGenegeerd(id) {
+    setExpenses(prev => prev.map(e => e.id === id ? { ...e, genegeerd: !e.genegeerd } : e));
+    const item = expenses.find(e => e.id === id);
+    if (item) showToast(item.genegeerd ? `${item.name} telt weer mee` : `🚫 ${item.name} genegeerd — telt nergens meer mee`);
   }
 
   function delExpense(id) {
@@ -2629,21 +2639,26 @@ export default function BudgetApp() {
                           const overlaptCreditcard = e.category === "Afschrijving creditcard" && e.bron !== "creditcard"
                             && expenses.some(x => x.bron === "creditcard" && x.month === e.month);
                           return (
-                            <div key={e.id} style={{ padding:"8px 14px 8px 32px", display:"flex", alignItems:"flex-start", gap:8, borderTop:`1px solid ${C.border}`, opacity:overlaptCreditcard?0.6:1 }}>
+                            <div key={e.id} style={{ padding:"8px 14px 8px 32px", display:"flex", alignItems:"flex-start", gap:8, borderTop:`1px solid ${C.border}`, opacity:(overlaptCreditcard||e.genegeerd)?0.55:1 }}>
                               <div style={{ flex:1, minWidth:0 }}>
-                                <span style={{ fontSize:13 }}>{e.name}</span>
+                                <span style={{ fontSize:13, textDecoration:e.genegeerd?"line-through":"none" }}>{e.name}</span>
                                 {e.note && <div style={{ fontSize:11, color:C.muted, fontStyle:"italic", marginTop:2 }}>📝 {e.note}</div>}
                                 {overlaptCreditcard && <div style={{ fontSize:10, color:C.orange, marginTop:2 }}>⚠️ Niet meegeteld — al uitgesplitst via creditcard-import</div>}
+                                {e.genegeerd && <div style={{ fontSize:10, color:C.red, marginTop:2 }}>🚫 Genegeerd — telt nergens meer mee (eenmalige/ruis-afboeking)</div>}
                               </div>
                               <span style={{ fontSize:11, color:C.muted }}>{fmtM(e.month)}</span>
                               <button onClick={()=>toggleFixed(e.id)} title="Tik om vaste last aan/uit te zetten"
                                 style={{ fontSize:10, background:e.fixed?`${C.accent}22`:"transparent", color:e.fixed?C.accent:C.muted, border:`1px solid ${e.fixed?C.accent:C.border}`, padding:"2px 7px", borderRadius:8, cursor:"pointer", whiteSpace:"nowrap" }}>
                                 {e.fixed ? "✓ vast" : "+ vast"}
                               </button>
+                              <button onClick={()=>toggleGenegeerd(e.id)} title="Tik om deze afboeking wel/niet mee te tellen"
+                                style={{ fontSize:10, background:e.genegeerd?`${C.red}22`:"transparent", color:e.genegeerd?C.red:C.muted, border:`1px solid ${e.genegeerd?C.red:C.border}`, padding:"2px 7px", borderRadius:8, cursor:"pointer", whiteSpace:"nowrap" }}>
+                                {e.genegeerd ? "🚫 genegeerd" : "negeer"}
+                              </button>
                               {e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>🔁</span>}
                               {e.fromBank  && <span style={{ fontSize:10, background:`${C.green}22`,  color:C.green,  padding:"1px 6px", borderRadius:8 }}>bank</span>}
                               <WieBadge persoon={e.addedBy} tijdstip={e.addedAt} />
-                              <span style={{ fontWeight:700, fontSize:13 }}>{euro(e.amount)}</span>
+                              <span style={{ fontWeight:700, fontSize:13, textDecoration:e.genegeerd?"line-through":"none" }}>{euro(e.amount)}</span>
                               <button onClick={()=>delExpense(e.id)} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:13 }}>×</button>
                             </div>
                           );
