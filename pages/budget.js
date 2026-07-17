@@ -1625,6 +1625,9 @@ export default function BudgetApp() {
             {(() => {
               const ymly = sameMonthLastYear(selectedMonth);
               const heeftData = expenses.some(e => e.month === ymly);
+              const alleMaanden = [...new Set(expenses.map(e=>e.month))].sort();
+              const eersteMaand = alleMaanden[0];
+              const eersteMaandPlusJaar = eersteMaand ? `${+eersteMaand.slice(0,4)+1}-${eersteMaand.slice(5)}` : null;
               const inScope = e => !drillCat || e.category === drillCat;
               const totaalNu   = nettoExpenses.filter(e => e.month === selectedMonth && inScope(e)).reduce((s,e)=>s+e.amount,0);
               const totaalVorig = nettoExpenses.filter(e => e.month === ymly && inScope(e)).reduce((s,e)=>s+e.amount,0);
@@ -1633,7 +1636,11 @@ export default function BudgetApp() {
                 <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
                   <h3 style={{ margin:"0 0 6px", fontSize:13, fontWeight:700 }}>📅 Jaar-op-jaar{drillCat?`: ${drillCat}`:""}</h3>
                   {!heeftData ? (
-                    <p style={{ margin:0, fontSize:12, color:C.muted }}>Nog geen data van {fmtM(ymly)} — komt vanzelf zodra jullie een jaar verder zijn.</p>
+                    <p style={{ margin:0, fontSize:12, color:C.muted }}>
+                      {eersteMaand && ymly < eersteMaand
+                        ? `Jullie data begint bij ${fmtM(eersteMaand)} — ${fmtM(ymly)} valt daarvoor, dus die maand kan nooit vergeleken worden. Vanaf ${fmtM(eersteMaandPlusJaar)} werkt de jaar-op-jaar-vergelijking (zodra jullie een vol jaar bijhouden).`
+                        : `Nog geen data van ${fmtM(ymly)} — komt vanzelf zodra jullie een jaar verder zijn.`}
+                    </p>
                   ) : (
                     <div style={{ display:"flex", alignItems:"center", gap:14 }}>
                       <div>
