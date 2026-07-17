@@ -323,6 +323,38 @@ const last6Months = ym => {
 // Dezelfde maand, één jaar eerder — voor jaar-op-jaar vergelijking.
 const sameMonthLastYear = ym => { const [y,m] = ym.split("-").map(Number); return `${y-1}-${String(m).padStart(2,"0")}`; };
 
+// Totaal inkomen voor een specifieke maand, rekening houdend met
+// salarisveranderingen. Zoekt de meest recente wijziging die "vanaf" die
+// maand of eerder ingaat; is er geen enkele geregistreerde wijziging (of
+// geen enkele van vóór/op deze maand), dan valt hij terug op het huidige
+// ingestelde inkomen — zo hoeft niemand met terugwerkende kracht alles in te vullen.
+function incomeForMonth(incomeHistory, incomes, maand) {
+  const relevant = (incomeHistory||[])
+    .filter(h => h.vanafMaand && h.vanafMaand <= maand)
+    .sort((a,b) => b.vanafMaand.localeCompare(a.vanafMaand));
+  if (relevant.length > 0) return (relevant[0].p1||0) + (relevant[0].p2||0);
+  return (incomes?.p1||0) + (incomes?.p2||0);
+}
+
+// Eenmalige extra inkomsten (vakantiegeld, bonus, teruggave belasting…) — in
+// tegenstelling tot een salarisverandering geldt dit ALLEEN voor de maand
+// zelf, niet voor alle maanden daarna. Met "herhaaltJaarlijks" (bv.
+// vakantiegeld dat elk jaar in mei komt) telt hij ook mee in latere jaren,
+// zolang het jaartal niet vóór het startjaar van de eerste registratie ligt.
+function extraInkomenVoorMaand(extraInkomsten, maand) {
+  const [qJaar, qMaand] = maand.split("-").map(Number);
+  return (extraInkomsten||[]).filter(x => {
+    if (!x.maand) return false;
+    const [xJaar, xMaand] = x.maand.split("-").map(Number);
+    if (x.herhaaltJaarlijks) return xMaand === qMaand && qJaar >= xJaar;
+    return x.maand === maand;
+  }).reduce((s,x) => s + (+x.bedrag||0), 0);
+}
+
+function totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, maand) {
+  return incomeForMonth(incomeHistory, incomes, maand) + extraInkomenVoorMaand(extraInkomsten, maand);
+}
+
 const fmtM = ym => { const [y,m] = ym.split("-"); return `${["Jan","Feb","Mrt","Apr","Mei","Jun","Jul","Aug","Sep","Okt","Nov","Dec"][+m-1]} '${y.slice(2)}`; };
 const euro  = n  => `€${(+n).toLocaleString("nl-NL",{minimumFractionDigits:0,maximumFractionDigits:0})}`;
 const uid   = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -371,9 +403,9 @@ function periodLabel(p, maand = NOW_MONTH) {
   return `${mYear}`;
 }
 
-function buildAlerts(expenses, budgets, savingsGoals, incomes, maand = NOW_MONTH) {
+function buildAlerts(expenses, budgets, savingsGoals, incomes, maand = NOW_MONTH, incomeHistory = [], extraInkomsten = []) {
   const alerts = [];
-  const totalIncome = incomes.p1+incomes.p2;
+  const totalIncome = totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, maand);
   budgets.forEach(b => {
     const spent = computeSpent(b, expenses, maand);
     const pct = b.amount > 0 ? spent/b.amount : 0;
@@ -416,6 +448,21 @@ function detectRecurring(expenses) {
   const groups={};
   expenses.forEach(e=>{const k=`${e.name}|${e.account}|${e.category}`;(groups[k]=groups[k]||[]).push(e.month);});
   return new Set(Object.entries(groups).filter(([,m])=>m.length>=3).map(([k])=>k));
+}
+
+// Een creditcard-CSV is een UITSPLITSING van een bedrag dat al als één losse
+// regel "Afschrijving creditcard" via de bank-CSV is binnengekomen (de
+// bank ziet alleen de totale afschrijving, niet de losse aankopen erachter).
+// Zodra voor een maand de losse creditcard-aankopen zijn geïmporteerd
+// (bron:"creditcard"), telt de oorspronkelijke bank-verzamelregel dus niet
+// meer als aparte kostenpost mee — anders wordt hetzelfde bedrag dubbel
+// geteld. De ruwe regel blijft gewoon zichtbaar/bewerkbaar in Uitgaven; deze
+// functie wordt alleen gebruikt voor totalen, budgetten, meldingen en grafieken.
+function nettoExpensesFilter(expenses) {
+  const maandenMetItemisatie = new Set(expenses.filter(e => e.bron === "creditcard").map(e => e.month));
+  return expenses.filter(e =>
+    !(e.category === "Afschrijving creditcard" && e.bron !== "creditcard" && maandenMetItemisatie.has(e.month))
+  );
 }
 
 // ── Data ophalen/opslaan via eigen API-route (Upstash Redis) ─────────────────
@@ -495,6 +542,13 @@ export default function BudgetApp() {
   const [themeName, setThemeNameState] = useState("dark");
   const [names,        setNamesState]        = useState({ p1:"Partner 1", p2:"Partner 2" });
   const [incomes,      setIncomesState]      = useState({ p1:0, p2:0, bijdrage_p1:0, bijdrage_p2:0, kinderbijslag:0 });
+  // Salarisveranderingen: elke wijziging geldt vanaf een bepaalde maand, zodat
+  // historische maanden met het toen geldende inkomen worden doorgerekend
+  // i.p.v. altijd met het huidige bedrag.
+  const [incomeHistory, setIncomeHistoryState] = useState([]);
+  // Eenmalige extra inkomsten (vakantiegeld, bonus, teruggave) — apart van
+  // incomeHistory omdat dit geen blijvende verhoging is, maar een bult in één specifieke maand.
+  const [extraInkomsten, setExtraInkomstenState] = useState([]);
   const [expenses,     setExpensesState]     = useState([]);
   const [budgets,      setBudgetsState]      = useState([]);
   const [receipts,     setReceiptsState]     = useState([]);
@@ -532,6 +586,8 @@ export default function BudgetApp() {
       theme: patch.theme ?? themeName,
       names: patch.names ?? names,
       incomes: patch.incomes ?? incomes,
+      incomeHistory: patch.incomeHistory ?? incomeHistory,
+      extraInkomsten: patch.extraInkomsten ?? extraInkomsten,
       expenses: patch.expenses ?? expenses,
       budgets: patch.budgets ?? budgets,
       receipts: patch.receipts ?? receipts,
@@ -547,6 +603,8 @@ export default function BudgetApp() {
     if (patch.theme !== undefined) setThemeNameState(patch.theme);
     if (patch.names !== undefined) setNamesState(patch.names);
     if (patch.incomes !== undefined) setIncomesState(patch.incomes);
+    if (patch.incomeHistory !== undefined) setIncomeHistoryState(patch.incomeHistory);
+    if (patch.extraInkomsten !== undefined) setExtraInkomstenState(patch.extraInkomsten);
     if (patch.expenses !== undefined) setExpensesState(patch.expenses);
     if (patch.budgets !== undefined) setBudgetsState(patch.budgets);
     if (patch.receipts !== undefined) setReceiptsState(patch.receipts);
@@ -558,12 +616,14 @@ export default function BudgetApp() {
     if (patch.tasks !== undefined) setTasksState(patch.tasks);
     if (patch.bijst !== undefined) setBijstState(patch.bijst);
     saveBudgetData(next);
-  }, [setupDone, themeName, names, incomes, expenses, budgets, receipts, savingsGoals, tasks, bijst, laatsteBankImport, ibanMap, categorieMap, bekendeIbans]);
+  }, [setupDone, themeName, names, incomes, incomeHistory, extraInkomsten, expenses, budgets, receipts, savingsGoals, tasks, bijst, laatsteBankImport, ibanMap, categorieMap, bekendeIbans]);
 
   // Kleine helper-setters die op dezelfde manier werken als de oude setX(updater)-vorm,
   // zodat de rest van de component-logica grotendeels ongewijzigd kan blijven.
   const setNames        = (updater) => persist({ names: typeof updater === "function" ? updater(names) : updater });
   const setIncomes      = (updater) => persist({ incomes: typeof updater === "function" ? updater(incomes) : updater });
+  const setIncomeHistory = (updater) => persist({ incomeHistory: typeof updater === "function" ? updater(incomeHistory) : updater });
+  const setExtraInkomsten = (updater) => persist({ extraInkomsten: typeof updater === "function" ? updater(extraInkomsten) : updater });
   const setExpenses     = (updater) => persist({ expenses: typeof updater === "function" ? updater(expenses) : updater });
   const setBudgets      = (updater) => persist({ budgets: typeof updater === "function" ? updater(budgets) : updater });
   const setReceipts     = (updater) => persist({ receipts: typeof updater === "function" ? updater(receipts) : updater });
@@ -588,6 +648,8 @@ export default function BudgetApp() {
         setThemeNameState(data.theme || "dark");
         setNamesState(data.names);
         setIncomesState(data.incomes);
+        setIncomeHistoryState(data.incomeHistory || []);
+        setExtraInkomstenState(data.extraInkomsten || []);
         setExpensesState(data.expenses || []);
         setBudgetsState(data.budgets || []);
         setReceiptsState(data.receipts || []);
@@ -640,6 +702,10 @@ export default function BudgetApp() {
   const [expForm,      setExpForm]      = useState({ name:"", amount:"", category:CATEGORIES[0], account:"p1", month:NOW_MONTH, fixed:false, recurring:false, note:"" });
   const [bForm,        setBForm]        = useState({ category:"Kleding", period:"kwartaal", amount:"", account:"alle", note:"" });
   const [showBForm,    setShowBForm]    = useState(false);
+  const [incomeHistoryForm, setIncomeHistoryForm] = useState({ vanafMaand: NOW_MONTH, p1:"", p2:"", note:"" });
+  const [showIncomeHistoryForm, setShowIncomeHistoryForm] = useState(false);
+  const [extraInkomstenForm, setExtraInkomstenForm] = useState({ maand: NOW_MONTH, bedrag:"", omschrijving:"", herhaaltJaarlijks:false });
+  const [showExtraInkomstenForm, setShowExtraInkomstenForm] = useState(false);
   const [drillCat,     setDrillCat]     = useState(null);
   const _prevMonth = prevMonth(NOW_MONTH);
   const [cmpMonth,     setCmpMonth]     = useState(_prevMonth);
@@ -662,11 +728,16 @@ export default function BudgetApp() {
     + (incomes.kinderbijslag||0)
     + (bijst||[]).filter(b => b.datum?.startsWith(selectedMonth)).reduce((s,b) => s+b.bedrag, 0);
 
+  // Voor totalen/budgetten/meldingen/grafieken: dubbeltelling van creditcard-
+  // afschrijvingen eruit. De rauwe `expenses` blijft de bron van waarheid voor
+  // de Uitgaven-lijst zelf (bewerken/verwijderen werkt op de echte data).
+  const nettoExpenses = useMemo(() => nettoExpensesFilter(expenses), [expenses]);
+
   const totalByAccount = useMemo(() => {
     const t = { gezamenlijk:0, p1:0, p2:0 };
-    expenses.filter(e => e.month === selectedMonth).forEach(e => { t[e.account] = (t[e.account]||0) + e.amount; });
+    nettoExpenses.filter(e => e.month === selectedMonth).forEach(e => { t[e.account] = (t[e.account]||0) + e.amount; });
     return t;
-  }, [expenses, selectedMonth]);
+  }, [nettoExpenses, selectedMonth]);
 
   const filteredExpenses = useMemo(() =>
     activeAcc === "alle" ? expenses : expenses.filter(e => e.account === activeAcc),
@@ -674,31 +745,36 @@ export default function BudgetApp() {
 
   const byCat = useMemo(() => {
     const m = {};
-    expenses.filter(e => e.month === selectedMonth).forEach(e => { m[e.category] = (m[e.category]||0) + e.amount; });
+    nettoExpenses.filter(e => e.month === selectedMonth).forEach(e => { m[e.category] = (m[e.category]||0) + e.amount; });
     return Object.entries(m).map(([name,value]) => ({name,value})).sort((a,b) => b.value - a.value);
-  }, [expenses, selectedMonth]);
+  }, [nettoExpenses, selectedMonth]);
 
   const byCatPrev = useMemo(() => {
     const m = {};
-    expenses.filter(e => e.month === cmpMonth).forEach(e => { m[e.category] = (m[e.category]||0) + e.amount; });
+    nettoExpenses.filter(e => e.month === cmpMonth).forEach(e => { m[e.category] = (m[e.category]||0) + e.amount; });
     return m;
-  }, [expenses, cmpMonth]);
+  }, [nettoExpenses, cmpMonth]);
 
   const alerts = useMemo(() =>
-    buildAlerts(expenses, budgets, savingsGoals || [], incomes, selectedMonth),
-  [expenses, budgets, savingsGoals, incomes, selectedMonth]);
+    buildAlerts(nettoExpenses, budgets, savingsGoals || [], incomes, selectedMonth, incomeHistory, extraInkomsten),
+  [nettoExpenses, budgets, savingsGoals, incomes, selectedMonth, incomeHistory, extraInkomsten]);
 
-  const recurring = useMemo(() => detectRecurring(expenses), [expenses]);
+  const recurring = useMemo(() => detectRecurring(nettoExpenses), [nettoExpenses]);
 
   const budgetsWithSpent = useMemo(() =>
-    budgets.map(b => ({ ...b, spent: computeSpent(b, expenses, selectedMonth), pLabel: periodLabel(b.period, selectedMonth) })),
-  [budgets, expenses, selectedMonth]);
+    budgets.map(b => ({ ...b, spent: computeSpent(b, nettoExpenses, selectedMonth), pLabel: periodLabel(b.period, selectedMonth) })),
+  [budgets, nettoExpenses, selectedMonth]);
 
   // ── Toast ─────────────────────────────────────────────────────────────────
   function showToast(msg, col=null) { setToast(msg); setToastColor(col); setTimeout(() => { setToast(null); setToastColor(null); }, 2800); }
 
   // ── Terugkerende uitgaven automatisch toevoegen ───────────────────────────
+  // Moet draaien NÁDAT de data uit Redis binnen is — bij het allereerste
+  // mount-moment is `expenses` nog altijd leeg (die fetch is async), dus dit
+  // hangt bewust aan `loading` (wordt precies één keer false na de eerste
+  // succesvolle laadbeurt) in plaats van aan een lege dependency-array.
   useEffect(() => {
+    if (loading) return;
     if (!expenses.length) return;
     const recurring = expenses.filter(e => e.recurring && e.month !== NOW_MONTH);
     if (!recurring.length) return;
@@ -716,7 +792,7 @@ export default function BudgetApp() {
       ...prev,
       ...nieuweItems.map(e => ({ ...e, id: uid(), month: NOW_MONTH, fromBank: false })),
     ]);
-  }, []);  // eslint-disable-line — alleen bij mount
+  }, [loading]);  // eslint-disable-line — alleen als loading van true naar false gaat
 
   // ── CSV-export ────────────────────────────────────────────────────────────
   function exporteerCSV() {
@@ -799,6 +875,50 @@ export default function BudgetApp() {
   function delBudget(id) { setBudgets(prev => prev.filter(b => b.id !== id)); }
   function updateNote(id, note) { setExpenses(prev => prev.map(e => e.id===id ? {...e,note} : e)); setEditNote(null); showToast("✅ Notitie opgeslagen"); }
   function addGoal() { if(!goalForm.name||!goalForm.target) return; setSavingsGoals(p=>[...p,{...goalForm,id:uid(),target:+goalForm.target,current:+goalForm.current||0}]); setGoalForm({name:"",target:"",current:"0",deadline:"",account:"gezamenlijk",icon:"🎯"}); showToast("✅ Spaardoel toegevoegd"); }
+
+  function addIncomeHistory() {
+    if (!incomeHistoryForm.vanafMaand || (!incomeHistoryForm.p1 && !incomeHistoryForm.p2)) return;
+    const nieuw = {
+      id: uid(),
+      vanafMaand: incomeHistoryForm.vanafMaand,
+      p1: +incomeHistoryForm.p1 || 0,
+      p2: +incomeHistoryForm.p2 || 0,
+      note: incomeHistoryForm.note || "",
+    };
+    setIncomeHistory(p => [...p, nieuw]);
+    setIncomeHistoryForm({ vanafMaand: NOW_MONTH, p1:"", p2:"", note:"" });
+    setShowIncomeHistoryForm(false);
+    showToast("✅ Salarisverandering toegevoegd");
+  }
+  function delIncomeHistory(id) {
+    setIncomeHistory(p => p.filter(h => h.id !== id));
+  }
+
+  function addExtraInkomsten() {
+    if (!extraInkomstenForm.maand || !extraInkomstenForm.bedrag) return;
+    const nieuw = {
+      id: uid(),
+      maand: extraInkomstenForm.maand,
+      bedrag: +extraInkomstenForm.bedrag || 0,
+      omschrijving: extraInkomstenForm.omschrijving || "Extra inkomsten",
+      herhaaltJaarlijks: !!extraInkomstenForm.herhaaltJaarlijks,
+    };
+    setExtraInkomsten(p => [...p, nieuw]);
+    setExtraInkomstenForm({ maand: NOW_MONTH, bedrag:"", omschrijving:"", herhaaltJaarlijks:false });
+    setShowExtraInkomstenForm(false);
+    showToast("✅ Extra inkomsten toegevoegd");
+  }
+  function delExtraInkomsten(id) {
+    setExtraInkomsten(p => p.filter(x => x.id !== id));
+  }
+  // Snelkoppeling: vult meteen "mei" in — als mei van dit jaar al voorbij is,
+  // pakt hij volgend jaar. Bedrag en herhaling laat de gebruiker zelf kiezen.
+  function startVakantiegeldPreset() {
+    const nu = new Date();
+    const jaar = nu.getMonth() >= 4 ? nu.getFullYear() + 1 : nu.getFullYear(); // getMonth()===4 is mei (0-indexed)
+    setExtraInkomstenForm({ maand: `${jaar}-05`, bedrag:"", omschrijving:"Vakantiegeld", herhaaltJaarlijks:true });
+    setShowExtraInkomstenForm(true);
+  }
   function delGoal(id) { setSavingsGoals(p=>p.filter(g=>g.id!==id)); }
   function depositGoal(id, add) { setSavingsGoals(p=>p.map(g=>g.id===id?{...g,current:Math.min(g.target,g.current+add)}:g)); }
   function addTask() { if(!taskForm.title) return; setTasks(p=>[...p,{...taskForm,id:uid(),done:false}]); setTaskForm({title:"",due:"",account:"alle",priority:"middel"}); showToast("✅ Taak toegevoegd"); }
@@ -806,15 +926,19 @@ export default function BudgetApp() {
   function delTask(id) { setTasks(p=>p.filter(t=>t.id!==id)); }
 
   function confirmCSV(rows) {
+    if (csvImportingRef.current) return; // beschermt tegen een dubbele tik vóór de eerste herrender
+    csvImportingRef.current = true;
     persist({ expenses: [...expenses, ...rows], laatsteBankImport: Date.now() });
     setCsvImport(null);
     setCsvDubbelCount(0);
     showToast(`✅ ${rows.length} transacties ingeladen`);
     setTab("uitgaven");
+    csvImportingRef.current = false;
   }
 
   // ── CSV import ────────────────────────────────────────────────────────────
   const [csvDubbelCount, setCsvDubbelCount] = useState(0);
+  const csvImportingRef = useRef(false); // ref i.p.v. state: werkt synchroon, dus ook bestand tegen twee taps binnen dezelfde tick
   const [csvReviewPagina, setCsvReviewPagina] = useState(0);
   const [nieuweIbanInput, setNieuweIbanInput] = useState("");
   const [nieuweIbanCategorie, setNieuweIbanCategorie] = useState("Gezamenlijke rekening");
@@ -981,6 +1105,109 @@ export default function BudgetApp() {
               <span style={{ color:ACC_COL.gezamenlijk }}>€{((incomes.bijdrage_p1||0)+(incomes.bijdrage_p2||0)+(incomes.kinderbijslag||0)).toLocaleString("nl-NL")}/mnd</span>
             </div>
           </div>
+        </div>
+
+        {/* Salarisveranderingen */}
+        <div style={{ marginBottom:16, paddingTop:2 }}>
+          <div style={{ fontSize:12, color:C.text, fontWeight:700, marginBottom:4 }}>📈 Salarisveranderingen</div>
+          <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted, lineHeight:1.5 }}>
+            Loonsverhoging, nieuwe baan, ouderschapsverlof? Leg vast vanaf welke maand een ander inkomen gold — de tekort/overschot-berekening in Inzichten rekent daar dan automatisch mee.
+          </p>
+          {[...incomeHistory].sort((a,b) => b.vanafMaand.localeCompare(a.vanafMaand)).map(h => (
+            <div key={h.id} style={{ display:"flex", alignItems:"center", gap:8, background:C.card, borderRadius:9, padding:"8px 10px", marginBottom:6 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, fontWeight:700 }}>Vanaf {fmtM(h.vanafMaand)}</div>
+                <div style={{ fontSize:11, color:C.muted }}>{euro(h.p1)} + {euro(h.p2)} = {euro(h.p1+h.p2)}/mnd{h.note ? ` · ${h.note}` : ""}</div>
+              </div>
+              <button onClick={()=>delIncomeHistory(h.id)} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:14 }}>×</button>
+            </div>
+          ))}
+          {showIncomeHistoryForm ? (
+            <div style={{ background:C.card, borderRadius:10, padding:10 }}>
+              <label style={{ fontSize:10, color:C.muted, display:"block", marginBottom:3 }}>Vanaf maand</label>
+              <input style={{...S.inp, marginBottom:6}} type="month"
+                value={incomeHistoryForm.vanafMaand}
+                onChange={e=>setIncomeHistoryForm(p=>({...p,vanafMaand:e.target.value}))}/>
+              <div style={{ display:"flex", gap:6, marginBottom:6 }}>
+                <div style={{ flex:1 }}>
+                  <label style={{ fontSize:10, color:C.muted, display:"block", marginBottom:3 }}>{names.p1||"Partner 1"} €</label>
+                  <input style={S.inp} type="number" min="0" placeholder="0"
+                    value={incomeHistoryForm.p1}
+                    onChange={e=>setIncomeHistoryForm(p=>({...p,p1:e.target.value}))}/>
+                </div>
+                <div style={{ flex:1 }}>
+                  <label style={{ fontSize:10, color:C.muted, display:"block", marginBottom:3 }}>{names.p2||"Partner 2"} €</label>
+                  <input style={S.inp} type="number" min="0" placeholder="0"
+                    value={incomeHistoryForm.p2}
+                    onChange={e=>setIncomeHistoryForm(p=>({...p,p2:e.target.value}))}/>
+                </div>
+              </div>
+              <input style={{...S.inp, marginBottom:8}} placeholder="Notitie (optioneel, bv. 'loonsverhoging Pepijn')"
+                value={incomeHistoryForm.note}
+                onChange={e=>setIncomeHistoryForm(p=>({...p,note:e.target.value}))}/>
+              <div style={{ display:"flex", gap:6 }}>
+                <button style={{...S.btn(C.dim, C.text), flex:1, padding:"9px 0", fontSize:12}} onClick={()=>setShowIncomeHistoryForm(false)}>Annuleer</button>
+                <button style={{...S.btn(), flex:1, padding:"9px 0", fontSize:12}} onClick={addIncomeHistory}>Toevoegen</button>
+              </div>
+            </div>
+          ) : (
+            <button style={{ background:"none", border:`1px dashed ${C.border}`, borderRadius:9, padding:"9px 0", width:"100%", color:C.muted, fontSize:12, cursor:"pointer" }}
+              onClick={()=>setShowIncomeHistoryForm(true)}>
+              + Salarisverandering toevoegen
+            </button>
+          )}
+        </div>
+
+        {/* Eenmalige extra inkomsten */}
+        <div style={{ marginBottom:16, paddingTop:2 }}>
+          <div style={{ fontSize:12, color:C.text, fontWeight:700, marginBottom:4 }}>🎁 Eenmalige extra inkomsten</div>
+          <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted, lineHeight:1.5 }}>
+            Vakantiegeld, bonus, belastingteruggave — geldt alleen voor die ene maand, niet voor de maanden erna (in tegenstelling tot een salarisverandering hierboven).
+          </p>
+          {[...extraInkomsten].sort((a,b) => b.maand.localeCompare(a.maand)).map(x => (
+            <div key={x.id} style={{ display:"flex", alignItems:"center", gap:8, background:C.card, borderRadius:9, padding:"8px 10px", marginBottom:6 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, fontWeight:700 }}>{x.omschrijving} · {euro(x.bedrag)}</div>
+                <div style={{ fontSize:11, color:C.muted }}>{x.herhaaltJaarlijks ? `Elk jaar in ${fmtM(x.maand).split(" ")[0]}, vanaf ${x.maand.split("-")[0]}` : fmtM(x.maand)}</div>
+              </div>
+              <button onClick={()=>delExtraInkomsten(x.id)} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:14 }}>×</button>
+            </div>
+          ))}
+          {showExtraInkomstenForm ? (
+            <div style={{ background:C.card, borderRadius:10, padding:10 }}>
+              <label style={{ fontSize:10, color:C.muted, display:"block", marginBottom:3 }}>Maand</label>
+              <input style={{...S.inp, marginBottom:6}} type="month"
+                value={extraInkomstenForm.maand}
+                onChange={e=>setExtraInkomstenForm(p=>({...p,maand:e.target.value}))}/>
+              <label style={{ fontSize:10, color:C.muted, display:"block", marginBottom:3 }}>Bedrag (totaal, beide partners) €</label>
+              <input style={{...S.inp, marginBottom:6}} type="number" min="0" placeholder="0"
+                value={extraInkomstenForm.bedrag}
+                onChange={e=>setExtraInkomstenForm(p=>({...p,bedrag:e.target.value}))}/>
+              <input style={{...S.inp, marginBottom:6}} placeholder="Omschrijving (bv. Vakantiegeld)"
+                value={extraInkomstenForm.omschrijving}
+                onChange={e=>setExtraInkomstenForm(p=>({...p,omschrijving:e.target.value}))}/>
+              <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:11, color:C.muted, marginBottom:8, cursor:"pointer" }}>
+                <input type="checkbox" checked={extraInkomstenForm.herhaaltJaarlijks}
+                  onChange={e=>setExtraInkomstenForm(p=>({...p,herhaaltJaarlijks:e.target.checked}))}/>
+                Herhaalt elk jaar in deze maand (bv. vakantiegeld)
+              </label>
+              <div style={{ display:"flex", gap:6 }}>
+                <button style={{...S.btn(C.dim, C.text), flex:1, padding:"9px 0", fontSize:12}} onClick={()=>setShowExtraInkomstenForm(false)}>Annuleer</button>
+                <button style={{...S.btn(), flex:1, padding:"9px 0", fontSize:12}} onClick={addExtraInkomsten}>Toevoegen</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display:"flex", gap:6 }}>
+              <button style={{ background:"none", border:`1px dashed ${C.border}`, borderRadius:9, padding:"9px 0", flex:1, color:C.muted, fontSize:12, cursor:"pointer" }}
+                onClick={startVakantiegeldPreset}>
+                🏖️ Vakantiegeld
+              </button>
+              <button style={{ background:"none", border:`1px dashed ${C.border}`, borderRadius:9, padding:"9px 0", flex:1, color:C.muted, fontSize:12, cursor:"pointer" }}
+                onClick={()=>setShowExtraInkomstenForm(true)}>
+                + Anders
+              </button>
+            </div>
+          )}
         </div>
 
         <button style={{...S.btn(), width:"100%", padding:"11px", fontSize:14}}
@@ -1200,8 +1427,8 @@ export default function BudgetApp() {
               const ymly = sameMonthLastYear(selectedMonth);
               const heeftData = expenses.some(e => e.month === ymly);
               const inScope = e => !drillCat || e.category === drillCat;
-              const totaalNu   = expenses.filter(e => e.month === selectedMonth && inScope(e)).reduce((s,e)=>s+e.amount,0);
-              const totaalVorig = expenses.filter(e => e.month === ymly && inScope(e)).reduce((s,e)=>s+e.amount,0);
+              const totaalNu   = nettoExpenses.filter(e => e.month === selectedMonth && inScope(e)).reduce((s,e)=>s+e.amount,0);
+              const totaalVorig = nettoExpenses.filter(e => e.month === ymly && inScope(e)).reduce((s,e)=>s+e.amount,0);
               const delta = totaalVorig>0 ? (totaalNu-totaalVorig)/totaalVorig : null;
               return (
                 <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
@@ -1249,10 +1476,10 @@ export default function BudgetApp() {
                 </div>
               </div>
             ) : (()=>{
-              const catExp = expenses.filter(e=>e.category===drillCat&&e.month===selectedMonth).sort((a,b)=>b.amount-a.amount);
+              const catExp = nettoExpenses.filter(e=>e.category===drillCat&&e.month===selectedMonth).sort((a,b)=>b.amount-a.amount);
               const [selJ, selM] = selectedMonth.split("-").map(Number);
               const months = Array.from({length:6},(_,i)=>{const d=new Date(selJ,selM-1-i,1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;}).reverse();
-              const trendData = months.map(m=>({label:fmtM(m),total:expenses.filter(e=>e.category===drillCat&&e.month===m).reduce((s,e)=>s+e.amount,0)}));
+              const trendData = months.map(m=>({label:fmtM(m),total:nettoExpenses.filter(e=>e.category===drillCat&&e.month===m).reduce((s,e)=>s+e.amount,0)}));
               return <>
                 <div style={{ background:C.surf, borderRadius:13, border:`2px solid ${CAT_COL[drillCat]||C.accent}44`, overflow:"hidden" }}>
                   <div style={{ background:C.card, padding:"10px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -1462,19 +1689,23 @@ export default function BudgetApp() {
             {recurring.size > 0 && (
               <div style={{ background:C.surf, borderRadius:12, border:`1px solid ${C.border}`, padding:14, marginTop:4 }}>
                 <h3 style={{ margin:"0 0 10px", fontSize:13, fontWeight:700, color:C.text }}>↻ Terugkerende uitgaven</h3>
-                <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted }}>Automatisch herkend — 3+ maanden achter elkaar</p>
-                {[...recurring].slice(0,8).map(k => {
-                  const [name, account, category] = k.split("|");
-                  const last = expenses.filter(e=>e.name===name&&e.account===account).sort((a,b)=>b.month.localeCompare(a.month))[0];
-                  return last ? (
+                <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted }}>Automatisch herkend — 3+ maanden achter elkaar, recent nog voorgekomen</p>
+                {[...recurring]
+                  .map(k => {
+                    const [name, account, category] = k.split("|");
+                    const last = nettoExpenses.filter(e=>e.name===name&&e.account===account&&e.category===category).sort((a,b)=>b.month.localeCompare(a.month))[0];
+                    return { k, name, account, category, last };
+                  })
+                  .filter(x => x.last && !["Sparen","Gezamenlijke rekening"].includes(x.category) && (x.last.month===selectedMonth || x.last.month===prevMonth(selectedMonth)))
+                  .slice(0,8)
+                  .map(({k,name,account,category,last}) => (
                     <div key={k} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
                       <span style={{ fontSize:13 }}>{CAT_ICON[category]||"📦"}</span>
                       <span style={{ flex:1, fontSize:12, color:C.text }}>{name}</span>
                       <AccountBadge accountId={account} names={names} C={C} small/>
                       <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{euro(last.amount)}/mnd</span>
                     </div>
-                  ) : null;
-                })}
+                  ))}
               </div>
             )}
           </div>
@@ -1501,12 +1732,40 @@ export default function BudgetApp() {
 
         {/* ══ INZICHTEN ══ */}
         {tab === "inzichten" && (() => {
-          const totalIncome  = incomes.p1 + incomes.p2;
-          const maandExp     = expenses.filter(e => e.month === selectedMonth);
+          const totalIncome  = totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, selectedMonth);
+          const maandExp     = nettoExpenses.filter(e => e.month === selectedMonth);
           const totalSpent   = maandExp.reduce((s,e) => s+e.amount, 0);
           const vastTotaal   = maandExp.filter(e => e.fixed).reduce((s,e) => s+e.amount, 0);
           const vrijBesteed  = totalIncome - vastTotaal;
           const spaarquote   = totalIncome > 0 ? (totalIncome - totalSpent) / totalIncome : 0;
+
+          // ── Boven inkomen / uit reserves ─────────────────────────────────
+          // Gebruikt per maand het toen geldende inkomen (incl. geregistreerde
+          // salarisveranderingen via Instellingen); zonder geregistreerde
+          // wijziging valt het terug op het huidige ingestelde inkomen.
+          const reserveMaanden = Array.from({length:12}, (_,i) => {
+            const [ry,rm] = selectedMonth.split("-").map(Number);
+            const d = new Date(ry, rm-1-11+i, 1);
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+          });
+          let cumulatiefLopend = 0;
+          const reserveData = reserveMaanden.map(m => {
+            const spentM = nettoExpenses.filter(e=>e.month===m).reduce((s,e)=>s+e.amount,0);
+            const inkomenM = totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, m);
+            const verschil = inkomenM - spentM;
+            cumulatiefLopend += verschil;
+            return { label: fmtM(m), verschil, cumulatief: cumulatiefLopend };
+          });
+          const tekort12mnd = reserveData[reserveData.length-1].cumulatief;
+
+          const [selJaar, selMaandNr] = selectedMonth.split("-").map(Number);
+          const kalenderMaanden = Array.from({length:selMaandNr}, (_,i) => `${selJaar}-${String(i+1).padStart(2,"0")}`);
+          const tekortKalenderjaar = kalenderMaanden.reduce((s,m) => {
+            const spentM = nettoExpenses.filter(e=>e.month===m).reduce((a,e)=>a+e.amount,0);
+            return s + (totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, m) - spentM);
+          }, 0);
+
+          const tekortDezeMaand = totalIncome - totalSpent;
 
           // Grootste categorieën deze maand
           const catNow = {};
@@ -1516,7 +1775,7 @@ export default function BudgetApp() {
           // Stijgers & dalers t.o.v. vorige maand
           const PREV = prevMonth(selectedMonth);
           const catPrev = {};
-          expenses.filter(e => e.month === PREV).forEach(e => { catPrev[e.category] = (catPrev[e.category]||0) + e.amount; });
+          nettoExpenses.filter(e => e.month === PREV).forEach(e => { catPrev[e.category] = (catPrev[e.category]||0) + e.amount; });
           const alleCats = new Set([...Object.keys(catNow), ...Object.keys(catPrev)]);
           const bewegingen = [...alleCats].map(cat => {
             const nu = catNow[cat]||0, vorig = catPrev[cat]||0;
@@ -1524,15 +1783,28 @@ export default function BudgetApp() {
           }).filter(m => Math.abs(m.delta) >= 15 && (m.nu >= 30 || m.vorig >= 30))
             .sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0,6);
 
-          // Terugkerende kosten: expliciet gemarkeerd (fixed/recurring) of 3+ maanden achter elkaar herkend
+          // Terugkerende kosten: expliciet gemarkeerd (fixed/recurring) of 3+ maanden achter elkaar herkend.
+          // Twee correcties op de automatische ("patroon") herkenning — handmatig
+          // gemarkeerde vaste lasten/herhalingen blijven altijd staan, ongeacht categorie of ouderdom:
+          //  1. Sparen/Gezamenlijke rekening zijn interne overboekingen, geen kosten.
+          //  2. Als de omschrijving van een bank-import net iets verandert (bv. een
+          //     polisperiode of referentienummer), ontstaat een "nieuw" patroon terwijl
+          //     het dezelfde kostenpost is — het oude blijft dan ten onrechte meetellen.
+          //     Alleen recente patroon-items (deze of vorige maand) laten meetellen voorkomt dat.
+          const NIET_ALS_KOSTEN = new Set(["Sparen","Gezamenlijke rekening"]);
           const laatsteByKey = {};
-          expenses.forEach(e => {
+          nettoExpenses.forEach(e => {
             const k = `${e.name}|${e.account}|${e.category}`;
             if (!laatsteByKey[k] || e.month > laatsteByKey[k].month) laatsteByKey[k] = e;
           });
           const terugkerend = Object.entries(laatsteByKey)
             .map(([k,e]) => ({ ...e, key:k, herhaaltVast: recurring.has(k) }))
-            .filter(e => e.fixed || e.recurring || e.herhaaltVast)
+            .filter(e => {
+              const alleenAutoPatroon = !e.fixed && !e.recurring && e.herhaaltVast;
+              if (alleenAutoPatroon && NIET_ALS_KOSTEN.has(e.category)) return false;
+              if (alleenAutoPatroon && e.month !== selectedMonth && e.month !== PREV) return false;
+              return e.fixed || e.recurring || e.herhaaltVast;
+            })
             .sort((a,b) => b.amount - a.amount);
           const terugkerendTotaal = terugkerend.reduce((s,e) => s+e.amount, 0);
 
@@ -1548,7 +1820,7 @@ export default function BudgetApp() {
           }).reverse();
           const somPerCatBereik = {};
           maandenBereik.forEach(m => {
-            expenses.filter(e => e.month===m).forEach(e => { somPerCatBereik[e.category] = (somPerCatBereik[e.category]||0) + e.amount; });
+            nettoExpenses.filter(e => e.month===m).forEach(e => { somPerCatBereik[e.category] = (somPerCatBereik[e.category]||0) + e.amount; });
           });
           const catRanking = Object.entries(somPerCatBereik).sort((a,b) => b[1]-a[1]).map(([c])=>c);
 
@@ -1561,7 +1833,7 @@ export default function BudgetApp() {
           // Gestapelde maandgrafiek: top 5 categorieën uit het 6-maands bereik + "Overig"
           const stackCats = catRanking.slice(0,5);
           const stackData = maandenBereik.map(m => {
-            const maandExpM = expenses.filter(e => e.month===m);
+            const maandExpM = nettoExpenses.filter(e => e.month===m);
             const row = { label: fmtM(m) };
             stackCats.forEach(c => { row[c] = maandExpM.filter(e => e.category===c).reduce((s,e)=>s+e.amount,0); });
             row["Overig"] = maandExpM.filter(e => !stackCats.includes(e.category)).reduce((s,e)=>s+e.amount,0);
@@ -1581,6 +1853,49 @@ export default function BudgetApp() {
             { label: overschot>=0 ? "Gespaard" : "Tekort", bedrag:Math.abs(overschot), kleur: overschot>=0 ? C.green : C.red },
           ].filter(s => s.bedrag > 0);
 
+          // ── Bespaartips ───────────────────────────────────────────────────
+          // Regelgebaseerd, afgeleid van de data die al op dit scherm staat —
+          // geen aparte AI-aanroep nodig.
+          const bespaartips = [];
+          if (tekortDezeMaand < 0) {
+            bespaartips.push({ icon:"🚨", titel:"Je geeft meer uit dan er binnenkomt",
+              tekst:`Deze maand ging er ${euro(Math.abs(tekortDezeMaand))} meer uit dan er binnenkwam. Kijk bij "Grootste categorieën" hierboven waar dat vandaan komt.` });
+          }
+          const STREAMING_NAMEN = ["netflix","hbo max","hbo","disney+","disney plus","videoland","npo plus","spotify","viaplay","amazon prime","prime video"];
+          const streamingItems = terugkerend.filter(e => STREAMING_NAMEN.some(s => e.name.toLowerCase().includes(s)));
+          if (streamingItems.length >= 3) {
+            const streamTotaal = streamingItems.reduce((s,e)=>s+e.amount,0);
+            bespaartips.push({ icon:"📺", titel:`${streamingItems.length} streamingdiensten tegelijk actief`,
+              tekst:`${streamingItems.map(e=>e.name).join(", ")} kosten samen ${euro(streamTotaal)}/mnd (${euro(streamTotaal*12)}/jaar). Overweeg ze afwisselend per maand te gebruiken in plaats van alles tegelijk aan te houden.` });
+          }
+          const duursteAbonnement = terugkerend.filter(e => e.category==="Abonnementen" && !streamingItems.includes(e)).sort((a,b)=>b.amount-a.amount)[0];
+          if (duursteAbonnement && duursteAbonnement.amount >= 15) {
+            bespaartips.push({ icon:"💳", titel:`Duurste losse abonnement: ${duursteAbonnement.name}`,
+              tekst:`${euro(duursteAbonnement.amount)}/mnd ≈ ${euro(duursteAbonnement.amount*12)}/jaar. Nog de moeite waard, of tijd om op te zeggen?` });
+          }
+          const grootsteStijger = bewegingen.filter(m=>m.delta>0)[0];
+          if (grootsteStijger) {
+            bespaartips.push({ icon:"📈", titel:`${grootsteStijger.cat} steeg het meest`,
+              tekst:`Van ${euro(grootsteStijger.vorig)} naar ${euro(grootsteStijger.nu)} t.o.v. ${fmtM(PREV)} — eenmalige piek, of een nieuwe gewoonte?` });
+          }
+          const overBudget = [...budgetsWithSpent].filter(b=>b.spent>b.amount).sort((a,b)=>(b.spent-b.amount)-(a.spent-a.amount))[0];
+          if (overBudget) {
+            bespaartips.push({ icon:"🎯", titel:`Budget overschreden: ${overBudget.category}`,
+              tekst:`${euro(overBudget.spent-overBudget.amount)} boven het ingestelde budget van ${euro(overBudget.amount)}.` });
+          }
+          if (totalIncome > 0 && vastTotaal/totalIncome > 0.5) {
+            bespaartips.push({ icon:"🏠", titel:"Vaste lasten nemen een groot deel van je inkomen in beslag",
+              tekst:`${Math.round(vastTotaal/totalIncome*100)}% van je inkomen gaat naar vaste lasten — de vuistregel is rond de 50%. Check bij Verzekering/Abonnementen of er goedkoper kan.` });
+          }
+          if (totalIncome > 0 && spaarquote < 0.1) {
+            bespaartips.push({ icon:"💰", titel:"Weinig ruimte om te sparen",
+              tekst:`Spaarquote van ${Math.round(spaarquote*100)}% deze maand. Een richtlijn van 10-20% helpt om buffer op te bouwen voor onverwachte kosten.` });
+          }
+          if (bespaartips.length === 0) {
+            bespaartips.push({ icon:"✅", titel:"Niets bijzonders te melden",
+              tekst:"Op basis van de huidige cijfers springt er niets concreets uit om op te besparen. Goed bezig!" });
+          }
+
           return (
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
               <h2 style={{ margin:0, fontSize:15, fontWeight:800 }}>💡 Inzichten — {fmtM(selectedMonth)}</h2>
@@ -1599,6 +1914,40 @@ export default function BudgetApp() {
                   <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Spaarquote</div>
                   <div style={{ fontWeight:800, fontSize:17, color:spaarquote>=0.2?C.green:spaarquote>=0?C.yellow:C.red, marginTop:2 }}>{Math.round(spaarquote*100)}%</div>
                 </div>
+              </div>
+
+              {/* Boven inkomen / uit reserves */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <h3 style={{ margin:"0 0 10px", fontSize:13, fontWeight:700, color:C.text }}>📉 Boven inkomen — uit reserves</h3>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))", gap:8, marginBottom:14 }}>
+                  {[
+                    { label:"Deze maand", bedrag:tekortDezeMaand },
+                    { label:`Kalenderjaar ${selJaar}`, bedrag:tekortKalenderjaar },
+                    { label:"Laatste 12 mnd", bedrag:tekort12mnd },
+                  ].map(x => (
+                    <div key={x.label} style={{ background:C.card, borderRadius:10, padding:"10px 12px" }}>
+                      <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>{x.label}</div>
+                      <div style={{ fontWeight:800, fontSize:15, color:x.bedrag>=0?C.green:C.red, marginTop:2 }}>
+                        {x.bedrag>=0?"+":"−"}{euro(Math.abs(x.bedrag))}
+                      </div>
+                      <div style={{ fontSize:9, color:C.muted, marginTop:1 }}>{x.bedrag>=0?"overschot":"uit reserves"}</div>
+                    </div>
+                  ))}
+                </div>
+                <ResponsiveContainer width="100%" height={160}>
+                  <LineChart data={reserveData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
+                    <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false}/>
+                    <YAxis tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`€${v}`}/>
+                    <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v,n)=>[euro(v), n==="cumulatief"?"Cumulatief":"Deze maand"]}/>
+                    <ReferenceLine y={0} stroke={C.muted} strokeDasharray="4 2"/>
+                    <Line type="monotone" dataKey="cumulatief" stroke={tekort12mnd>=0?C.green:C.red} strokeWidth={2.5} dot={{r:3,fill:tekort12mnd>=0?C.green:C.red,stroke:C.bg,strokeWidth:1.5}}/>
+                  </LineChart>
+                </ResponsiveContainer>
+                <p style={{ margin:"8px 0 0", fontSize:10, color:C.muted, lineHeight:1.5 }}>
+                  Cumulatief verschil tussen inkomen en uitgaven, laatste 12 maanden. Onder de nullijn = dat bedrag is per saldo uit spaargeld/reserves gekomen.
+                  Houdt rekening met geregistreerde salarisveranderingen (via Instellingen ⚙️) — zonder geregistreerde wijziging wordt het huidige ingestelde inkomen ({euro(totalIncome)}/mnd) aangehouden voor die maand.
+                </p>
               </div>
 
               {/* Inkomensverdeling */}
@@ -1749,7 +2098,7 @@ export default function BudgetApp() {
                       <div key={m} style={{ fontSize:9, color:C.muted, textAlign:"center" }}>{fmtM(m).split(" ")[0]}</div>
                     ))}
                     {heatmapCats.map(cat => {
-                      const rowVals = maandenBereik.map(m => expenses.filter(e => e.category===cat && e.month===m).reduce((s,e)=>s+e.amount,0));
+                      const rowVals = maandenBereik.map(m => nettoExpenses.filter(e => e.category===cat && e.month===m).reduce((s,e)=>s+e.amount,0));
                       const maxVal = Math.max(...rowVals, 1);
                       return (
                         <React.Fragment key={cat}>
@@ -1797,6 +2146,20 @@ export default function BudgetApp() {
                   </div>
                 ))}
               </div>
+
+              {/* Bespaartips */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <h3 style={{ margin:"0 0 9px", fontSize:13, fontWeight:700, color:C.text }}>💡 Bespaartips</h3>
+                {bespaartips.map((t,i) => (
+                  <div key={i} style={{ display:"flex", gap:9, padding:"8px 0", borderTop: i===0?"none":`1px solid ${C.border}` }}>
+                    <span style={{ fontSize:16, flexShrink:0 }}>{t.icon}</span>
+                    <div>
+                      <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{t.titel}</div>
+                      <div style={{ fontSize:11, color:C.muted, marginTop:2, lineHeight:1.5 }}>{t.tekst}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           );
         })()}
@@ -1841,7 +2204,7 @@ export default function BudgetApp() {
               }).reverse();
               const trendData = maanden.map(m => ({
                 label: fmtM(m),
-                totaal: expenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
+                totaal: nettoExpenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
                 inkomen: incomes.p1 + incomes.p2,
               }));
               const maxVal = Math.max(...trendData.map(d => d.totaal), incomes.p1+incomes.p2, 1);
@@ -1877,7 +2240,7 @@ export default function BudgetApp() {
               });
               const jaarData = jaarMaanden.map(m => ({
                 label: fmtM(m),
-                totaal: expenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
+                totaal: nettoExpenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
               }));
               const jaarTotaal = jaarData.reduce((s,d) => s+d.totaal, 0);
               const gemiddeld = jaarTotaal / jaarData.length;
@@ -1946,7 +2309,7 @@ export default function BudgetApp() {
 
             {/* Vaste lasten */}
             {(() => {
-              const vast = expenses.filter(e => e.fixed && e.month === selectedMonth);
+              const vast = nettoExpenses.filter(e => e.fixed && e.month === selectedMonth);
               const vastTot = vast.reduce((s,e) => s+e.amount, 0);
               const variabel = (incomes.p1+incomes.p2) - vastTot - (incomes.bijdrage_p1||0) - (incomes.bijdrage_p2||0);
               return (
@@ -2127,12 +2490,16 @@ export default function BudgetApp() {
                     <AccountBadge accountId={acc.id} names={names} C={C}/>
                     <span style={{ fontWeight:700, fontSize:13 }}>{euro(ae.reduce((s,e)=>s+e.amount,0))}</span>
                   </div>
-                  {ae.map(e => (
-                    <div key={e.id} style={{ padding:"8px 14px", display:"flex", alignItems:"flex-start", gap:8, borderTop:`1px solid ${C.border}` }}>
+                  {ae.map(e => {
+                    const overlaptCreditcard = e.category === "Afschrijving creditcard" && e.bron !== "creditcard"
+                      && expenses.some(x => x.bron === "creditcard" && x.month === e.month);
+                    return (
+                    <div key={e.id} style={{ padding:"8px 14px", display:"flex", alignItems:"flex-start", gap:8, borderTop:`1px solid ${C.border}`, opacity:overlaptCreditcard?0.6:1 }}>
                       <span style={{ width:9, height:9, borderRadius:"50%", background:CAT_COL[e.category]||C.muted, flexShrink:0, marginTop:4 }}/>
                       <div style={{ flex:1, minWidth:0 }}>
                         <span style={{ fontSize:13 }}>{e.name}</span>
                         {e.note && <div style={{ fontSize:11, color:C.muted, fontStyle:"italic", marginTop:2 }}>📝 {e.note}</div>}
+                        {overlaptCreditcard && <div style={{ fontSize:10, color:C.orange, marginTop:2 }}>⚠️ Niet meegeteld — al uitgesplitst via creditcard-import</div>}
                       </div>
                       <span style={{ fontSize:11, color:C.muted }}>{e.category}</span>
                       <span style={{ fontSize:11, color:C.muted }}>{fmtM(e.month)}</span>
@@ -2143,7 +2510,8 @@ export default function BudgetApp() {
                       <span style={{ fontWeight:700, fontSize:13 }}>{euro(e.amount)}</span>
                       <button onClick={()=>delExpense(e.id)} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:13 }}>×</button>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               );
             })}
