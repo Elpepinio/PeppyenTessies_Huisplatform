@@ -239,9 +239,9 @@ function guessCategory(t) {
   if (/apotheek|huisarts|tandarts|ziekenhuis|gym|sportschool|yoga|decathlon/.test(t)) return "Gezondheid";
   if (/booking|airbnb|hotel|vliegticket|ryanair|transavia|corendon|sunweb|vakantie/.test(t)) return "Vakantie";
   if (/bioscoop|theater|concert|ticketmaster|efteling|pretpark/.test(t)) return "Entertainment";
-  if (/sparen|spaarrekening/.test(t)) return "Sparen";
-  if (/unicef|artsen zonder grenzen|rode kruis|greenpeace|wnf|wereld natuur fonds|kwf|hartstichting|leger des heils|oxfam novib|amnesty|natuurmonumenten|dierenbescherming|goede doel|donatie|stichting.*fonds|giro555/.test(t)) return "Goede doelen";
-  if (/afschrijvingskosten|bankkosten|betaalpas|kosten betaalrekening|jaarlijkse.*kosten|pakketkosten/.test(t)) return "Bankkosten";
+  if (/sparen|spaarrekening|opbouwspaar|spaarpot|\bpeaks\b|derdengeld|beheer derden|vermogensbeheer|beleggingsrekening|effectenrekening/.test(t)) return "Sparen";
+  if (/unicef|artsen zonder grenzen|rode kruis|greenpeace|wnf|wereld natuur fonds|kwf|hartstichting|leger des heils|oxfam novib|amnesty|natuurmonumenten|dierenbescherming|goede doel|donatie|stichting.*fonds|giro555|\bkika\b|kinderen kankervrij/.test(t)) return "Goede doelen";
+  if (/afschrijvingskosten|bankkosten|betaalpas|kosten betaalrekening|jaarlijkse.*kosten|pakketkosten|totaalpakket/.test(t)) return "Bankkosten";
   if (/afschrijving.*creditcard|afschrijving ics|creditcardafschrijving|creditcardkosten|ics creditcard/.test(t)) return "Afschrijving creditcard";
   if (/loodgieter|aannemer|klusbedrijf|dakdekker|huisschilder|installateur|onderhoudsbedrijf|cv-ketel|ketelonderhoud|rioolontstopping/.test(t)) return "Onderhoud huis";
   if (/ikea|leen bakker|kwantum|woonwinkel|meubel|gordijnen|behang|woondecoratie|karwei|praxis|gamma|hornbach/.test(t)) return "Inrichten huis";
@@ -463,6 +463,18 @@ function nettoExpensesFilter(expenses) {
   return expenses.filter(e =>
     !(e.category === "Afschrijving creditcard" && e.bron !== "creditcard" && maandenMetItemisatie.has(e.month))
   );
+}
+
+// Herkent interne overboekingen (sparen, beleggen, gezamenlijke rekening) op
+// basis van de OMSCHRIJVING zelf, niet alleen de opgeslagen categorie. Nodig
+// omdat een transactie soms al maanden geleden is geïmporteerd met een
+// verouderde categorie-gok (bv. vóór een categorie-regel bestond) — de
+// categorie op de transactie zelf verandert dan niet met terugwerkende
+// kracht mee, ook al zou een nieuwe import het nu wél goed herkennen.
+const OVERBOEKING_PATROON = /spaarrekening|opbouwspaar|\bsparen\b|spaarpot|\bpeaks\b|derdengeld|beheer derden|vermogensbeheer|beleggingsrekening|effectenrekening|\binleg\b|naar gezamenlijk|extra inleg/i;
+function isVermoedelijkOverboeking(naam, categorie) {
+  if (categorie === "Sparen" || categorie === "Gezamenlijke rekening") return true;
+  return OVERBOEKING_PATROON.test(naam || "");
 }
 
 // ── Data ophalen/opslaan via eigen API-route (Upstash Redis) ─────────────────
@@ -694,6 +706,8 @@ export default function BudgetApp() {
   const [tab,          setTab]          = useState("dashboard");
   const [quickAdd,     setQuickAdd]     = useState(false);
   const [activeAcc,    setActiveAcc]    = useState("alle");
+  const [uitgavenZoek, setUitgavenZoek] = useState("");
+  const [uitgeklapt,   setUitgeklapt]   = useState({}); // key: `${accId}::${categorie}` → true = uitgeklapt (standaard dus ingeklapt)
   const [selectedMonth, setSelectedMonth] = useState(NOW_MONTH); // maand-selector
   const [csvImport,    setCsvImport]    = useState(null);
   const [csvError,     setCsvError]     = useState("");
@@ -764,6 +778,38 @@ export default function BudgetApp() {
   const budgetsWithSpent = useMemo(() =>
     budgets.map(b => ({ ...b, spent: computeSpent(b, nettoExpenses, selectedMonth), pLabel: periodLabel(b.period, selectedMonth) })),
   [budgets, nettoExpenses, selectedMonth]);
+
+  // Terugkerende kosten: expliciet gemarkeerd (fixed/recurring) of 3+ maanden
+  // achter elkaar herkend. Eén centrale berekening i.p.v. verspreid over
+  // tabbladen, zodat Meldingen en Inzichten altijd precies hetzelfde tonen.
+  // Twee correcties op de automatische ("patroon") herkenning — handmatig
+  // gemarkeerde vaste lasten/herhalingen blijven altijd staan, ongeacht
+  // naam, categorie of ouderdom:
+  //  1. Interne overboekingen (sparen/beleggen/gezamenlijk) zijn geen kosten
+  //     — herkend op naam, niet alleen op (mogelijk verouderde) categorie.
+  //  2. Als de omschrijving van een bank-import net iets verandert (bv. een
+  //     polisperiode of referentienummer), ontstaat een "nieuw" patroon
+  //     terwijl het dezelfde kostenpost is — het oude blijft dan ten
+  //     onrechte meetellen. Alleen recente patroon-items (deze of vorige
+  //     maand) laten meetellen voorkomt dat.
+  const terugkerend = useMemo(() => {
+    const laatsteByKey = {};
+    nettoExpenses.forEach(e => {
+      const k = `${e.name}|${e.account}|${e.category}`;
+      if (!laatsteByKey[k] || e.month > laatsteByKey[k].month) laatsteByKey[k] = e;
+    });
+    const PREV = prevMonth(selectedMonth);
+    return Object.entries(laatsteByKey)
+      .map(([k,e]) => ({ ...e, key:k, herhaaltVast: recurring.has(k) }))
+      .filter(e => {
+        const alleenAutoPatroon = !e.fixed && !e.recurring && e.herhaaltVast;
+        if (alleenAutoPatroon && isVermoedelijkOverboeking(e.name, e.category)) return false;
+        if (alleenAutoPatroon && e.month !== selectedMonth && e.month !== PREV) return false;
+        return e.fixed || e.recurring || e.herhaaltVast;
+      })
+      .sort((a,b) => b.amount - a.amount);
+  }, [nettoExpenses, recurring, selectedMonth]);
+  const terugkerendTotaal = useMemo(() => terugkerend.reduce((s,e) => s+e.amount, 0), [terugkerend]);
 
   // ── Toast ─────────────────────────────────────────────────────────────────
   function showToast(msg, col=null) { setToast(msg); setToastColor(col); setTimeout(() => { setToast(null); setToastColor(null); }, 2800); }
@@ -843,6 +889,12 @@ export default function BudgetApp() {
     }]);
     setExpForm(f => ({ ...f, name:"", amount:"" }));
     showToast("✅ Uitgave toegevoegd");
+  }
+
+  function toggleFixed(id) {
+    setExpenses(prev => prev.map(e => e.id === id ? { ...e, fixed: !e.fixed } : e));
+    const item = expenses.find(e => e.id === id);
+    if (item) showToast(item.fixed ? `${item.name} is geen vaste last meer` : `✅ ${item.name} is nu een vaste last`);
   }
 
   function delExpense(id) {
@@ -1686,26 +1738,25 @@ export default function BudgetApp() {
               );
             })}
 
-            {recurring.size > 0 && (
+            {terugkerend.length > 0 && (
               <div style={{ background:C.surf, borderRadius:12, border:`1px solid ${C.border}`, padding:14, marginTop:4 }}>
-                <h3 style={{ margin:"0 0 10px", fontSize:13, fontWeight:700, color:C.text }}>↻ Terugkerende uitgaven</h3>
-                <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted }}>Automatisch herkend — 3+ maanden achter elkaar, recent nog voorgekomen</p>
-                {[...recurring]
-                  .map(k => {
-                    const [name, account, category] = k.split("|");
-                    const last = nettoExpenses.filter(e=>e.name===name&&e.account===account&&e.category===category).sort((a,b)=>b.month.localeCompare(a.month))[0];
-                    return { k, name, account, category, last };
-                  })
-                  .filter(x => x.last && !["Sparen","Gezamenlijke rekening"].includes(x.category) && (x.last.month===selectedMonth || x.last.month===prevMonth(selectedMonth)))
-                  .slice(0,8)
-                  .map(({k,name,account,category,last}) => (
-                    <div key={k} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
-                      <span style={{ fontSize:13 }}>{CAT_ICON[category]||"📦"}</span>
-                      <span style={{ flex:1, fontSize:12, color:C.text }}>{name}</span>
-                      <AccountBadge accountId={account} names={names} C={C} small/>
-                      <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{euro(last.amount)}/mnd</span>
-                    </div>
-                  ))}
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+                  <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>↻ Terugkerende uitgaven</h3>
+                  <div style={{ textAlign:"right" }}>
+                    <div style={{ fontWeight:800, fontSize:14, color:C.text }}>{euro(terugkerendTotaal)}/mnd</div>
+                    <div style={{ fontSize:10, color:C.muted }}>≈ {euro(terugkerendTotaal*12)}/jaar</div>
+                  </div>
+                </div>
+                <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted }}>Vast gemarkeerd, "elke maand herhalen" of automatisch herkend (3+ maanden)</p>
+                {terugkerend.map(e => (
+                  <div key={e.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
+                    <span style={{ fontSize:13 }}>{CAT_ICON[e.category]||"📦"}</span>
+                    <span style={{ flex:1, fontSize:12, color:C.text }}>{e.name}</span>
+                    <AccountBadge accountId={e.account} names={names} C={C} small/>
+                    {!e.fixed && !e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>patroon</span>}
+                    <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{euro(e.amount)}/mnd</span>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -1783,30 +1834,8 @@ export default function BudgetApp() {
           }).filter(m => Math.abs(m.delta) >= 15 && (m.nu >= 30 || m.vorig >= 30))
             .sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0,6);
 
-          // Terugkerende kosten: expliciet gemarkeerd (fixed/recurring) of 3+ maanden achter elkaar herkend.
-          // Twee correcties op de automatische ("patroon") herkenning — handmatig
-          // gemarkeerde vaste lasten/herhalingen blijven altijd staan, ongeacht categorie of ouderdom:
-          //  1. Sparen/Gezamenlijke rekening zijn interne overboekingen, geen kosten.
-          //  2. Als de omschrijving van een bank-import net iets verandert (bv. een
-          //     polisperiode of referentienummer), ontstaat een "nieuw" patroon terwijl
-          //     het dezelfde kostenpost is — het oude blijft dan ten onrechte meetellen.
-          //     Alleen recente patroon-items (deze of vorige maand) laten meetellen voorkomt dat.
-          const NIET_ALS_KOSTEN = new Set(["Sparen","Gezamenlijke rekening"]);
-          const laatsteByKey = {};
-          nettoExpenses.forEach(e => {
-            const k = `${e.name}|${e.account}|${e.category}`;
-            if (!laatsteByKey[k] || e.month > laatsteByKey[k].month) laatsteByKey[k] = e;
-          });
-          const terugkerend = Object.entries(laatsteByKey)
-            .map(([k,e]) => ({ ...e, key:k, herhaaltVast: recurring.has(k) }))
-            .filter(e => {
-              const alleenAutoPatroon = !e.fixed && !e.recurring && e.herhaaltVast;
-              if (alleenAutoPatroon && NIET_ALS_KOSTEN.has(e.category)) return false;
-              if (alleenAutoPatroon && e.month !== selectedMonth && e.month !== PREV) return false;
-              return e.fixed || e.recurring || e.herhaaltVast;
-            })
-            .sort((a,b) => b.amount - a.amount);
-          const terugkerendTotaal = terugkerend.reduce((s,e) => s+e.amount, 0);
+          // Terugkerende kosten: zie de gedeelde `terugkerend`/`terugkerendTotaal`
+          // memo bovenaan het component — gebruikt hier en in Meldingen.
 
           const attentieAlerts = alerts.filter(a => a.level==="rood" || a.level==="oranje");
 
@@ -2481,35 +2510,74 @@ export default function BudgetApp() {
               </div>
             </div>
 
+            <div style={{ position:"relative" }}>
+              <input style={{...S.inp, paddingLeft:32}} placeholder="🔍 Zoeken in uitgaven (naam of categorie)…"
+                value={uitgavenZoek} onChange={e=>setUitgavenZoek(e.target.value)}/>
+              {uitgavenZoek && (
+                <button onClick={()=>setUitgavenZoek("")} style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:14 }}>×</button>
+              )}
+            </div>
+
             {accountOptions.map(acc => {
-              const ae = filteredExpenses.filter(e => e.account === acc.id);
-              if (!ae.length) return null;
+              const aeAll = filteredExpenses.filter(e => e.account === acc.id);
+              if (!aeAll.length) return null;
+              const zoekActief = uitgavenZoek.trim().length > 0;
+              const zoekLc = uitgavenZoek.trim().toLowerCase();
+              const ae = zoekActief
+                ? aeAll.filter(e => e.name.toLowerCase().includes(zoekLc) || e.category.toLowerCase().includes(zoekLc))
+                : aeAll;
+              if (zoekActief && !ae.length) return null;
+
+              const perCategorie = {};
+              ae.forEach(e => { (perCategorie[e.category] = perCategorie[e.category] || []).push(e); });
+              const categorieen = Object.keys(perCategorie).sort((a,b) =>
+                perCategorie[b].reduce((s,e)=>s+e.amount,0) - perCategorie[a].reduce((s,e)=>s+e.amount,0));
+
               return (
                 <div key={acc.id} style={{ background:C.surf, borderRadius:11, border:`2px solid ${ACC_COL[acc.id]}33`, overflow:"hidden" }}>
                   <div style={{ background:C.card, padding:"9px 14px", display:"flex", justifyContent:"space-between" }}>
                     <AccountBadge accountId={acc.id} names={names} C={C}/>
                     <span style={{ fontWeight:700, fontSize:13 }}>{euro(ae.reduce((s,e)=>s+e.amount,0))}</span>
                   </div>
-                  {ae.map(e => {
-                    const overlaptCreditcard = e.category === "Afschrijving creditcard" && e.bron !== "creditcard"
-                      && expenses.some(x => x.bron === "creditcard" && x.month === e.month);
+                  {categorieen.map(cat => {
+                    const items = perCategorie[cat];
+                    const key = `${acc.id}::${cat}`;
+                    const open = zoekActief || !!uitgeklapt[key];
+                    const subtotaal = items.reduce((s,e)=>s+e.amount,0);
                     return (
-                    <div key={e.id} style={{ padding:"8px 14px", display:"flex", alignItems:"flex-start", gap:8, borderTop:`1px solid ${C.border}`, opacity:overlaptCreditcard?0.6:1 }}>
-                      <span style={{ width:9, height:9, borderRadius:"50%", background:CAT_COL[e.category]||C.muted, flexShrink:0, marginTop:4 }}/>
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <span style={{ fontSize:13 }}>{e.name}</span>
-                        {e.note && <div style={{ fontSize:11, color:C.muted, fontStyle:"italic", marginTop:2 }}>📝 {e.note}</div>}
-                        {overlaptCreditcard && <div style={{ fontSize:10, color:C.orange, marginTop:2 }}>⚠️ Niet meegeteld — al uitgesplitst via creditcard-import</div>}
+                      <div key={cat}>
+                        <div onClick={()=>setUitgeklapt(p=>({...p,[key]:!p[key]}))}
+                          style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 14px", borderTop:`1px solid ${C.border}`, cursor:"pointer" }}>
+                          <span style={{ fontSize:11, color:C.muted, display:"inline-block", width:10, transform:open?"rotate(90deg)":"none", transition:"transform 0.15s" }}>›</span>
+                          <span style={{ fontSize:13 }}>{CAT_ICON[cat]||"📦"}</span>
+                          <span style={{ flex:1, fontSize:12, fontWeight:600, color:C.text }}>{cat}</span>
+                          <span style={{ fontSize:11, color:C.muted }}>{items.length}×</span>
+                          <span style={{ fontWeight:700, fontSize:12 }}>{euro(subtotaal)}</span>
+                        </div>
+                        {open && items.map(e => {
+                          const overlaptCreditcard = e.category === "Afschrijving creditcard" && e.bron !== "creditcard"
+                            && expenses.some(x => x.bron === "creditcard" && x.month === e.month);
+                          return (
+                            <div key={e.id} style={{ padding:"8px 14px 8px 32px", display:"flex", alignItems:"flex-start", gap:8, borderTop:`1px solid ${C.border}`, opacity:overlaptCreditcard?0.6:1 }}>
+                              <div style={{ flex:1, minWidth:0 }}>
+                                <span style={{ fontSize:13 }}>{e.name}</span>
+                                {e.note && <div style={{ fontSize:11, color:C.muted, fontStyle:"italic", marginTop:2 }}>📝 {e.note}</div>}
+                                {overlaptCreditcard && <div style={{ fontSize:10, color:C.orange, marginTop:2 }}>⚠️ Niet meegeteld — al uitgesplitst via creditcard-import</div>}
+                              </div>
+                              <span style={{ fontSize:11, color:C.muted }}>{fmtM(e.month)}</span>
+                              <button onClick={()=>toggleFixed(e.id)} title="Tik om vaste last aan/uit te zetten"
+                                style={{ fontSize:10, background:e.fixed?`${C.accent}22`:"transparent", color:e.fixed?C.accent:C.muted, border:`1px solid ${e.fixed?C.accent:C.border}`, padding:"2px 7px", borderRadius:8, cursor:"pointer", whiteSpace:"nowrap" }}>
+                                {e.fixed ? "✓ vast" : "+ vast"}
+                              </button>
+                              {e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>🔁</span>}
+                              {e.fromBank  && <span style={{ fontSize:10, background:`${C.green}22`,  color:C.green,  padding:"1px 6px", borderRadius:8 }}>bank</span>}
+                              <WieBadge persoon={e.addedBy} tijdstip={e.addedAt} />
+                              <span style={{ fontWeight:700, fontSize:13 }}>{euro(e.amount)}</span>
+                              <button onClick={()=>delExpense(e.id)} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:13 }}>×</button>
+                            </div>
+                          );
+                        })}
                       </div>
-                      <span style={{ fontSize:11, color:C.muted }}>{e.category}</span>
-                      <span style={{ fontSize:11, color:C.muted }}>{fmtM(e.month)}</span>
-                      {e.fixed     && <span style={{ fontSize:10, background:`${C.accent}22`, color:C.accent, padding:"1px 6px", borderRadius:8 }}>vast</span>}
-                      {e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>🔁</span>}
-                      {e.fromBank  && <span style={{ fontSize:10, background:`${C.green}22`,  color:C.green,  padding:"1px 6px", borderRadius:8 }}>bank</span>}
-                      <WieBadge persoon={e.addedBy} tijdstip={e.addedAt} />
-                      <span style={{ fontWeight:700, fontSize:13 }}>{euro(e.amount)}</span>
-                      <button onClick={()=>delExpense(e.id)} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:13 }}>×</button>
-                    </div>
                     );
                   })}
                 </div>
