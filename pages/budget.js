@@ -707,7 +707,8 @@ export default function BudgetApp() {
   const [quickAdd,     setQuickAdd]     = useState(false);
   const [activeAcc,    setActiveAcc]    = useState("alle");
   const [uitgavenZoek, setUitgavenZoek] = useState("");
-  const [uitgeklapt,   setUitgeklapt]   = useState({}); // key: `${accId}::${categorie}` → true = uitgeklapt (standaard dus ingeklapt)
+  const [uitgeklapt,   setUitgeklapt]   = useState({});
+  const [terugkerendAccFilter, setTerugkerendAccFilter] = useState("alle"); // key: `${accId}::${categorie}` → true = uitgeklapt (standaard dus ingeklapt)
   const [selectedMonth, setSelectedMonth] = useState(NOW_MONTH); // maand-selector
   const [csvImport,    setCsvImport]    = useState(null);
   const [csvError,     setCsvError]     = useState("");
@@ -753,9 +754,13 @@ export default function BudgetApp() {
     return t;
   }, [nettoExpenses, selectedMonth]);
 
-  const filteredExpenses = useMemo(() =>
-    activeAcc === "alle" ? expenses : expenses.filter(e => e.account === activeAcc),
-  [expenses, activeAcc]);
+  const [uitgavenPeriode, setUitgavenPeriode] = useState("alles"); // "alles" | "maand"
+
+  const filteredExpenses = useMemo(() => {
+    let r = activeAcc === "alle" ? expenses : expenses.filter(e => e.account === activeAcc);
+    if (uitgavenPeriode === "maand") r = r.filter(e => e.month === selectedMonth);
+    return r;
+  }, [expenses, activeAcc, uitgavenPeriode, selectedMonth]);
 
   const byCat = useMemo(() => {
     const m = {};
@@ -1748,7 +1753,19 @@ export default function BudgetApp() {
                   </div>
                 </div>
                 <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted }}>Vast gemarkeerd, "elke maand herhalen" of automatisch herkend (3+ maanden)</p>
-                {terugkerend.map(e => (
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+                  {[{id:"alle", label:"Alle", kleur:C.text}, ...accountOptions.map(a=>({id:a.id, label:a.label, kleur:ACC_COL[a.id]}))].map(f => {
+                    const subtotaal = f.id==="alle" ? terugkerendTotaal : terugkerend.filter(e=>e.account===f.id).reduce((s,e)=>s+e.amount,0);
+                    const actief = terugkerendAccFilter===f.id;
+                    return (
+                      <button key={f.id} onClick={()=>setTerugkerendAccFilter(f.id)}
+                        style={{ padding:"5px 10px", borderRadius:20, border:`1px solid ${actief?f.kleur:C.border}`, background:actief?`${f.kleur}22`:"transparent", color:actief?f.kleur:C.muted, fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                        {f.label} · {euro(subtotaal)}
+                      </button>
+                    );
+                  })}
+                </div>
+                {terugkerend.filter(e => terugkerendAccFilter==="alle" || e.account===terugkerendAccFilter).map(e => (
                   <div key={e.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
                     <span style={{ fontSize:13 }}>{CAT_ICON[e.category]||"📦"}</span>
                     <span style={{ flex:1, fontSize:12, color:C.text }}>{e.name}</span>
@@ -2160,11 +2177,23 @@ export default function BudgetApp() {
                     <div style={{ fontSize:10, color:C.muted }}>≈ {euro(terugkerendTotaal*12)}/jaar</div>
                   </div>
                 </div>
-                <p style={{ margin:"0 0 8px", fontSize:11, color:C.muted }}>
+                <p style={{ margin:"0 0 9px", fontSize:11, color:C.muted }}>
                   Abonnementen en vaste lasten — handig om sluimerende kosten te spotten die je niet meer actief gebruikt.
                 </p>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+                  {[{id:"alle", label:"Alle", kleur:C.text}, ...accountOptions.map(a=>({id:a.id, label:a.label, kleur:ACC_COL[a.id]}))].map(f => {
+                    const subtotaal = f.id==="alle" ? terugkerendTotaal : terugkerend.filter(e=>e.account===f.id).reduce((s,e)=>s+e.amount,0);
+                    const actief = terugkerendAccFilter===f.id;
+                    return (
+                      <button key={f.id} onClick={()=>setTerugkerendAccFilter(f.id)}
+                        style={{ padding:"5px 10px", borderRadius:20, border:`1px solid ${actief?f.kleur:C.border}`, background:actief?`${f.kleur}22`:"transparent", color:actief?f.kleur:C.muted, fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                        {f.label} · {euro(subtotaal)}
+                      </button>
+                    );
+                  })}
+                </div>
                 {terugkerend.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog niets gemarkeerd als vast of herhalend.</div>}
-                {terugkerend.map(e => (
+                {terugkerend.filter(e => terugkerendAccFilter==="alle" || e.account===terugkerendAccFilter).map(e => (
                   <div key={e.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
                     <span style={{ fontSize:13 }}>{CAT_ICON[e.category]||"📦"}</span>
                     <span style={{ flex:1, fontSize:12, color:C.text }}>{e.name}</span>
@@ -2509,6 +2538,30 @@ export default function BudgetApp() {
                 </label>
               </div>
             </div>
+
+            {(() => {
+              const alleeMaanden = [...new Set(expenses.map(e=>e.month))].sort();
+              const vanaf = alleeMaanden[0], tot = alleeMaanden[alleeMaanden.length-1];
+              return (
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button onClick={()=>setUitgavenPeriode("alles")}
+                      style={{ padding:"5px 11px", borderRadius:20, border:`1px solid ${uitgavenPeriode==="alles"?C.accent:C.border}`, background:uitgavenPeriode==="alles"?`${C.accent}22`:"transparent", color:uitgavenPeriode==="alles"?C.accent:C.muted, fontSize:12, fontWeight:600, cursor:"pointer" }}>
+                      Alle tijd
+                    </button>
+                    <button onClick={()=>setUitgavenPeriode("maand")}
+                      style={{ padding:"5px 11px", borderRadius:20, border:`1px solid ${uitgavenPeriode==="maand"?C.accent:C.border}`, background:uitgavenPeriode==="maand"?`${C.accent}22`:"transparent", color:uitgavenPeriode==="maand"?C.accent:C.muted, fontSize:12, fontWeight:600, cursor:"pointer" }}>
+                      Alleen {fmtM(selectedMonth)}
+                    </button>
+                  </div>
+                  {uitgavenPeriode==="alles" && vanaf && tot && (
+                    <span style={{ fontSize:11, color:C.muted }}>
+                      📅 {fmtM(vanaf)} t/m {fmtM(tot)} ({alleeMaanden.length} maanden — dit zijn cumulatieve totalen over die hele periode, geen maandbedragen)
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
 
             <div style={{ position:"relative" }}>
               <input style={{...S.inp, paddingLeft:32}} placeholder="🔍 Zoeken in uitgaven (naam of categorie)…"
