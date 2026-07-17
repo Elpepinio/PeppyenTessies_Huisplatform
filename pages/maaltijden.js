@@ -83,6 +83,14 @@ function guessHoofdingredient(ingredienten) {
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+// Een stap is meestal gewoon platte tekst, maar kan ook een object zijn
+// { tekst, timerStart } zodra er een specifiek moment is vastgelegd waarop de
+// timer moet starten (bv. "zodra het water kookt" of "als de boter bruist").
+// Deze twee helpers zorgen dat beide vormen overal hetzelfde werken, zonder
+// dat bestaande recepten (platte tekst-stappen) hoeven te migreren.
+function stapTekst(stap) { return typeof stap === "string" ? stap : (stap?.tekst || ""); }
+function stapTimerStart(stap) { return typeof stap === "string" ? "" : (stap?.timerStart || ""); }
+
 // Zoekt de eerste tijdsaanduiding in een bereidingsstap (bv. "20 minuten" of
 // "15 min") zodat Kookmodus daar automatisch een timer voor kan voorstellen.
 function minutenUitStap(tekst) {
@@ -221,7 +229,7 @@ export default function MaaltijdApp() {
     naam: "", keuken: "Nederlands", gangtype: "Hoofdgerecht", bereidingstijd: "30", porties: "4",
     beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "",
     ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }],
-    stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null,
+    stappen: [""], stapTimers: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null,
   });
 
   // Weekmenu plannen
@@ -377,6 +385,10 @@ export default function MaaltijdApp() {
   function voegReceptToe() {
     if (!receptForm.naam.trim()) return;
     const schoneIngredienten = receptForm.ingredienten.filter(i => i.naam.trim());
+    const schoneStappen = receptForm.stappen
+      .map((tekst, i) => ({ tekst: tekst.trim(), timerStart: (receptForm.stapTimers?.[i]||"").trim() }))
+      .filter(s => s.tekst)
+      .map(s => s.timerStart ? s : s.tekst);
     const nieuw = {
       ...receptForm,
       id: uid(),
@@ -384,12 +396,13 @@ export default function MaaltijdApp() {
       bereidingstijd: +receptForm.bereidingstijd || 30,
       kcal: +receptForm.kcal || 0,
       ingredienten: schoneIngredienten,
-      stappen: receptForm.stappen.filter(s => s.trim()),
+      stappen: schoneStappen,
       hoofdingredient: receptForm.hoofdingredient || guessHoofdingredient(schoneIngredienten),
       aangemaaktOp: Date.now(),
     };
+    delete nieuw.stapTimers;
     persistData([...recepten, nieuw], weekmenu);
-    setReceptForm({ naam: "", keuken: "Nederlands", gangtype: "Hoofdgerecht", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null });
+    setReceptForm({ naam: "", keuken: "Nederlands", gangtype: "Hoofdgerecht", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], stapTimers: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null });
     setShowReceptForm(false);
     showToast(`✅ ${nieuw.naam} toegevoegd`);
   }
@@ -404,7 +417,10 @@ export default function MaaltijdApp() {
       regels.push(`• ${geschaaldHoeveelheid(recept, i)}${i.eenheid !== "stuks" ? i.eenheid : ""} ${i.naam}`);
     });
     regels.push("", "Bereiding:");
-    (recept.stappen || []).forEach((s, i) => regels.push(`${i + 1}. ${s}`));
+    (recept.stappen || []).forEach((s, i) => {
+      regels.push(`${i + 1}. ${stapTekst(s)}`);
+      if (stapTimerStart(s)) regels.push(`   ⏱ Start timer zodra: ${stapTimerStart(s)}`);
+    });
     const tekst = regels.join("\n");
 
     if (navigator.share) {
@@ -682,7 +698,7 @@ Format:
   "kcal": 0,
   "beschrijving": "...",
   "ingredienten": [{"naam": "...", "hoeveelheid": "100", "eenheid": "g"}],
-  "stappen": ["stap 1", "stap 2"]
+  "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
 }`,
         "maaltijden-ai-kok-import"
       );
@@ -769,7 +785,7 @@ Format:
   "kcal": 0,
   "beschrijving": "korte beschrijving of ondertitel",
   "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
-  "stappen": ["stap 1", "stap 2"]
+  "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
 }
 
 Als er geen leesbaar recept op de foto('s) staat: {"fout": "Geen recept leesbaar"}`,
@@ -823,7 +839,7 @@ Format:
   "kcal": 0,
   "beschrijving": "korte beschrijving, vermeld dat dit een AI-inschatting is op basis van een foto",
   "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
-  "stappen": ["stap 1", "stap 2"]
+  "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
 }
 
 Als er totaal geen (deel van een) gerecht op de foto te zien is: {"fout": "Geen gerecht herkenbaar op deze foto"}`,
@@ -882,7 +898,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   "kcal": 0,
   "beschrijving": "korte beschrijving",
   "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
-  "stappen": ["stap 1", "stap 2"]
+  "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
 }`,
           imageBase64: base64,
           bron: "maaltijden-foto-gerecht-verfijnen",
@@ -1062,7 +1078,17 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
     const r = recepten.find(x => x.id === receptId);
     if (!r) return;
     const stappen = [...(r.stappen || [])];
-    stappen[idx] = tekst;
+    const trigger = stapTimerStart(stappen[idx]);
+    stappen[idx] = trigger ? { tekst, timerStart: trigger } : tekst;
+    updateRecept(receptId, { stappen });
+  }
+
+  function updateStapTimerStart(receptId, idx, timerStart) {
+    const r = recepten.find(x => x.id === receptId);
+    if (!r) return;
+    const stappen = [...(r.stappen || [])];
+    const tekst = stapTekst(stappen[idx]);
+    stappen[idx] = timerStart.trim() ? { tekst, timerStart } : tekst;
     updateRecept(receptId, { stappen });
   }
 
@@ -1159,7 +1185,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
             <button style={{ ...S.btn(C.orange), flex:"1 1 30%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
               onClick={() => {
                 setKookStapIndex(0); setKookTimerSec(0); setKookTimerLopend(false); setKookModusActief(true);
-                if (spraakAan && actieefRecept.stappen?.[0]) spreekStap(actieefRecept.stappen[0]);
+                if (spraakAan && actieefRecept.stappen?.[0]) spreekStap(stapTekst(actieefRecept.stappen[0]));
               }}>
               🍳 Kookmodus
             </button>
@@ -1403,15 +1429,25 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
               bewerkModus ? (
                 <div key={i} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"flex-start" }}>
                   <div style={{ width:24, height:24, minWidth:24, borderRadius:"50%", background:C.orange, color:"#FFF", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, marginTop:8 }}>{i+1}</div>
-                  <textarea style={{ ...S.inp, flex:1, height:64, resize:"none", fontSize:13, padding:"8px 10px" }}
-                    value={stap} onChange={e => updateStap(actieefRecept.id, i, e.target.value)} />
+                  <div style={{ flex:1 }}>
+                    <textarea style={{ ...S.inp, width:"100%", height:64, resize:"none", fontSize:13, padding:"8px 10px", marginBottom:6, boxSizing:"border-box" }}
+                      value={stapTekst(stap)} onChange={e => updateStap(actieefRecept.id, i, e.target.value)} />
+                    <input style={{ ...S.inp, width:"100%", fontSize:12, padding:"6px 10px", boxSizing:"border-box" }}
+                      placeholder="⏱ Start timer zodra… (optioneel, bv. 'het water kookt')"
+                      value={stapTimerStart(stap)} onChange={e => updateStapTimerStart(actieefRecept.id, i, e.target.value)} />
+                  </div>
                   <button style={{ background:"none", border:"none", cursor:"pointer", padding:"8px 4px", color:C.red, fontSize:16 }}
                     onClick={() => verwijderStap(actieefRecept.id, i)}>×</button>
                 </div>
               ) : (
                 <div key={i} style={{ display: "flex", gap: 12, padding: "8px 0", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}>
                   <div style={{ width: 26, height: 26, minWidth: 26, borderRadius: "50%", background: C.orange, color: "#FFF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>{i+1}</div>
-                  <p style={{ flex: 1, fontSize: 14, margin: 0, lineHeight: 1.5 }}>{stap}</p>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ margin: 0, fontSize: 14, lineHeight: 1.5 }}>{stapTekst(stap)}</p>
+                    {stapTimerStart(stap) && (
+                      <p style={{ margin:"4px 0 0", fontSize:12, color:C.orange, fontWeight:600 }}>⏱ Start timer zodra: {stapTimerStart(stap)}</p>
+                    )}
+                  </div>
                 </div>
               )
             ))}
@@ -1508,7 +1544,9 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
         {/* Kookmodus — stap voor stap met timer */}
         {kookModusActief && (() => {
-          const stap = actieefRecept.stappen[kookStapIndex];
+          const stapRaw = actieefRecept.stappen[kookStapIndex];
+          const stap = stapTekst(stapRaw);
+          const stapTrigger = stapTimerStart(stapRaw);
           const stapMinuten = minutenUitStap(stap || "");
           const laatsteStap = kookStapIndex === actieefRecept.stappen.length - 1;
           return (
@@ -1536,6 +1574,12 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
                 {stapMinuten && (
                   <div style={{ marginTop:8 }}>
+                    {stapTrigger && kookTimerSec === 0 && (
+                      <div style={{ background:"rgba(255,140,66,.15)", border:"1px solid rgba(255,140,66,.4)", borderRadius:12, padding:"10px 16px", marginBottom:14, maxWidth:280 }}>
+                        <p style={{ margin:0, fontSize:13, color:C.orange, fontWeight:700 }}>⏱ Start pas zodra:</p>
+                        <p style={{ margin:"3px 0 0", fontSize:14, color:"#FFF" }}>{stapTrigger}</p>
+                      </div>
+                    )}
                     {kookTimerSec > 0 ? (
                       <>
                         <p style={{ fontSize:44, fontWeight:800, margin:"0 0 12px", fontVariantNumeric:"tabular-nums" }}>
@@ -1562,7 +1606,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                   onClick={() => {
                     const vorigeIndex = kookStapIndex - 1;
                     setKookStapIndex(vorigeIndex); setKookTimerSec(0); setKookTimerLopend(false);
-                    if (spraakAan && actieefRecept.stappen[vorigeIndex]) spreekStap(actieefRecept.stappen[vorigeIndex]);
+                    if (spraakAan && actieefRecept.stappen[vorigeIndex]) spreekStap(stapTekst(actieefRecept.stappen[vorigeIndex]));
                   }}>
                   ← Vorige
                 </button>
@@ -1576,7 +1620,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                     onClick={() => {
                       const volgendeIndex = kookStapIndex + 1;
                       setKookStapIndex(volgendeIndex); setKookTimerSec(0); setKookTimerLopend(false);
-                      if (spraakAan && actieefRecept.stappen[volgendeIndex]) spreekStap(actieefRecept.stappen[volgendeIndex]);
+                      if (spraakAan && actieefRecept.stappen[volgendeIndex]) spreekStap(stapTekst(actieefRecept.stappen[volgendeIndex]));
                     }}>
                     Volgende →
                   </button>
@@ -1622,9 +1666,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
             {kookwekkerTab === "ei" && (
               <>
-                <p style={{ fontSize:12, color:C.muted, margin:"0 0 14px" }}>
-                  Tik op een gaarheid zodra je het ei in het kokende water legt — de timer start meteen vanaf dat moment. Je kunt meerdere eieren tegelijk timen, ook met verschillende gaarheid.
-                </p>
+                <div style={{ background:`${C.orange}15`, border:`1px solid ${C.orange}40`, borderRadius:12, padding:"10px 14px", marginBottom:14 }}>
+                  <p style={{ margin:0, fontSize:12, color:C.text, lineHeight:1.5 }}>
+                    <strong style={{ color:C.orange }}>⏱ Start pas zodra:</strong> het water kookt en je het ei erin legt. Tik dan meteen op de gewenste gaarheid — de timer start op dat moment. Je kunt meerdere eieren tegelijk timen, ook met verschillende gaarheid.
+                  </p>
+                </div>
 
                 {/* Voorgeprogrammeerde standen */}
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:14 }}>
@@ -1659,8 +1705,13 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
               const gaarheidInfo = STEAK_GAARHEDEN.find(g => g.id === steakGaarheid);
               return (
                 <>
+                  <div style={{ background:`${C.orange}15`, border:`1px solid ${C.orange}40`, borderRadius:12, padding:"10px 14px", marginBottom:12 }}>
+                    <p style={{ margin:0, fontSize:12, color:C.text, lineHeight:1.5 }}>
+                      <strong style={{ color:C.orange }}>⏱ Start pas zodra:</strong> de pan echt heet genoeg is. Bij boter: zodra die gesmolten is en licht bruist/schuimt (niet meer sist als er water bij komt). Bij olie: zodra 'ie glimt en licht rookt. Leg dán pas de steak in de pan en start de timer — leg je 'm er te vroeg in, dan bak je 'm niet dicht en gaart hij ongelijk.
+                    </p>
+                  </div>
                   <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
-                    Kies dikte en gewenste gaarheid, start de timer zodra de steak de pan/grill ingaat, en start 'm nog een keer voor de tweede kant na het draaien. Richtlijn op basis van een hete pan — bij twijfel is een kernthermometer het zekerst.
+                    Kies dikte en gewenste gaarheid. Start de timer nog een keer voor de tweede kant na het draaien. Richtlijn op basis van een hete pan — bij twijfel is een kernthermometer het zekerst.
                   </p>
 
                   <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.04em", margin:"0 0 8px" }}>Dikte</p>
@@ -1699,9 +1750,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
             {kookwekkerTab === "pasta" && (
               <>
-                <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
-                  Vanaf het moment dat de pasta het kokende water ingaat. Richttijden voor "al dente" — proef gerust een minuutje eerder, dat verschilt per merk.
-                </p>
+                <div style={{ background:`${C.orange}15`, border:`1px solid ${C.orange}40`, borderRadius:12, padding:"10px 14px", marginBottom:12 }}>
+                  <p style={{ margin:0, fontSize:12, color:C.text, lineHeight:1.5 }}>
+                    <strong style={{ color:C.orange }}>⏱ Start pas zodra:</strong> het water goed kookt en de pasta erin gaat. Richttijden voor "al dente" — proef gerust een minuutje eerder, dat verschilt per merk.
+                  </p>
+                </div>
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(2, 1fr)", gap:8, marginBottom:8 }}>
                   {PASTA_PRESETS.map(p => (
                     <button key={p.id} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 8px", cursor:"pointer", textAlign:"center" }}
@@ -1718,9 +1771,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
             {kookwekkerTab === "rijst" && (
               <>
-                <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
-                  Vanaf het moment dat het water kookt en de rijst erbij gaat. Laat na het koken het liefst nog 5 min met deksel erop rusten voor het mooiste resultaat.
-                </p>
+                <div style={{ background:`${C.orange}15`, border:`1px solid ${C.orange}40`, borderRadius:12, padding:"10px 14px", marginBottom:12 }}>
+                  <p style={{ margin:0, fontSize:12, color:C.text, lineHeight:1.5 }}>
+                    <strong style={{ color:C.orange }}>⏱ Start pas zodra:</strong> het water kookt en de rijst erbij gaat. Laat na het koken het liefst nog 5 min met deksel erop rusten voor het mooiste resultaat.
+                  </p>
+                </div>
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:8 }}>
                   {RIJST_PRESETS.map(p => (
                     <button key={p.id} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 6px", cursor:"pointer", textAlign:"center" }}
@@ -1740,9 +1795,11 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
             {kookwekkerTab === "groenten" && (
               <>
-                <p style={{ fontSize:12, color:C.muted, margin:"0 0 12px" }}>
-                  Vanaf het moment dat de groente het kokende water ingaat. Voor beetgaar iets korter, voor zachter iets langer.
-                </p>
+                <div style={{ background:`${C.orange}15`, border:`1px solid ${C.orange}40`, borderRadius:12, padding:"10px 14px", marginBottom:12 }}>
+                  <p style={{ margin:0, fontSize:12, color:C.text, lineHeight:1.5 }}>
+                    <strong style={{ color:C.orange }}>⏱ Start pas zodra:</strong> de groente het kokende water ingaat. Voor beetgaar iets korter, voor zachter iets langer.
+                  </p>
+                </div>
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:8 }}>
                   {GROENTE_PRESETS.map(p => (
                     <button key={p.id} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 6px", cursor:"pointer", textAlign:"center" }}
@@ -2049,11 +2106,17 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
             {receptForm.stappen.map((stap, i) => (
               <div key={i} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"flex-start" }}>
                 <div style={{ width:26, height:26, borderRadius:"50%", background:C.orange, color:"#FFF", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:700, flexShrink:0, marginTop:8 }}>{i+1}</div>
-                <textarea style={{ ...S.inp, flex:1, height:56, resize:"none" }} placeholder={`Stap ${i+1}`} value={stap} onChange={e => { const n=[...receptForm.stappen]; n[i]=e.target.value; setReceptForm(f=>({...f,stappen:n})); }} />
+                <div style={{ flex:1 }}>
+                  <textarea style={{ ...S.inp, width:"100%", height:56, resize:"none", boxSizing:"border-box", marginBottom:6 }} placeholder={`Stap ${i+1}`} value={stap} onChange={e => { const n=[...receptForm.stappen]; n[i]=e.target.value; setReceptForm(f=>({...f,stappen:n})); }} />
+                  <input style={{ ...S.inp, width:"100%", fontSize:12, padding:"6px 10px", boxSizing:"border-box" }}
+                    placeholder="⏱ Start timer zodra… (optioneel)"
+                    value={receptForm.stapTimers?.[i] || ""}
+                    onChange={e => { const n=[...(receptForm.stapTimers||[])]; n[i]=e.target.value; setReceptForm(f=>({...f,stapTimers:n})); }} />
+                </div>
               </div>
             ))}
             <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, fontSize:13, marginBottom:16, padding:"8px 16px" }}
-              onClick={() => setReceptForm(f=>({...f,stappen:[...f.stappen,""]}))}>
+              onClick={() => setReceptForm(f=>({...f,stappen:[...f.stappen,""], stapTimers:[...(f.stapTimers||[]),""]}))}>
               + Stap
             </button>
             <div style={{ display:"flex", gap:10 }}>

@@ -92,7 +92,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown, in dit exacte formaat �
       "kcal": 0,
       "beschrijving": "korte beschrijving",
       "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
-      "stappen": ["stap 1", "stap 2"]
+      "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
     }
   ]
 }
