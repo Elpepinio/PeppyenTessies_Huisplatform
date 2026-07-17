@@ -308,6 +308,7 @@ const VASTE_LASTEN_PRESETS = [
 ];
 
 const prevMonth = ym => { const [y,m]=ym.split("-").map(Number); return m===1?`${y-1}-12`:`${y}-${String(m-1).padStart(2,"0")}`; };
+const nextMonth = ym => { const [y,m]=ym.split("-").map(Number); return m===12?`${y+1}-01`:`${y}-${String(m+1).padStart(2,"0")}`; };
 
 // De 6 maanden vóórafgaand aan `ym` (ym zelf niet inbegrepen) — gebruikt als
 // stabielere basislijn dan alleen "vorige maand", die te veel kan schommelen
@@ -2542,9 +2543,11 @@ export default function BudgetApp() {
             {(() => {
               const alleeMaanden = [...new Set(expenses.map(e=>e.month))].sort();
               const vanaf = alleeMaanden[0], tot = alleeMaanden[alleeMaanden.length-1];
+              const kanTerug  = uitgavenPeriode==="maand" && vanaf && selectedMonth > vanaf;
+              const kanVooruit = uitgavenPeriode==="maand" && selectedMonth < NOW_MONTH;
               return (
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
-                  <div style={{ display:"flex", gap:6 }}>
+                  <div style={{ display:"flex", gap:6, alignItems:"center" }}>
                     <button onClick={()=>setUitgavenPeriode("alles")}
                       style={{ padding:"5px 11px", borderRadius:20, border:`1px solid ${uitgavenPeriode==="alles"?C.accent:C.border}`, background:uitgavenPeriode==="alles"?`${C.accent}22`:"transparent", color:uitgavenPeriode==="alles"?C.accent:C.muted, fontSize:12, fontWeight:600, cursor:"pointer" }}>
                       Alle tijd
@@ -2553,11 +2556,26 @@ export default function BudgetApp() {
                       style={{ padding:"5px 11px", borderRadius:20, border:`1px solid ${uitgavenPeriode==="maand"?C.accent:C.border}`, background:uitgavenPeriode==="maand"?`${C.accent}22`:"transparent", color:uitgavenPeriode==="maand"?C.accent:C.muted, fontSize:12, fontWeight:600, cursor:"pointer" }}>
                       Alleen {fmtM(selectedMonth)}
                     </button>
+                    {uitgavenPeriode==="maand" && (
+                      <div style={{ display:"flex", gap:3, marginLeft:2 }}>
+                        <button disabled={!kanTerug} onClick={()=>setSelectedMonth(prevMonth(selectedMonth))}
+                          style={{ width:26, height:26, borderRadius:"50%", border:`1px solid ${C.border}`, background:C.surf, color:kanTerug?C.text:C.dim, cursor:kanTerug?"pointer":"default", fontSize:13, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                          ‹
+                        </button>
+                        <button disabled={!kanVooruit} onClick={()=>setSelectedMonth(nextMonth(selectedMonth))}
+                          style={{ width:26, height:26, borderRadius:"50%", border:`1px solid ${C.border}`, background:C.surf, color:kanVooruit?C.text:C.dim, cursor:kanVooruit?"pointer":"default", fontSize:13, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                          ›
+                        </button>
+                      </div>
+                    )}
                   </div>
                   {uitgavenPeriode==="alles" && vanaf && tot && (
                     <span style={{ fontSize:11, color:C.muted }}>
                       📅 {fmtM(vanaf)} t/m {fmtM(tot)} ({alleeMaanden.length} maanden — dit zijn cumulatieve totalen over die hele periode, geen maandbedragen)
                     </span>
+                  )}
+                  {uitgavenPeriode==="maand" && vanaf && !kanTerug && (
+                    <span style={{ fontSize:11, color:C.muted }}>📅 Dit is de eerste maand met data ({fmtM(vanaf)})</span>
                   )}
                 </div>
               );
