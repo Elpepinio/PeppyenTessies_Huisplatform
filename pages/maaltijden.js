@@ -296,6 +296,46 @@ export default function MaaltijdApp() {
   const [weekVoorkeurVega, setWeekVoorkeurVega] = useState(3);
   const [weekMaxTijd, setWeekMaxTijd] = useState(0); // 0 = geen limiet
   const [weekSuggestieLoading, setWeekSuggestieLoading] = useState(false);
+  const audioCtxRef = useRef(null);
+
+  // iOS Safari speelt NOOIT geluid af dat vanuit een setInterval/timeout komt
+  // tenzij de AudioContext eerder al is "ontgrendeld" door een directe tik
+  // van de gebruiker. Deze functie wordt daarom aangeroepen op het moment
+  // dat iemand een timer START (een echte tik), zodat de context klaarstaat
+  // tegen de tijd dat de timer vanzelf afloopt.
+  function ontgrendelGeluid() {
+    try {
+      if (!audioCtxRef.current) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) audioCtxRef.current = new AC();
+      }
+      if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+        audioCtxRef.current.resume();
+      }
+    } catch (e) { /* geen audio-ondersteuning, negeren */ }
+  }
+
+  // Speelt een duidelijke pieptoon-reeks (drie korte piepjes) — werkt
+  // offline, geen los geluidsbestand nodig, en werkt op iOS mits
+  // ontgrendelGeluid() al eerder is aangeroepen via een tik.
+  function speelAlarmGeluid() {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    const nu = ctx.currentTime;
+    [0, 0.35, 0.7].forEach(offset => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.001, nu + offset);
+      gain.gain.exponentialRampToValueAtTime(0.4, nu + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, nu + offset + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(nu + offset);
+      osc.stop(nu + offset + 0.3);
+    });
+  }
 
   // Timer-countdown voor Kookmodus
   useEffect(() => {
@@ -304,6 +344,7 @@ export default function MaaltijdApp() {
       setKookTimerSec(s => {
         if (s <= 1) {
           setKookTimerLopend(false);
+          speelAlarmGeluid();
           if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
           showToast("⏰ Timer afgelopen!");
           return 0;
@@ -327,6 +368,7 @@ export default function MaaltijdApp() {
       const klaar = keukenTimers.filter(t => t.eindTijd <= nu && !t.klaarGemeld);
       if (klaar.length > 0) {
         setKeukenTimers(prev => prev.map(t => klaar.some(k => k.id === t.id) ? { ...t, klaarGemeld: true } : t));
+        speelAlarmGeluid();
         if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 300]);
         klaar.forEach(t => showToast(`⏰ ${t.naam} is klaar!`));
       }
@@ -335,6 +377,7 @@ export default function MaaltijdApp() {
   }, [keukenTimers]);
 
   function startEiTimer(naam, minuten, type = "ei") {
+    ontgrendelGeluid();
     const duurSeconden = Math.round(minuten * 60);
     setKeukenTimers(prev => [...prev, { id: uid(), naam, type, eindTijd: Date.now() + duurSeconden * 1000, duurSeconden, klaarGemeld: false }]);
   }
@@ -484,8 +527,17 @@ export default function MaaltijdApp() {
   // (geschaald op porties), trekt af wat al in Voorraad staat, en stuurt de
   // rest naar de Boodschappenlijst in Lijsten. Wordt gebruikt voor zowel de
   // hele weekplanning als voor één los recept.
-  async function stuurIngredientenNaarBoodschappen(recepten_) {
+  //
+  // opties.groepeerPerRecept: bij het delen van ÉÉN recept kun je ervoor
+  // kiezen om alle ingrediënten onder één nieuwe categorie te zetten met de
+  // naam van het recept, zodat ze in de boodschappenlijst bij elkaar in één
+  // overzicht blijven staan i.p.v. verspreid over de schap-categorieën
+  // (groente, vlees, houdbaar, ...). Bij meerdere recepten tegelijk (bv. de
+  // hele week) blijft schap-indeling wél de standaard — dan is juist handig
+  // dat alles per schap gebundeld is tijdens het boodschappen doen.
+  async function stuurIngredientenNaarBoodschappen(recepten_, opties = {}) {
     if (recepten_.length === 0) { showToast("⚠️ Geen recepten om ingrediënten van te halen"); return; }
+    const groepeerPerRecept = opties.groepeerPerRecept && recepten_.length === 1;
 
     // Samenvoegen van ingrediënten
     const ingredienten = {};
@@ -530,24 +582,38 @@ export default function MaaltijdApp() {
       const boodschappenLijst = (data.lists || []).find(l => l.name.toLowerCase().includes("boodschappen"));
       if (!boodschappenLijst) { showToast("⚠️ Geen boodschappenlijst gevonden in Lijsten-tool"); return; }
 
+      let categorieenVoorLijst = boodschappenLijst.categories;
+      let receptCatId = null;
+      if (groepeerPerRecept) {
+        const receptNaam = recepten_[0].naam;
+        const bestaande = boodschappenLijst.categories.find(c => c.label === `🍽️ ${receptNaam}`);
+        if (bestaande) {
+          receptCatId = bestaande.id;
+        } else {
+          const nieuweCat = { id: uid(), label: `🍽️ ${receptNaam}`, icon: "🍽️" };
+          receptCatId = nieuweCat.id;
+          categorieenVoorLijst = [...boodschappenLijst.categories, nieuweCat];
+        }
+      }
+
       const nieuweItems = items.map(i => ({
         id: uid(),
         name: i.naam,
-        category: raadCategorie(i.naam, boodschappenLijst.categories),
+        category: groepeerPerRecept ? receptCatId : raadCategorie(i.naam, boodschappenLijst.categories),
         amount: Math.ceil(i.hoeveelheid) || 1,
         unit: i.eenheid || "stuks",
         checked: false, inCart: false, note: "Van maaltijdplanner",
         addedAt: Date.now(),
       }));
 
-      const updatedList = { ...boodschappenLijst, items: [...boodschappenLijst.items, ...nieuweItems] };
+      const updatedList = { ...boodschappenLijst, categories: categorieenVoorLijst, items: [...boodschappenLijst.items, ...nieuweItems] };
       const updatedLists = data.lists.map(l => l.id === boodschappenLijst.id ? updatedList : l);
       await fetch("/api/lijsten", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lists: updatedLists }),
       });
-      showToast(`✅ ${items.length} ingrediënten naar boodschappenlijst${alInVoorraad > 0 ? ` (${alInVoorraad} al deels in voorraad, verrekend)` : ""}`);
+      showToast(`✅ ${items.length} ingrediënten naar boodschappenlijst${groepeerPerRecept ? ` (bij elkaar onder "${recepten_[0].naam}")` : ""}${alInVoorraad > 0 ? ` (${alInVoorraad} al deels in voorraad, verrekend)` : ""}`);
     } catch (e) { showToast("❌ Kon niet toevoegen aan boodschappenlijst"); }
   }
 
@@ -1194,7 +1260,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
               ✅ Markeer gemaakt
             </button>
             <button style={{ ...S.btn(C.card, C.orange), border:`1px solid ${C.border}`, flex:"1 1 30%", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontSize:13 }}
-              onClick={() => stuurIngredientenNaarBoodschappen([actieefRecept])}>
+              onClick={() => stuurIngredientenNaarBoodschappen([actieefRecept], { groepeerPerRecept: true })}>
               <ShoppingCart size={14} /> Boodschappenlijst
             </button>
           </div>
@@ -1592,7 +1658,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                       </>
                     ) : (
                       <button style={{ ...S.btn(C.orange), padding:"12px 28px", fontSize:15 }}
-                        onClick={() => { setKookTimerSec(stapMinuten * 60); setKookTimerLopend(true); }}>
+                        onClick={() => { ontgrendelGeluid(); setKookTimerSec(stapMinuten * 60); setKookTimerLopend(true); }}>
                         ⏱ Start timer ({stapMinuten} min)
                       </button>
                     )}
@@ -2132,7 +2198,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
           <Link href="/" style={S.switchBtn}>← Overzicht</Link>
           <h1 style={S.title}>🍽️ Maaltijden</h1>
         </div>
-        <button onClick={() => setShowEiTimer(true)} style={{ position:"relative", background:C.card, border:`1px solid ${C.border}`, borderRadius:12, width:44, height:44, fontSize:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Kookwekkers">
+        <button onClick={() => { ontgrendelGeluid(); setShowEiTimer(true); }} style={{ position:"relative", background:C.card, border:`1px solid ${C.border}`, borderRadius:12, width:44, height:44, fontSize:20, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Kookwekkers">
           ⏱
           {keukenTimers.length > 0 && (
             <span style={{ position:"absolute", top:-4, right:-4, background:C.orange, color:"#FFF", borderRadius:"50%", width:18, height:18, fontSize:10, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" }}>

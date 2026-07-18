@@ -22,6 +22,8 @@ const BRON_LABELS = {
   "maaltijden-overig": { emoji: "🍽️", label: "Maaltijden — Overig" },
   "places-foto-herkenning": { emoji: "🗺️", label: "Places — Foto herkennen" },
   "kijklijst-suggesties": { emoji: "🎬", label: "Kijklijst — Suggesties" },
+  "bonnetjes-scan": { emoji: "🧾", label: "Bonnetjes — Bon scannen" },
+  "bonnetjes-overig": { emoji: "🧾", label: "Bonnetjes — Overig" },
   onbekend: { emoji: "❔", label: "Onbekend" },
 };
 function bronInfo(bron) { return BRON_LABELS[bron] || { emoji: "🤖", label: bron }; }

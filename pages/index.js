@@ -75,6 +75,13 @@ const TOOLS = [
     color: "#2C6E8C",
   },
   {
+    href: "/bonnetjes",
+    label: "Bonnetjes",
+    description: "Aankoopbonnetjes scannen, garantie bijhouden en terugvinden",
+    emoji: "🧾",
+    color: "#8B5E34",
+  },
+  {
     href: "/ai-kosten",
     label: "AI-kosten",
     description: "Wat de AI-functies in de tools ons kosten",
