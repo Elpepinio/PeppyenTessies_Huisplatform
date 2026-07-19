@@ -7,7 +7,7 @@ export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
 // zoekopdracht kost apart geld ($0,01), dus begrensd op een paar pogingen.
 const MAX_ZOEKOPDRACHTEN = 3;
 
-const CATEGORIEEN_IDS = ["verlichting","tafels","zitmeubels","vloerkleden","kasten","wanddecoratie","planten_vazen","textiel","keuken_tafelen","buiten_tuin","overig"];
+const CATEGORIEEN_IDS = ["verlichting","tafels","zitmeubels","vloerkleden","kasten","wanddecoratie","planten_vazen","textiel","keuken_tafelen","keukenapparatuur","buiten_tuin","overig"];
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Methode niet toegestaan" });

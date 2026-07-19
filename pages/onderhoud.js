@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, AlertCircle, Check, Clock } from "lucide-react";
+import { Plus, X, ChevronLeft, AlertCircle, Check, Clock, ExternalLink } from "lucide-react";
 
 const OBJECT_ICONEN = ["🏠","🚐","🚗","🔧","❄️","🌡️","💧","⚡","🌿","📦","🛁","🍳","🔑","🏊","📺","💻"];
 const INTERVALLEN = [
@@ -237,6 +237,13 @@ export default function OnderhoudApp() {
 
   // ── Verbouwplanner ──────────────────────────────────────
   const [actieefProjectId, setActieefProjectId] = useState(null);
+
+  useEffect(() => {
+    if (tab !== "verbouwing") return;
+    laadWoonideeen();
+    const poll = setInterval(laadWoonideeen, 15000);
+    return () => clearInterval(poll);
+  }, [tab, laadWoonideeen]);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [editProjectId, setEditProjectId] = useState(null);
   const [projectWeergave, setProjectWeergave] = useState("lijst"); // "lijst" | "tijdlijn"
@@ -251,6 +258,24 @@ export default function OnderhoudApp() {
   const [klaarTaakId, setKlaarTaakId] = useState(null);
   const [klaarDatum, setKlaarDatum] = useState(new Date().toISOString().slice(0,10));
   const [mijlpalen, setMijlpalenState] = useState([]);
+  // Live opgehaald uit de Woonideeën-tool — alleen-lezen hier, puur om de
+  // verbouwingskosten aan geselecteerde items te kunnen koppelen. Ververst
+  // elke keer dat het Kosten-blok opengaat, zodat prijswijzigingen in
+  // Woonideeën (bv. via "Beste prijs elders") hier meteen doorwerken.
+  const [woonideeenItems, setWoonideeenItems] = useState([]);
+  const [kostenZoek, setKostenZoek] = useState("");
+  const [showKostenKoppelen, setShowKostenKoppelen] = useState(false);
+  const [extraKostForm, setExtraKostForm] = useState({ naam: "", bedrag: "", link: "" });
+  const [showExtraKostForm, setShowExtraKostForm] = useState(false);
+
+  const laadWoonideeen = useCallback(async () => {
+    try {
+      const res = await fetch("/api/woonideeen");
+      if (!res.ok) return;
+      const data = await res.json();
+      setWoonideeenItems(data.ideeen || []);
+    } catch { /* Woonideeën niet bereikbaar — kostenkoppeling toont dan gewoon niets, geen harde fout */ }
+  }, []);
   const [showMijlpaalForm, setShowMijlpaalForm] = useState(false);
   const [mijlpaalForm, setMijlpaalForm] = useState({ naam: "", datum: new Date().toISOString().slice(0,10) });
 
@@ -417,6 +442,44 @@ export default function OnderhoudApp() {
     if (!window.confirm("Project en alle bijbehorende taken verwijderen?")) return;
     persistProjectData(projecten.filter(p => p.id !== id), projectTaken.filter(t => t.projectId !== id), mijlpalen.filter(m => m.projectId !== id));
     if (actieefProjectId === id) setActieefProjectId(null);
+  }
+
+  // ── Verbouwplanner: kosten (gekoppeld aan Woonideeën + losse posten) ────
+  function toggleGekoppeldIdee(projectId, ideeId) {
+    persistProjectData(projecten.map(p => {
+      if (p.id !== projectId) return p;
+      const huidig = p.gekoppeldeIdeeIds || [];
+      const nieuw = huidig.includes(ideeId) ? huidig.filter(id => id !== ideeId) : [...huidig, ideeId];
+      return { ...p, gekoppeldeIdeeIds: nieuw };
+    }), projectTaken);
+  }
+
+  // Betaalstatus wordt bewust op het project zelf bijgehouden (los van de
+  // Woonideeën-data, die niet "van" de verbouwing is) — werkt zo voor zowel
+  // gekoppelde woonideeën als losse kostenposten, met hetzelfde item-id.
+  function toggleBetaald(projectId, itemId) {
+    persistProjectData(projecten.map(p => {
+      if (p.id !== projectId) return p;
+      const huidig = p.betaalStatus || {};
+      return { ...p, betaalStatus: { ...huidig, [itemId]: !huidig[itemId] } };
+    }), projectTaken);
+  }
+
+  function voegExtraKostToe(projectId) {
+    if (!extraKostForm.naam.trim() || !extraKostForm.bedrag) return;
+    persistProjectData(projecten.map(p => p.id === projectId
+      ? { ...p, extraKosten: [...(p.extraKosten||[]), { id: uid(), naam: extraKostForm.naam, bedrag: +extraKostForm.bedrag, link: extraKostForm.link.trim() || null }] }
+      : p
+    ), projectTaken);
+    setExtraKostForm({ naam: "", bedrag: "", link: "" });
+    setShowExtraKostForm(false);
+  }
+
+  function verwijderExtraKost(projectId, kostId) {
+    persistProjectData(projecten.map(p => p.id === projectId
+      ? { ...p, extraKosten: (p.extraKosten||[]).filter(k => k.id !== kostId) }
+      : p
+    ), projectTaken);
   }
 
   // ── Verbouwplanner: taken ──────────────────────────────
@@ -1079,12 +1142,23 @@ export default function OnderhoudApp() {
                 ) : projecten.map(p => {
                   const pTaken = projectTaken.filter(t => t.projectId === p.id);
                   const klaar = pTaken.filter(t => t.werkelijkEind).length;
+                  const pGekoppeld = woonideeenItems.filter(w => (p.gekoppeldeIdeeIds||[]).includes(w.id));
+                  const pExtra = p.extraKosten||[];
+                  const pBetaalStatus = p.betaalStatus || {};
+                  const totaalKosten = pGekoppeld.reduce((s,w)=>s+(w.prijs||0),0) + pExtra.reduce((s,k)=>s+(k.bedrag||0),0);
+                  const teBetalen = totaalKosten
+                    - pGekoppeld.filter(w=>pBetaalStatus[w.id]).reduce((s,w)=>s+(w.prijs||0),0)
+                    - pExtra.filter(k=>pBetaalStatus[k.id]).reduce((s,k)=>s+(k.bedrag||0),0);
                   return (
                     <div key={p.id} style={{ ...S.card, cursor:"pointer" }} onClick={() => setActieefProjectId(p.id)}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
                         <div>
                           <p style={{ margin:"0 0 4px", fontWeight:700, fontSize:15, color:C.text }}>{p.naam}</p>
-                          <p style={{ margin:0, fontSize:12, color:C.muted }}>{pTaken.length} taken · {klaar} klaar</p>
+                          <p style={{ margin:0, fontSize:12, color:C.muted }}>
+                            {pTaken.length} taken · {klaar} klaar
+                            {totaalKosten > 0 ? ` · 💰 €${totaalKosten.toFixed(0)}` : ""}
+                            {teBetalen > 0 ? ` (⏳ €${teBetalen.toFixed(0)} te betalen)` : ""}
+                          </p>
                         </div>
                         <button onClick={(e) => { e.stopPropagation(); verwijderProject(p.id); }} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", padding:4 }}>
                           <X size={16} />
@@ -1163,6 +1237,137 @@ export default function OnderhoudApp() {
                   🚩 Mijlpaal
                 </button>
               </div>
+
+              {/* ── Kosten: gekoppelde Woonideeën-items + losse posten ── */}
+              {(() => {
+                const gekoppeldeIds = project.gekoppeldeIdeeIds || [];
+                const gekoppeldeItems = woonideeenItems.filter(w => gekoppeldeIds.includes(w.id));
+                const extraKosten = project.extraKosten || [];
+                const betaalStatus = project.betaalStatus || {};
+                const totaalIdeeen = gekoppeldeItems.reduce((s,w) => s + (w.prijs||0), 0);
+                const totaalExtra = extraKosten.reduce((s,k) => s + (k.bedrag||0), 0);
+                const totaal = totaalIdeeen + totaalExtra;
+                const totaalBetaald = gekoppeldeItems.filter(w => betaalStatus[w.id]).reduce((s,w)=>s+(w.prijs||0),0)
+                  + extraKosten.filter(k => betaalStatus[k.id]).reduce((s,k)=>s+(k.bedrag||0),0);
+                const totaalTeBetalen = totaal - totaalBetaald;
+                const gefilterdeIdeeen = woonideeenItems.filter(w =>
+                  !kostenZoek.trim() || (w.titel||"").toLowerCase().includes(kostenZoek.toLowerCase())
+                );
+
+                return (
+                  <div style={{ ...S.card, background:`${C.purple}08`, border:`1px solid ${C.purple}33`, marginBottom:14 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+                      <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>💰 Verbouwingskosten</p>
+                      <p style={{ margin:0, fontSize:19, fontWeight:800, color:C.purple }}>€ {totaal.toFixed(0)}</p>
+                    </div>
+                    <p style={{ margin:"0 0 6px", fontSize:11, color:C.muted }}>
+                      €{totaalIdeeen.toFixed(0)} uit {gekoppeldeItems.length} gekoppeld{gekoppeldeItems.length===1?"":"e"} woonidee{gekoppeldeItems.length===1?"":"ën"} + €{totaalExtra.toFixed(0)} losse kosten
+                    </p>
+                    {totaal > 0 && (
+                      <div style={{ display:"flex", gap:14, marginBottom:10 }}>
+                        <span style={{ fontSize:12, color:C.green, fontWeight:700 }}>✅ Betaald: €{totaalBetaald.toFixed(0)}</span>
+                        <span style={{ fontSize:12, color:totaalTeBetalen>0?C.orange:C.muted, fontWeight:700 }}>⏳ Nog te betalen: €{totaalTeBetalen.toFixed(0)}</span>
+                      </div>
+                    )}
+
+                    {gekoppeldeItems.length > 0 && (
+                      <div style={{ marginBottom:10 }}>
+                        {gekoppeldeItems.map(w => (
+                          <div key={w.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:13 }}>
+                            <span style={{ textDecoration: betaalStatus[w.id] ? "line-through" : "none", color: betaalStatus[w.id] ? C.muted : C.text }}>{w.titel}</span>
+                            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                              {w.link && (
+                                <a href={w.link} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
+                                  style={{ color:C.purple, display:"flex", alignItems:"center" }} title="Naar webshop">
+                                  <ExternalLink size={13} />
+                                </a>
+                              )}
+                              <span style={{ fontWeight:600 }}>€ {(w.prijs||0).toFixed(0)}</span>
+                              <button onClick={() => toggleBetaald(project.id, w.id)}
+                                style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${betaalStatus[w.id]?C.green:C.border}`, background:betaalStatus[w.id]?`${C.green}18`:"transparent", color:betaalStatus[w.id]?C.green:C.muted, cursor:"pointer", whiteSpace:"nowrap" }}>
+                                {betaalStatus[w.id] ? "✅ Betaald" : "Nog te betalen"}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {extraKosten.length > 0 && (
+                      <div style={{ marginBottom:10, borderTop: gekoppeldeItems.length ? `1px solid ${C.border}` : "none", paddingTop: gekoppeldeItems.length ? 8 : 0 }}>
+                        {extraKosten.map(k => (
+                          <div key={k.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:13 }}>
+                            <span style={{ textDecoration: betaalStatus[k.id] ? "line-through" : "none", color: betaalStatus[k.id] ? C.muted : C.text }}>{k.naam}</span>
+                            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                              {k.link && (
+                                <a href={k.link} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
+                                  style={{ color:C.purple, display:"flex", alignItems:"center" }} title="Naar webshop/offerte">
+                                  <ExternalLink size={13} />
+                                </a>
+                              )}
+                              <span style={{ fontWeight:600 }}>€ {k.bedrag.toFixed(0)}</span>
+                              <button onClick={() => toggleBetaald(project.id, k.id)}
+                                style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${betaalStatus[k.id]?C.green:C.border}`, background:betaalStatus[k.id]?`${C.green}18`:"transparent", color:betaalStatus[k.id]?C.green:C.muted, cursor:"pointer", whiteSpace:"nowrap" }}>
+                                {betaalStatus[k.id] ? "✅ Betaald" : "Nog te betalen"}
+                              </button>
+                              <button onClick={() => verwijderExtraKost(project.id, k.id)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer" }}><X size={13} /></button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div style={{ display:"flex", gap:8 }}>
+                      <button style={{ ...S.btn(C.card, C.purple), border:`1px solid ${C.border}`, flex:1, fontSize:12, padding:"8px 0" }}
+                        onClick={() => setShowKostenKoppelen(v => !v)}>
+                        🔗 Koppel woonideeën
+                      </button>
+                      <button style={{ ...S.btn(C.card, C.purple), border:`1px solid ${C.border}`, flex:1, fontSize:12, padding:"8px 0" }}
+                        onClick={() => setShowExtraKostForm(true)}>
+                        + Losse kostenpost
+                      </button>
+                    </div>
+
+                    {showKostenKoppelen && (
+                      <div style={{ marginTop:10, paddingTop:10, borderTop:`1px solid ${C.border}` }}>
+                        <input style={{ ...S.inp, marginBottom:8, fontSize:13 }} placeholder="Zoek in woonideeën…" value={kostenZoek} onChange={e=>setKostenZoek(e.target.value)} />
+                        {woonideeenItems.length === 0 && (
+                          <p style={{ fontSize:12, color:C.muted, textAlign:"center", margin:"8px 0" }}>Nog geen woonideeën gevonden — voeg ze eerst toe in de Woonideeën-tool.</p>
+                        )}
+                        <div style={{ maxHeight:220, overflowY:"auto" }}>
+                          {gefilterdeIdeeen.map(w => {
+                            const aan = gekoppeldeIds.includes(w.id);
+                            return (
+                              <div key={w.id} onClick={() => toggleGekoppeldIdee(project.id, w.id)}
+                                style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 4px", cursor:"pointer", borderBottom:`1px solid ${C.border}` }}>
+                                <span style={{ width:18, height:18, borderRadius:5, border:`1.5px solid ${aan?C.purple:C.border}`, background:aan?C.purple:"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                                  {aan && <Check size={12} color="#FFF" />}
+                                </span>
+                                <span style={{ flex:1, fontSize:13 }}>{w.titel}</span>
+                                <span style={{ fontSize:12, color:C.muted }}>{w.prijs != null ? `€${w.prijs}` : "—"}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {showExtraKostForm && (
+                      <div style={{ marginTop:10, paddingTop:10, borderTop:`1px solid ${C.border}` }}>
+                        <input style={{ ...S.inp, marginBottom:8, fontSize:13 }} placeholder="Omschrijving (bv. Arbeidskosten loodgieter)"
+                          value={extraKostForm.naam} onChange={e=>setExtraKostForm(f=>({...f,naam:e.target.value}))} />
+                        <input style={{ ...S.inp, marginBottom:8, fontSize:13 }} type="number" min="0" step="0.01" placeholder="Bedrag €"
+                          value={extraKostForm.bedrag} onChange={e=>setExtraKostForm(f=>({...f,bedrag:e.target.value}))} />
+                        <input style={{ ...S.inp, marginBottom:8, fontSize:13 }} placeholder="Link naar webshop/offerte (optioneel)"
+                          value={extraKostForm.link} onChange={e=>setExtraKostForm(f=>({...f,link:e.target.value}))} />
+                        <div style={{ display:"flex", gap:8 }}>
+                          <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, flex:1, fontSize:12 }} onClick={() => setShowExtraKostForm(false)}>Annuleer</button>
+                          <button style={{ ...S.btn(C.purple), flex:1, fontSize:12 }} onClick={() => voegExtraKostToe(project.id)}>Toevoegen</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {pTaken.length === 0 && (
                 <p style={{ color:C.muted, textAlign:"center", padding:"30px 0", fontSize:14 }}>Nog geen taken — tik + om te beginnen</p>

@@ -28,6 +28,7 @@ const BRON_LABELS = {
   "woonideeen-prijsvergelijk": { emoji: "💰", label: "Woonideeën — Prijsvergelijking" },
   "woonideeen-screenshot": { emoji: "📸", label: "Woonideeën — Screenshot uitlezen" },
   "woonideeen-visueel-zoeken": { emoji: "🔍", label: "Woonideeën — Foto herkennen + prijzen zoeken" },
+  "moodboard-voorbeelden": { emoji: "🎨", label: "Moodboard — Voorbeelden zoeken" },
   onbekend: { emoji: "❔", label: "Onbekend" },
 };
 function bronInfo(bron) { return BRON_LABELS[bron] || { emoji: "🤖", label: bron }; }

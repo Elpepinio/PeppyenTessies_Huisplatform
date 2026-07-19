@@ -89,6 +89,13 @@ const TOOLS = [
     color: "#4A6B5A",
   },
   {
+    href: "/moodboard",
+    label: "Moodboard",
+    description: "Kleurstalen per fabrikant, met voorbeelden op groot oppervlak",
+    emoji: "🎨",
+    color: "#9C6B4F",
+  },
+  {
     href: "/ai-kosten",
     label: "AI-kosten",
     description: "Wat de AI-functies in de tools ons kosten",

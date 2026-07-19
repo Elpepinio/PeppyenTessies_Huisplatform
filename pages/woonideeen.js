@@ -13,6 +13,7 @@ const CATEGORIEEN = [
   { id: "planten_vazen",  label: "Planten & vazen",   icon: "🪴" },
   { id: "textiel",        label: "Textiel",           icon: "🧵" },
   { id: "keuken_tafelen", label: "Keuken & tafelen",  icon: "🍽️" },
+  { id: "keukenapparatuur", label: "Keukenapparatuur", icon: "🔌" },
   { id: "buiten_tuin",    label: "Buiten & tuin",     icon: "🌿" },
   { id: "overig",         label: "Overig",            icon: "📦" },
 ];
@@ -291,12 +292,19 @@ export default function WoonideeenApp() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Mislukt");
 
+      // De goedkoopste gevonden aanbieder (resultaten staan al gesorteerd van
+      // goedkoop naar duur) wordt meteen de hoofdlink — zo krijgt ook een via
+      // foto toegevoegd item altijd een werkende link, net als bij de andere
+      // twee manieren van toevoegen.
+      const beslissingsLink = data.resultaten?.find(r => r.link)?.link || null;
+
       setForm(f => ({
         ...f,
         titel: data.titel || f.titel,
         omschrijving: data.omschrijving || f.omschrijving,
         prijs: data.beslissingsPrijs != null ? String(data.beslissingsPrijs) : f.prijs,
         categorie: data.categorie || f.categorie,
+        link: beslissingsLink || f.link,
         foto: compressed,
         // Zet de gevonden aanbieders meteen klaar, zodat "Beste prijs elders"
         // in het detailscherm na het opslaan al gevuld is.
@@ -618,7 +626,7 @@ function WoonideeenView({
               </button>
             </div>
 
-            {!editId && (
+            {!editId ? (
               <>
                 <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Link naar het product</label>
                 <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
@@ -645,6 +653,18 @@ function WoonideeenView({
                 </p>
                 <input ref={screenshotInputRef} type="file" accept="image/*" style={{ display: "none" }}
                   onChange={e => { scanScreenshot(e.target.files[0]); e.target.value = ""; }} />
+              </>
+            ) : (
+              // Bij bewerken: gewoon een link kunnen toevoegen/aanpassen — met
+              // opzet géén "Info ophalen" hier, want dat zou de rest van het
+              // formulier (dat je net aan het bewerken bent) overschrijven.
+              <>
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Link naar het product</label>
+                <div style={{ position: "relative", marginBottom: 14 }}>
+                  <Link2 size={14} color={C.muted} style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
+                  <input style={{ ...S.inp, paddingLeft: 32 }} placeholder="https://… (bv. toegevoegd via Foto herkennen? Vul 'm hier alsnog aan)" value={form.link}
+                    onChange={e => setForm(f => ({ ...f, link: e.target.value }))} />
+                </div>
               </>
             )}
 

@@ -75,7 +75,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown, in dit exacte formaat:
   "titel": "naam van het product, kort en duidelijk",
   "omschrijving": "korte omschrijving van 1-2 zinnen — materiaal, afmetingen, stijl als vermeld",
   "prijs": prijs als getal zonder €-teken, null als onduidelijk,
-  "categorie": "verlichting|tafels|zitmeubels|vloerkleden|kasten|wanddecoratie|planten_vazen|textiel|keuken_tafelen|buiten_tuin|overig"
+  "categorie": "verlichting|tafels|zitmeubels|vloerkleden|kasten|wanddecoratie|planten_vazen|textiel|keuken_tafelen|keukenapparatuur|buiten_tuin|overig"
 }
 
 Paginatekst:
