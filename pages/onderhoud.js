@@ -15,6 +15,59 @@ const INTERVALLEN = [
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+// Comprimeert een foto naar een kleine JPEG (dataURL) voor opslag als factuur.
+async function comprimeerFoto(file, max = 1100) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > max || height > max) {
+        if (width > height) { height = Math.round(height * max / width); width = max; }
+        else { width = Math.round(width * max / height); height = max; }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/jpeg", 0.8));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Kon foto niet lezen")); };
+    img.src = url;
+  });
+}
+
+// Zet de eerste pagina van een PDF-factuur om naar een JPEG-dataURL, client-
+// side via pdfjs-dist (zelfde aanpak als bij Bonnetjes) — zo hoeft een PDF
+// niet apart behandeld te worden, hij wordt gewoon als "foto" opgeslagen.
+async function pdfEerstePaginaNaarFoto(file, max = 1100) {
+  const pdfjsLib = await import("pdfjs-dist/build/pdf.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(1);
+  const viewport = page.getViewport({ scale: 2.2 });
+  const renderCanvas = document.createElement("canvas");
+  renderCanvas.width = viewport.width;
+  renderCanvas.height = viewport.height;
+  await page.render({ canvasContext: renderCanvas.getContext("2d"), viewport }).promise;
+  let { width, height } = renderCanvas;
+  if (width <= max && height <= max) return renderCanvas.toDataURL("image/jpeg", 0.85);
+  const schaal = width > height ? max / width : max / height;
+  const kleinCanvas = document.createElement("canvas");
+  kleinCanvas.width = Math.round(width * schaal);
+  kleinCanvas.height = Math.round(height * schaal);
+  kleinCanvas.getContext("2d").drawImage(renderCanvas, 0, 0, kleinCanvas.width, kleinCanvas.height);
+  return kleinCanvas.toDataURL("image/jpeg", 0.85);
+}
+
+// Eén ingang voor het inlezen van een factuurbestand — bepaalt zelf of het
+// een PDF of een foto is.
+async function factuurNaarFoto(file) {
+  if (file.type === "application/pdf") return pdfEerstePaginaNaarFoto(file);
+  return comprimeerFoto(file);
+}
+
 function dagPlus(datum, dagen) {
   const d = new Date(datum);
   d.setDate(d.getDate() + dagen);
@@ -481,6 +534,50 @@ export default function OnderhoudApp() {
       ? { ...p, extraKosten: (p.extraKosten||[]).filter(k => k.id !== kostId) }
       : p
     ), projectTaken);
+  }
+
+  // Factuur (foto of PDF) uploaden bij een kostenregel — werkt zowel voor
+  // losse kostenposten als gekoppelde woonideeën-items, via hetzelfde
+  // item-id. PDF's worden client-side omgezet naar een afbeelding, dus
+  // verder identiek behandeld als een gefotografeerde factuur.
+  const facturenInputRef = useRef(null);
+  const [factuurDoelId, setFactuurDoelId] = useState(null); // {projectId, itemId}
+  const [factuurUploadBezig, setFactuurUploadBezig] = useState(false);
+  const [showFactuurPreview, setShowFactuurPreview] = useState(null); // dataURL
+
+  function startFactuurUpload(projectId, itemId) {
+    setFactuurDoelId({ projectId, itemId });
+    facturenInputRef.current?.click();
+  }
+
+  async function handleFactuurBestand(file) {
+    if (!file || !factuurDoelId) return;
+    setFactuurUploadBezig(true);
+    try {
+      const foto = await factuurNaarFoto(file);
+      const { projectId, itemId } = factuurDoelId;
+      persistProjectData(projecten.map(p => p.id !== projectId ? p : {
+        ...p,
+        facturen: { ...(p.facturen||{}), [itemId]: true },
+        facturenFotos: { ...(p.facturenFotos||{}), [itemId]: foto },
+      }), projectTaken);
+      showToast("✅ Factuur toegevoegd");
+    } catch (e) {
+      showToast("❌ Kon factuur niet inlezen (is dit een gewone, niet-beveiligde PDF of foto?)");
+    }
+    setFactuurUploadBezig(false);
+    setFactuurDoelId(null);
+  }
+
+  function verwijderFactuur(projectId, itemId) {
+    persistProjectData(projecten.map(p => {
+      if (p.id !== projectId) return p;
+      const facturen = { ...(p.facturen||{}) };
+      const facturenFotos = { ...(p.facturenFotos||{}) };
+      delete facturen[itemId];
+      facturenFotos[itemId] = null; // expliciet null meesturen zodat de API-route 'm ook uit Redis verwijdert
+      return { ...p, facturen, facturenFotos };
+    }), projectTaken);
   }
 
   // ── Verbouwplanner: taken ──────────────────────────────
@@ -1245,6 +1342,7 @@ export default function OnderhoudApp() {
                 const gekoppeldeItems = woonideeenItems.filter(w => gekoppeldeIds.includes(w.id));
                 const extraKosten = project.extraKosten || [];
                 const betaalStatus = project.betaalStatus || {};
+                const facturenFotos = project.facturenFotos || {};
                 const totaalIdeeen = gekoppeldeItems.reduce((s,w) => s + (w.prijs||0), 0);
                 const totaalExtra = extraKosten.reduce((s,k) => s + (k.bedrag||0), 0);
                 const totaal = totaalIdeeen + totaalExtra;
@@ -1284,6 +1382,11 @@ export default function OnderhoudApp() {
                                 </a>
                               )}
                               <span style={{ fontWeight:600 }}>€ {(w.prijs||0).toFixed(0)}</span>
+                              <button onClick={() => { if (facturenFotos[w.id]) { setFactuurDoelId({ projectId: project.id, itemId: w.id }); setShowFactuurPreview(facturenFotos[w.id]); } else startFactuurUpload(project.id, w.id); }}
+                                title={facturenFotos[w.id] ? "Bekijk factuur" : "Factuur toevoegen"}
+                                style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, opacity: facturenFotos[w.id]?1:0.4 }}>
+                                📎
+                              </button>
                               <button onClick={() => toggleBetaald(project.id, w.id)}
                                 style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${betaalStatus[w.id]?C.green:C.border}`, background:betaalStatus[w.id]?`${C.green}18`:"transparent", color:betaalStatus[w.id]?C.green:C.muted, cursor:"pointer", whiteSpace:"nowrap" }}>
                                 {betaalStatus[w.id] ? "✅ Betaald" : "Nog te betalen"}
@@ -1306,6 +1409,11 @@ export default function OnderhoudApp() {
                                 </a>
                               )}
                               <span style={{ fontWeight:600 }}>€ {k.bedrag.toFixed(0)}</span>
+                              <button onClick={() => { if (facturenFotos[k.id]) { setFactuurDoelId({ projectId: project.id, itemId: k.id }); setShowFactuurPreview(facturenFotos[k.id]); } else startFactuurUpload(project.id, k.id); }}
+                                title={facturenFotos[k.id] ? "Bekijk factuur" : "Factuur toevoegen"}
+                                style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, opacity: facturenFotos[k.id]?1:0.4 }}>
+                                📎
+                              </button>
                               <button onClick={() => toggleBetaald(project.id, k.id)}
                                 style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${betaalStatus[k.id]?C.green:C.border}`, background:betaalStatus[k.id]?`${C.green}18`:"transparent", color:betaalStatus[k.id]?C.green:C.muted, cursor:"pointer", whiteSpace:"nowrap" }}>
                                 {betaalStatus[k.id] ? "✅ Betaald" : "Nog te betalen"}
@@ -1530,6 +1638,35 @@ export default function OnderhoudApp() {
           );
         })()}
       </main>
+
+      {/* Verborgen input voor factuur-upload (foto of PDF) — wordt getriggerd
+          vanuit de 📎-knoppen bij kostenregels in het Verbouwing-tabblad. */}
+      <input ref={facturenInputRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }}
+        onChange={e => { handleFactuurBestand(e.target.files[0]); e.target.value = ""; }} />
+
+      {factuurUploadBezig && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:150 }}>
+          <div style={{ background:C.surf, borderRadius:14, padding:"20px 28px", fontSize:14, fontWeight:600, color:C.purple }}>Factuur wordt ingelezen…</div>
+        </div>
+      )}
+
+      {showFactuurPreview && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:150, padding:20 }}
+          onClick={() => setShowFactuurPreview(null)}>
+          <div style={{ maxWidth:"100%", maxHeight:"85vh" }} onClick={e => e.stopPropagation()}>
+            <img src={showFactuurPreview} alt="Factuur" style={{ maxWidth:"100%", maxHeight:"75vh", borderRadius:12, display:"block" }} />
+            <div style={{ display:"flex", gap:8, marginTop:10 }}>
+              <button style={{ ...S.btn(C.card, C.text), flex:1, fontSize:13 }} onClick={() => setShowFactuurPreview(null)}>Sluiten</button>
+              {factuurDoelId && (
+                <button style={{ ...S.btn(C.red), flex:1, fontSize:13 }}
+                  onClick={() => { verwijderFactuur(factuurDoelId.projectId, factuurDoelId.itemId); setShowFactuurPreview(null); }}>
+                  Verwijderen
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <button style={S.fab} onClick={() => {
         if (tab === "verbouwing") {

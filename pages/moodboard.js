@@ -14,12 +14,12 @@ const CATEGORIEEN = [
 const CAT_MAP = Object.fromEntries(CATEGORIEEN.map(c => [c.id, c]));
 
 const TOEPASSINGEN = [
-  { id: "keuken",  label: "Keuken" },
-  { id: "wand",    label: "Wand" },
-  { id: "gevel",   label: "Gevel" },
-  { id: "vloer",   label: "Vloer" },
-  { id: "kozijn",  label: "Kozijn/deur" },
-  { id: "meubel",  label: "Meubel" },
+  { id: "keuken",  label: "Keuken",     zoekomschrijving: "keukenkastjes/keukenfronten (het kastmateriaal/de deurtjes zelf — NIET geverfde muren in een keuken)" },
+  { id: "wand",    label: "Wand",       zoekomschrijving: "een geverfde wand" },
+  { id: "gevel",   label: "Gevel",      zoekomschrijving: "een gevel of buitenmuur" },
+  { id: "vloer",   label: "Vloer",      zoekomschrijving: "een vloer" },
+  { id: "kozijn",  label: "Kozijn/deur",zoekomschrijving: "een kozijn of deur" },
+  { id: "meubel",  label: "Meubel",     zoekomschrijving: "een meubelstuk" },
 ];
 
 // Veelgebruikte materiaal-/verffabrikanten, als snelkeuze bij het invullen
@@ -114,6 +114,7 @@ export default function MoodboardApp() {
   const [form, setForm] = useState(LEEG_FORM());
   const [showDetail, setShowDetail] = useState(null);
   const [voorbeeldenLoading, setVoorbeeldenLoading] = useState(false);
+  const [tegenkleurenLoading, setTegenkleurenLoading] = useState(false);
   const [toepassing, setToepassing] = useState("keuken");
 
   useEffect(() => {
@@ -217,7 +218,7 @@ export default function MoodboardApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           kleurNaam: staal.kleurNaam, fabrikant: staal.fabrikant, kleurcode: staal.kleurcode,
-          toepassing: TOEPASSINGEN.find(t => t.id === toepassingKeuze)?.label || toepassingKeuze,
+          toepassing: TOEPASSINGEN.find(t => t.id === toepassingKeuze)?.zoekomschrijving || toepassingKeuze,
         }),
       });
       const data = await res.json();
@@ -229,6 +230,27 @@ export default function MoodboardApp() {
       showToast(`❌ ${e.message || "Kon geen voorbeelden vinden"}`);
     }
     setVoorbeeldenLoading(false);
+  }
+
+  // Vraagt de AI om bij deze kleur passende tegenkleuren — een "gedrukte"
+  // (opvallende) en een "rustige" (ingetogen) set, puur op kleurtheorie,
+  // dus geen websearch nodig (goedkoper en sneller dan de andere functies).
+  async function zoekTegenkleuren(staal) {
+    setTegenkleurenLoading(true);
+    try {
+      const res = await fetch("/api/moodboard-tegenkleuren", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kleurNaam: staal.kleurNaam, fabrikant: staal.fabrikant, kleurcode: staal.kleurcode, hex: staal.hex }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Mislukt");
+      persist(stalen.map(x => x.id === staal.id ? { ...x, tegenkleuren: data, tegenkleurenOp: Date.now() } : x));
+      showToast("✅ Tegenkleuren bepaald");
+    } catch (e) {
+      showToast(`❌ ${e.message || "Kon geen tegenkleuren bepalen"}`);
+    }
+    setTegenkleurenLoading(false);
   }
 
   // ── Afgeleide data ──────────────────────────────────────
@@ -266,6 +288,7 @@ export default function MoodboardApp() {
       handleFotoUpload={handleFotoUpload} fotoInputRef={fotoInputRef}
       showDetail={showDetail} setShowDetail={setShowDetail}
       zoekVoorbeelden={zoekVoorbeelden} voorbeeldenLoading={voorbeeldenLoading}
+      zoekTegenkleuren={zoekTegenkleuren} tegenkleurenLoading={tegenkleurenLoading}
       toepassing={toepassing} setToepassing={setToepassing}
       toast={toast}
     />
@@ -300,6 +323,7 @@ function MoodboardView({
   showForm, setShowForm, form, setForm, editId, resetForm, opslaanStaal,
   bewerkStaal, verwijderStaal, handleFotoUpload, fotoInputRef,
   showDetail, setShowDetail, zoekVoorbeelden, voorbeeldenLoading,
+  zoekTegenkleuren, tegenkleurenLoading,
   toepassing, setToepassing, toast,
 }) {
   const detailStaal = showDetail ? stalen.find(s => s.id === showDetail) : null;
@@ -533,6 +557,54 @@ function MoodboardView({
               )}
               {detailStaal.gevondenVoorbeeldenOp && !detailStaal.gevondenVoorbeelden?.length && !voorbeeldenLoading && (
                 <p style={{ margin: "10px 0 0", fontSize: 12, color: C.muted }}>{detailStaal.gevondenVoorbeeldenOpmerking || "Niets bruikbaars gevonden — probeer een andere toepassing."}</p>
+              )}
+            </div>
+
+            {/* Tegenkleuren */}
+            <div style={{ ...S.card, marginBottom: 16 }}>
+              <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700, color: C.text }}>🎨 Welke tegenkleur werkt hierbij?</p>
+              <p style={{ margin: "0 0 10px", fontSize: 11, color: C.muted }}>
+                Een gedrukte (opvallende) en een rustige (ingetogen) set suggesties, op basis van kleurtheorie.
+              </p>
+              <button style={{ ...S.btn(), width: "100%", padding: "10px 0", fontSize: 13 }}
+                onClick={() => zoekTegenkleuren(detailStaal)} disabled={tegenkleurenLoading}>
+                {tegenkleurenLoading ? "Bezig…" : "🎨 Bepaal tegenkleuren"}
+              </button>
+
+              {detailStaal.tegenkleuren && (detailStaal.tegenkleuren.gedrukt?.length > 0 || detailStaal.tegenkleuren.rustig?.length > 0) && (
+                <div style={{ marginTop: 12 }}>
+                  {detailStaal.tegenkleuren.gedrukt?.length > 0 && (
+                    <>
+                      <p style={{ margin: "0 0 6px", fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>Gedrukt</p>
+                      {detailStaal.tegenkleuren.gedrukt.map((t, idx) => (
+                        <div key={idx} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 0" }}>
+                          <div style={{ width: 32, height: 32, borderRadius: 8, background: t.hex || C.card, flexShrink: 0, border: `1px solid ${C.border}` }} />
+                          <div>
+                            <p style={{ margin: 0, fontSize: 12, fontWeight: 700 }}>{t.kleurnaam} {t.hex && <span style={{ color: C.muted, fontWeight: 400 }}>({t.hex})</span>}</p>
+                            <p style={{ margin: 0, fontSize: 11, color: C.muted }}>{t.toelichting}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {detailStaal.tegenkleuren.rustig?.length > 0 && (
+                    <>
+                      <p style={{ margin: "10px 0 6px", fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>Rustig</p>
+                      {detailStaal.tegenkleuren.rustig.map((t, idx) => (
+                        <div key={idx} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 0" }}>
+                          <div style={{ width: 32, height: 32, borderRadius: 8, background: t.hex || C.card, flexShrink: 0, border: `1px solid ${C.border}` }} />
+                          <div>
+                            <p style={{ margin: 0, fontSize: 12, fontWeight: 700 }}>{t.kleurnaam} {t.hex && <span style={{ color: C.muted, fontWeight: 400 }}>({t.hex})</span>}</p>
+                            <p style={{ margin: 0, fontSize: 11, color: C.muted }}>{t.toelichting}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  <p style={{ margin: "10px 0 0", fontSize: 10, color: C.muted }}>
+                    Indicatieve kleurweergave — controleer altijd met een echt staal voor je een keuze maakt.
+                  </p>
+                </div>
               )}
             </div>
 

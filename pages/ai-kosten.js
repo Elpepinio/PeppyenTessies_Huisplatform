@@ -29,6 +29,7 @@ const BRON_LABELS = {
   "woonideeen-screenshot": { emoji: "📸", label: "Woonideeën — Screenshot uitlezen" },
   "woonideeen-visueel-zoeken": { emoji: "🔍", label: "Woonideeën — Foto herkennen + prijzen zoeken" },
   "moodboard-voorbeelden": { emoji: "🎨", label: "Moodboard — Voorbeelden zoeken" },
+  "moodboard-tegenkleuren": { emoji: "🎨", label: "Moodboard — Tegenkleuren bepalen" },
   onbekend: { emoji: "❔", label: "Onbekend" },
 };
 function bronInfo(bron) { return BRON_LABELS[bron] || { emoji: "🤖", label: bron }; }
