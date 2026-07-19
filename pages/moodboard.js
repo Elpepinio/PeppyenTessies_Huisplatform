@@ -22,6 +22,33 @@ const TOEPASSINGEN = [
   { id: "meubel",  label: "Meubel" },
 ];
 
+// Veelgebruikte materiaal-/verffabrikanten, als snelkeuze bij het invullen
+// van "Fabrikant" — puur de merknaam, geen verzonnen specifieke kleuren of
+// kleurcodes: die vul je zelf in op basis van wat je bij de fabrikant zelf
+// hebt opgezocht (staal, website, showroom).
+const FABRIKANT_PRESETS = [
+  "Little Greene Paint & Paper",
+  "Farrow & Ball",
+  "Egger",
+  "Dekodur",
+  "Tylko",
+  "Fenix NTA",
+  "Mosa",
+  "Sikkens",
+  "Flexa",
+  "Histor",
+  "Wijzonol",
+  "Levis",
+  "Caparol",
+  "Brillux",
+  "Douglas & Jones",
+  "Villeroy & Boch",
+  "Bruynzeel",
+  "Quick-Step",
+  "Haro",
+  "Resopal",
+];
+
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 // Comprimeert een foto naar een kleine JPEG (dataURL) voor opslag.
@@ -79,6 +106,7 @@ export default function MoodboardApp() {
 
   const [zoekterm, setZoekterm] = useState("");
   const [catFilter, setCatFilter] = useState(null);
+  const [fabrikantFilter, setFabrikantFilter] = useState(null);
   const [toast, setToast] = useState(null);
 
   const [showForm, setShowForm] = useState(false);
@@ -206,6 +234,7 @@ export default function MoodboardApp() {
   // ── Afgeleide data ──────────────────────────────────────
   let zichtbaar = [...stalen];
   if (catFilter) zichtbaar = zichtbaar.filter(s => s.categorie === catFilter);
+  if (fabrikantFilter) zichtbaar = zichtbaar.filter(s => s.fabrikant === fabrikantFilter);
   if (zoekterm.trim()) {
     const z = zoekterm.toLowerCase();
     zichtbaar = zichtbaar.filter(s =>
@@ -230,6 +259,7 @@ export default function MoodboardApp() {
       stalen={stalen} zichtbaar={zichtbaar} offline={offline}
       zoekterm={zoekterm} setZoekterm={setZoekterm}
       catFilter={catFilter} setCatFilter={setCatFilter}
+      fabrikantFilter={fabrikantFilter} setFabrikantFilter={setFabrikantFilter}
       showForm={showForm} setShowForm={setShowForm} form={form} setForm={setForm}
       editId={editId} resetForm={resetForm} opslaanStaal={opslaanStaal}
       bewerkStaal={bewerkStaal} verwijderStaal={verwijderStaal}
@@ -266,6 +296,7 @@ const S = {
 
 function MoodboardView({
   stalen, zichtbaar, offline, zoekterm, setZoekterm, catFilter, setCatFilter,
+  fabrikantFilter, setFabrikantFilter,
   showForm, setShowForm, form, setForm, editId, resetForm, opslaanStaal,
   bewerkStaal, verwijderStaal, handleFotoUpload, fotoInputRef,
   showDetail, setShowDetail, zoekVoorbeelden, voorbeeldenLoading,
@@ -296,7 +327,7 @@ function MoodboardView({
         </div>
 
         {/* Categorie-filters */}
-        <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 14, paddingBottom: 2 }}>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 8, paddingBottom: 2 }}>
           <button style={S.chip(!catFilter)} onClick={() => setCatFilter(null)}>Alles</button>
           {CATEGORIEEN.map(c => (
             <button key={c.id} style={S.chip(catFilter === c.id)} onClick={() => setCatFilter(catFilter === c.id ? null : c.id)}>
@@ -304,6 +335,16 @@ function MoodboardView({
             </button>
           ))}
         </div>
+
+        {/* Fabrikant-filters — alleen fabrikanten die je al gebruikt */}
+        {[...new Set(stalen.map(s => s.fabrikant).filter(Boolean))].length > 0 && (
+          <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 14, paddingBottom: 2 }}>
+            <button style={S.chip(!fabrikantFilter)} onClick={() => setFabrikantFilter(null)}>Alle fabrikanten</button>
+            {[...new Set(stalen.map(s => s.fabrikant).filter(Boolean))].map(f => (
+              <button key={f} style={S.chip(fabrikantFilter === f)} onClick={() => setFabrikantFilter(fabrikantFilter === f ? null : f)}>{f}</button>
+            ))}
+          </div>
+        )}
 
         {zichtbaar.length === 0 && (
           <div style={{ textAlign: "center", padding: "40px 20px" }}>
@@ -382,12 +423,23 @@ function MoodboardView({
             <input style={{ ...S.inp, marginBottom: 10 }} placeholder="Kleurnaam (bv. Grafietgrijs)" value={form.kleurNaam}
               onChange={e => setForm(f => ({ ...f, kleurNaam: e.target.value }))} autoFocus />
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
               <input style={S.inp} placeholder="Fabrikant" value={form.fabrikant}
                 onChange={e => setForm(f => ({ ...f, fabrikant: e.target.value }))} />
               <input style={S.inp} placeholder="Kleurcode (RAL/NCS)" value={form.kleurcode}
                 onChange={e => setForm(f => ({ ...f, kleurcode: e.target.value }))} />
             </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+              {[...new Set([...FABRIKANT_PRESETS, ...stalen.map(s => s.fabrikant).filter(Boolean)])].sort((a,b) => a.localeCompare(b)).map(naam => (
+                <button key={naam} type="button" style={S.chip(form.fabrikant === naam)}
+                  onClick={() => setForm(f => ({ ...f, fabrikant: f.fabrikant === naam ? "" : naam }))}>
+                  {naam}
+                </button>
+              ))}
+            </div>
+            <p style={{ margin: "-4px 0 10px", fontSize: 10, color: C.muted }}>
+              Typ je hierboven een nieuw merk in en sla je het staal op? Dan staat dat merk vanaf dan ook als chip klaar — geen aparte beheerlijst nodig.
+            </p>
 
             <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Kleur (voor de tegel, optioneel)</label>
             <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>

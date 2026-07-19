@@ -238,12 +238,6 @@ export default function OnderhoudApp() {
   // ── Verbouwplanner ──────────────────────────────────────
   const [actieefProjectId, setActieefProjectId] = useState(null);
 
-  useEffect(() => {
-    if (tab !== "verbouwing") return;
-    laadWoonideeen();
-    const poll = setInterval(laadWoonideeen, 15000);
-    return () => clearInterval(poll);
-  }, [tab, laadWoonideeen]);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [editProjectId, setEditProjectId] = useState(null);
   const [projectWeergave, setProjectWeergave] = useState("lijst"); // "lijst" | "tijdlijn"
@@ -276,6 +270,13 @@ export default function OnderhoudApp() {
       setWoonideeenItems(data.ideeen || []);
     } catch { /* Woonideeën niet bereikbaar — kostenkoppeling toont dan gewoon niets, geen harde fout */ }
   }, []);
+
+  useEffect(() => {
+    if (tab !== "verbouwing") return;
+    laadWoonideeen();
+    const poll = setInterval(laadWoonideeen, 15000);
+    return () => clearInterval(poll);
+  }, [tab, laadWoonideeen]);
   const [showMijlpaalForm, setShowMijlpaalForm] = useState(false);
   const [mijlpaalForm, setMijlpaalForm] = useState({ naam: "", datum: new Date().toISOString().slice(0,10) });
 
