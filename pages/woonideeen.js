@@ -102,6 +102,7 @@ export default function WoonideeenApp() {
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null);
   const lastWriteRef = useRef(0);
   const fotoInputRef = useRef(null);
+  const screenshotInputRef = useRef(null);
 
   const [zoekterm, setZoekterm] = useState("");
   const [catFilter, setCatFilter] = useState(null);
@@ -179,12 +180,17 @@ export default function WoonideeenApp() {
 
   function opslaanIdee() {
     if (!form.titel.trim()) return;
-    const payload = { ...form, prijs: form.prijs ? +form.prijs : null };
+    const { _visueelGevondenResultaten, ...formSchoon } = form;
+    const payload = { ...formSchoon, prijs: formSchoon.prijs ? +formSchoon.prijs : null };
     if (editId) {
       persist(ideeen.map(i => i.id === editId ? { ...i, ...payload } : i));
       showToast(`✅ ${form.titel} bijgewerkt`);
     } else {
-      const nieuw = { id: uid(), ...payload, sterren: { Pepijn: 0, Tessa: 0 }, status: "idee", addedAt: Date.now(), addedBy: huidigeGebruiker };
+      const nieuw = {
+        id: uid(), ...payload, sterren: { Pepijn: 0, Tessa: 0 }, status: "idee",
+        addedAt: Date.now(), addedBy: huidigeGebruiker,
+        ...(_visueelGevondenResultaten?.length ? { prijsvergelijking: _visueelGevondenResultaten, prijsvergelijkingOp: Date.now() } : {}),
+      };
       persist([nieuw, ...ideeen]);
       showToast(`✅ ${form.titel} toegevoegd`);
     }
@@ -266,6 +272,43 @@ export default function WoonideeenApp() {
     showToast(`✅ Prijs bijgewerkt naar ${euro(nieuwePrijs)}`);
   }
 
+  // Werkt zoals Google Lens: herkent het product op de foto én zoekt meteen
+  // op het web naar waar het te koop is en voor welke prijs (via dezelfde
+  // web-search-tool als "Beste prijs elders"). Handig als de prijs niet
+  // eens op de screenshot zelf te zien is, of als het een foto van een écht
+  // object is (bv. iets gezien bij vrienden) i.p.v. een productpagina.
+  async function scanScreenshot(file) {
+    if (!file) return;
+    setLinkLoading(true);
+    try {
+      const compressed = await comprimeerFoto(file);
+      const base64 = compressed.split(",")[1];
+      const res = await fetch("/api/woonideeen-visueel-zoeken", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64, imageType: "image/jpeg" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Mislukt");
+
+      setForm(f => ({
+        ...f,
+        titel: data.titel || f.titel,
+        omschrijving: data.omschrijving || f.omschrijving,
+        prijs: data.beslissingsPrijs != null ? String(data.beslissingsPrijs) : f.prijs,
+        categorie: data.categorie || f.categorie,
+        foto: compressed,
+        // Zet de gevonden aanbieders meteen klaar, zodat "Beste prijs elders"
+        // in het detailscherm na het opslaan al gevuld is.
+        _visueelGevondenResultaten: data.resultaten,
+      }));
+      showToast(data.resultaten?.length ? `✨ Herkend — ${data.resultaten.length} aanbieder(s) gevonden` : "✨ Herkend — controleer en vul aan waar nodig");
+    } catch (e) {
+      showToast(`❌ ${e.message || "Kon foto niet herkennen"}`);
+    }
+    setLinkLoading(false);
+  }
+
   // Zoekt bij andere aanbieders naar dit product via Claude's web-search-
   // tool, en bewaart het resultaat + tijdstip bij het idee zelf, zodat je
   // niet elke keer opnieuw hoeft te zoeken als je het scherm weer opent.
@@ -334,6 +377,7 @@ export default function WoonideeenApp() {
       bewerkIdee={bewerkIdee} verwijderIdee={verwijderIdee}
       zetStatus={zetStatus} zetSter={zetSter}
       handleFotoUpload={handleFotoUpload} haalInfoUitLink={haalInfoUitLink} linkLoading={linkLoading}
+      scanScreenshot={scanScreenshot} screenshotInputRef={screenshotInputRef}
       fotoInputRef={fotoInputRef}
       showDetail={showDetail} setShowDetail={setShowDetail}
       prijsLoading={prijsLoading} zoekBestePrijs={zoekBestePrijs} bijwerkenPrijs={bijwerkenPrijs}
@@ -405,7 +449,7 @@ function WoonideeenView({
   toonAfgehandeld, setToonAfgehandeld,
   showForm, setShowForm, form, setForm, editId, resetForm, opslaanIdee,
   bewerkIdee, verwijderIdee, zetStatus, zetSter,
-  handleFotoUpload, haalInfoUitLink, linkLoading, fotoInputRef,
+  handleFotoUpload, haalInfoUitLink, linkLoading, scanScreenshot, screenshotInputRef, fotoInputRef,
   showDetail, setShowDetail, prijsLoading, zoekBestePrijs, bijwerkenPrijs,
   showBudget, setShowBudget, vergelijkModus, setVergelijkModus,
   vergelijkIds, setVergelijkIds, showVergelijk, setShowVergelijk,
@@ -577,7 +621,7 @@ function WoonideeenView({
             {!editId && (
               <>
                 <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Link naar het product</label>
-                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                   <div style={{ position: "relative", flex: 1 }}>
                     <Link2 size={14} color={C.muted} style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
                     <input style={{ ...S.inp, paddingLeft: 32 }} placeholder="https://…" value={form.link}
@@ -587,6 +631,20 @@ function WoonideeenView({
                     {linkLoading ? "Bezig…" : "Info ophalen"}
                   </button>
                 </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                  <div style={{ flex: 1, height: 1, background: C.border }} />
+                  <span style={{ fontSize: 11, color: C.muted }}>of</span>
+                  <div style={{ flex: 1, height: 1, background: C.border }} />
+                </div>
+                <button style={{ ...S.btn(C.card, C.accentDark), width: "100%", border: `1px dashed ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px 0", fontSize: 13, marginBottom: 4 }}
+                  onClick={() => screenshotInputRef.current?.click()} disabled={linkLoading}>
+                  📸 {linkLoading ? "Bezig… (herkennen + prijzen zoeken)" : "Foto herkennen — zoekt zelf prijzen bij aanbieders"}
+                </button>
+                <p style={{ margin: "0 0 14px", fontSize: 10, color: C.muted }}>
+                  Werkt als Google Lens: ook zonder zichtbare prijs, of een foto van een echt object i.p.v. een productpagina.
+                </p>
+                <input ref={screenshotInputRef} type="file" accept="image/*" style={{ display: "none" }}
+                  onChange={e => { scanScreenshot(e.target.files[0]); e.target.value = ""; }} />
               </>
             )}
 

@@ -26,6 +26,8 @@ const BRON_LABELS = {
   "bonnetjes-overig": { emoji: "🧾", label: "Bonnetjes — Overig" },
   "woonideeen-link-import": { emoji: "🏡", label: "Woonideeën — Link-import" },
   "woonideeen-prijsvergelijk": { emoji: "💰", label: "Woonideeën — Prijsvergelijking" },
+  "woonideeen-screenshot": { emoji: "📸", label: "Woonideeën — Screenshot uitlezen" },
+  "woonideeen-visueel-zoeken": { emoji: "🔍", label: "Woonideeën — Foto herkennen + prijzen zoeken" },
   onbekend: { emoji: "❔", label: "Onbekend" },
 };
 function bronInfo(bron) { return BRON_LABELS[bron] || { emoji: "🤖", label: bron }; }
