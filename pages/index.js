@@ -82,6 +82,13 @@ const TOOLS = [
     color: "#8B5E34",
   },
   {
+    href: "/woonideeen",
+    label: "Woonideeën",
+    description: "Inrichtingsideeën die je online tegenkomt, per kamer en categorie",
+    emoji: "🏡",
+    color: "#4A6B5A",
+  },
+  {
     href: "/ai-kosten",
     label: "AI-kosten",
     description: "Wat de AI-functies in de tools ons kosten",

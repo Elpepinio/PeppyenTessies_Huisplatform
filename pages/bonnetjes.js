@@ -59,6 +59,38 @@ async function comprimeerFoto(file, max = 900) {
   });
 }
 
+// Zet de eerste pagina van een PDF (bv. een factuur opgeslagen vanuit je
+// mail) client-side om naar een JPEG-dataURL, op dezelfde manier behandeld
+// als een gefotografeerd bonnetje. pdfjs-dist wordt dynamisch geladen (mag
+// nooit server-side/tijdens SSR draaien, want het heeft canvas/document
+// nodig) en de worker komt van een CDN zodat er geen extra webpack-
+// configuratie nodig is om 'm mee te bundelen.
+async function pdfEerstePaginaNaarFoto(file, max = 1100) {
+  const pdfjsLib = await import("pdfjs-dist/build/pdf.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(1);
+
+  // Render op een hoge schaal voor leesbaarheid (kleine bedragen/tekst op
+  // een factuur), pas daarna comprimeren/verkleinen naar het uploadformaat.
+  const viewport = page.getViewport({ scale: 2.2 });
+  const renderCanvas = document.createElement("canvas");
+  renderCanvas.width = viewport.width;
+  renderCanvas.height = viewport.height;
+  await page.render({ canvasContext: renderCanvas.getContext("2d"), viewport }).promise;
+
+  let { width, height } = renderCanvas;
+  if (width <= max && height <= max) return renderCanvas.toDataURL("image/jpeg", 0.85);
+  const schaal = width > height ? max / width : max / height;
+  const kleinCanvas = document.createElement("canvas");
+  kleinCanvas.width = Math.round(width * schaal);
+  kleinCanvas.height = Math.round(height * schaal);
+  kleinCanvas.getContext("2d").drawImage(renderCanvas, 0, 0, kleinCanvas.width, kleinCanvas.height);
+  return kleinCanvas.toDataURL("image/jpeg", 0.85);
+}
+
 // Tijdzone-veilige datumfuncties — nooit toISOString() gebruiken.
 function vandaagStr() {
   const nu = new Date();
@@ -117,6 +149,7 @@ export default function BonnetjesApp() {
   const fotoInputRef = useRef(null);
   const scanCameraRef = useRef(null);
   const scanBibliotheekRef = useRef(null);
+  const scanPdfRef = useRef(null);
 
   const [zoekterm, setZoekterm] = useState("");
   const [catFilter, setCatFilter] = useState(null);
@@ -230,6 +263,37 @@ export default function BonnetjesApp() {
     setForm(f => ({ ...f, foto: compressed }));
   }
 
+  // Kernlogica: stuurt een al-gecomprimeerde afbeelding (dataURL, bv. van een
+  // foto óf van de eerste pagina van een geconverteerde PDF) naar de AI en
+  // vult het formulier. Wordt gedeeld door de foto-scan en de PDF-import,
+  // zodat een factuur-PDF straks precies hetzelfde wordt behandeld als een
+  // gefotografeerde kassabon.
+  async function analyseerBonAfbeelding(compressedDataUrl) {
+    const base64 = compressedDataUrl.split(",")[1];
+    const tekst = await callAI(
+      `Bekijk deze foto/pagina van een kassabon of factuur. Geef ALLEEN een JSON-object terug, zonder uitleg, markdown of codeblok, in exact dit formaat: ` +
+      `{"naam": "korte omschrijving van de belangrijkste/duurste aankoop op dit bonnetje of deze factuur", "winkel": "naam van de winkel/leverancier, leeg als onduidelijk", ` +
+      `"prijs": totaalbedrag als getal zonder €-teken (of het duidelijke deelbedrag van het hoofdproduct als er meerdere producten op staan), ` +
+      `"aankoopdatum": "YYYY-MM-DD zoals vermeld, leeg als onleesbaar", ` +
+      `"categorie": "${CATEGORIEEN.map(c=>c.id).join("|")}", ` +
+      `"garantieMaanden": alleen invullen als dit een aankoop is met een zeer gangbare standaardgarantie in Nederland (bv. grote elektronica/witgoed vaak 24, anders leeg laten — NOOIT gokken)}. ` +
+      `Kies voor "categorie" de best passende optie uit de gegeven lijst.`,
+      base64, "image/jpeg", "bonnetjes-scan"
+    );
+    const schoon = tekst.replace(/```json|```/g, "").trim();
+    const resultaat = JSON.parse(schoon);
+    setForm(f => ({
+      ...f,
+      naam: resultaat.naam || f.naam,
+      winkel: resultaat.winkel || f.winkel,
+      prijs: resultaat.prijs != null ? String(resultaat.prijs) : f.prijs,
+      aankoopdatum: resultaat.aankoopdatum || f.aankoopdatum,
+      categorie: CATEGORIEEN.some(c=>c.id===resultaat.categorie) ? resultaat.categorie : f.categorie,
+      garantieMaanden: resultaat.garantieMaanden ? String(resultaat.garantieMaanden) : f.garantieMaanden,
+      foto: compressedDataUrl,
+    }));
+  }
+
   // Scant een foto van een kassabon: herkent winkel, product(en), prijs,
   // aankoopdatum en categorie. Vult automatisch het toevoegformulier — de
   // gebruiker controleert en past aan waar nodig, en vult zelf garantie in
@@ -239,33 +303,31 @@ export default function BonnetjesApp() {
     setScanLoading(true);
     try {
       const compressed = await comprimeerFoto(file);
-      const base64 = compressed.split(",")[1];
-      const tekst = await callAI(
-        `Bekijk deze foto van een kassabon/bonnetje. Geef ALLEEN een JSON-object terug, zonder uitleg, markdown of codeblok, in exact dit formaat: ` +
-        `{"naam": "korte omschrijving van de belangrijkste/duurste aankoop op dit bonnetje", "winkel": "naam van de winkel, leeg als onduidelijk", ` +
-        `"prijs": totaalbedrag als getal zonder €-teken (of het duidelijke deelbedrag van het hoofdproduct als er meerdere producten op staan), ` +
-        `"aankoopdatum": "YYYY-MM-DD zoals op de bon vermeld, leeg als onleesbaar", ` +
-        `"categorie": "${CATEGORIEEN.map(c=>c.id).join("|")}", ` +
-        `"garantieMaanden": alleen invullen als dit een aankoop is met een zeer gangbare standaardgarantie in Nederland (bv. grote elektronica/witgoed vaak 24, anders leeg laten — NOOIT gokken)}. ` +
-        `Kies voor "categorie" de best passende optie uit de gegeven lijst.`,
-        base64, "image/jpeg", "bonnetjes-scan"
-      );
-      const schoon = tekst.replace(/```json|```/g, "").trim();
-      const resultaat = JSON.parse(schoon);
-      setForm(f => ({
-        ...f,
-        naam: resultaat.naam || f.naam,
-        winkel: resultaat.winkel || f.winkel,
-        prijs: resultaat.prijs != null ? String(resultaat.prijs) : f.prijs,
-        aankoopdatum: resultaat.aankoopdatum || f.aankoopdatum,
-        categorie: CATEGORIEEN.some(c=>c.id===resultaat.categorie) ? resultaat.categorie : f.categorie,
-        garantieMaanden: resultaat.garantieMaanden ? String(resultaat.garantieMaanden) : f.garantieMaanden,
-        foto: compressed,
-      }));
+      await analyseerBonAfbeelding(compressed);
       showToast("✨ Bonnetje gescand — controleer en vul aan waar nodig");
       setShowForm(true);
     } catch (e) {
       showToast("❌ Scannen mislukt, vul handmatig in");
+      setForm(f => ({ ...f }));
+      setShowForm(true);
+    }
+    setScanLoading(false);
+  }
+
+  // Een PDF-factuur (bv. opgeslagen vanuit je mail) wordt client-side omgezet
+  // naar een afbeelding van de eerste pagina — daarna verloopt de AI-
+  // herkenning identiek aan een gefotografeerd bonnetje. Geen aparte
+  // e-mailkoppeling nodig: sla de PDF uit je mailtje op en upload 'm hier.
+  async function scanBonnetjePDF(file) {
+    if (!file) return;
+    setScanLoading(true);
+    try {
+      const compressed = await pdfEerstePaginaNaarFoto(file);
+      await analyseerBonAfbeelding(compressed);
+      showToast("✨ PDF-factuur gescand — controleer en vul aan waar nodig");
+      setShowForm(true);
+    } catch (e) {
+      showToast("❌ PDF inlezen mislukt — is dit een gewone (niet-gescande, niet-beveiligde) PDF?");
       setForm(f => ({ ...f }));
       setShowForm(true);
     }
@@ -308,6 +370,7 @@ export default function BonnetjesApp() {
       bewerkBonnetje={bewerkBonnetje} verwijderBonnetje={verwijderBonnetje}
       handleFotoUpload={handleFotoUpload} scanBonnetje={scanBonnetje} scanLoading={scanLoading}
       fotoInputRef={fotoInputRef} scanCameraRef={scanCameraRef} scanBibliotheekRef={scanBibliotheekRef}
+      scanPdfRef={scanPdfRef} scanBonnetjePDF={scanBonnetjePDF}
       showDetail={showDetail} setShowDetail={setShowDetail}
       toast={toast}
     />
@@ -357,7 +420,7 @@ function BonnetjesView({
   catFilter, setCatFilter, garantieFilter, setGarantieFilter,
   showForm, setShowForm, form, setForm, editId, resetForm, opslaanBonnetje,
   bewerkBonnetje, verwijderBonnetje, handleFotoUpload, scanBonnetje, scanLoading,
-  fotoInputRef, scanCameraRef, scanBibliotheekRef, showDetail, setShowDetail, toast,
+  fotoInputRef, scanCameraRef, scanBibliotheekRef, scanPdfRef, scanBonnetjePDF, showDetail, setShowDetail, toast,
 }) {
   const detailBonnetje = showDetail ? bonnetjes.find(b => b.id === showDetail) : null;
 
@@ -377,20 +440,26 @@ function BonnetjesView({
 
       <main style={S.main}>
         {/* Snel-scan knoppen */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <button style={{ ...S.btn(), flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 0", fontSize: 14 }}
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <button style={{ ...S.btn(), flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "13px 0", fontSize: 13 }}
             onClick={() => scanCameraRef.current?.click()} disabled={scanLoading}>
-            <Camera size={16} /> {scanLoading ? "Bezig…" : "Camera"}
+            <Camera size={15} /> {scanLoading ? "Bezig…" : "Camera"}
           </button>
-          <button style={{ ...S.btn(C.card, C.accentDark), flex: 1, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "13px 0", fontSize: 14 }}
+          <button style={{ ...S.btn(C.card, C.accentDark), flex: 1, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "13px 0", fontSize: 13 }}
             onClick={() => scanBibliotheekRef.current?.click()} disabled={scanLoading}>
             🖼️ {scanLoading ? "Bezig…" : "Bibliotheek"}
           </button>
         </div>
+        <button style={{ ...S.btn(C.card, C.accentDark), width: "100%", border: `1px dashed ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "11px 0", fontSize: 13, marginBottom: 12 }}
+          onClick={() => scanPdfRef.current?.click()} disabled={scanLoading}>
+          📄 {scanLoading ? "Bezig…" : "PDF-factuur uploaden (bv. uit je mail)"}
+        </button>
         <input ref={scanCameraRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }}
           onChange={e => { scanBonnetje(e.target.files[0]); e.target.value = ""; }} />
         <input ref={scanBibliotheekRef} type="file" accept="image/*" style={{ display: "none" }}
           onChange={e => { scanBonnetje(e.target.files[0]); e.target.value = ""; }} />
+        <input ref={scanPdfRef} type="file" accept="application/pdf" style={{ display: "none" }}
+          onChange={e => { scanBonnetjePDF(e.target.files[0]); e.target.value = ""; }} />
 
         {/* Garantie loopt binnenkort af */}
         {binnenkortVerlopend.length > 0 && (

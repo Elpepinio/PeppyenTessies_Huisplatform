@@ -24,6 +24,8 @@ const BRON_LABELS = {
   "kijklijst-suggesties": { emoji: "🎬", label: "Kijklijst — Suggesties" },
   "bonnetjes-scan": { emoji: "🧾", label: "Bonnetjes — Bon scannen" },
   "bonnetjes-overig": { emoji: "🧾", label: "Bonnetjes — Overig" },
+  "woonideeen-link-import": { emoji: "🏡", label: "Woonideeën — Link-import" },
+  "woonideeen-prijsvergelijk": { emoji: "💰", label: "Woonideeën — Prijsvergelijking" },
   onbekend: { emoji: "❔", label: "Onbekend" },
 };
 function bronInfo(bron) { return BRON_LABELS[bron] || { emoji: "🤖", label: bron }; }
@@ -177,6 +179,7 @@ export default function AiKostenApp() {
                       <p style={{ margin: 0, fontSize: 10, color: C.muted }}>
                         {datum.toLocaleDateString("nl-NL", { day: "numeric", month: "short" })} {datum.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}
                         {e.gebruiker ? ` · ${e.gebruiker}` : ""}
+                        {e.webSearches > 0 ? ` · 🔍 ${e.webSearches}x gezocht` : ""}
                       </p>
                     </div>
                     <span style={{ fontSize: 12, fontWeight: 700, color: C.muted }}>€{(e.kostenUsd * USD_NAAR_EUR).toFixed(3)}</span>
