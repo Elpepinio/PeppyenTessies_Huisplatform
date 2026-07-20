@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, Search, Camera, Trash2, Link2, ExternalLink, Home } from "lucide-react";
+import { Plus, X, ChevronLeft, Search, Camera, Trash2, Link2, ExternalLink, Home, Check } from "lucide-react";
 
 // ── Constanten ─────────────────────────────────────────
 const CATEGORIEEN = [
@@ -31,6 +31,43 @@ const KAMERS = [
   { id: "overig",      label: "Overig",            icon: "📦" },
 ];
 const KAMER_MAP = Object.fromEntries(KAMERS.map(k => [k.id, k]));
+
+// Subtype specifiek voor de categorie Keukenapparatuur — alleen relevant en
+// zichtbaar wanneer categorie === "keukenapparatuur".
+const KEUKEN_TYPES = [
+  { id: "koel_vries", label: "Koel/vries", icon: "🧊" },
+  { id: "oven",        label: "Oven",       icon: "🔥" },
+  { id: "kookplaat",   label: "Kookplaat",  icon: "🍳" },
+  { id: "quooker",     label: "Quooker",    icon: "💧" },
+  { id: "overig",      label: "Overig",     icon: "🔌" },
+];
+const KEUKEN_TYPE_MAP = Object.fromEntries(KEUKEN_TYPES.map(t => [t.id, t]));
+
+// EU-energielabel: sinds maart 2021 A t/m G (geen plusjes meer) voor de
+// meeste grote keukenapparaten. Kookplaten zelf hebben overigens vaak geen
+// eigen energielabel (alleen een afzuigkap eronder) — daarom blijft dit veld
+// altijd optioneel, nooit verplicht.
+const ENERGIELABELS = [
+  { id: "A", kleur: "#1E7B34" },
+  { id: "B", kleur: "#4C9A2A" },
+  { id: "C", kleur: "#A8C700" },
+  { id: "D", kleur: "#F2C500" },
+  { id: "E", kleur: "#F0A500" },
+  { id: "F", kleur: "#E06A1F" },
+  { id: "G", kleur: "#D6273C" },
+];
+
+// Veelgestelde aandachtspunten per apparaattype — als snelkeuze-chips zodat
+// je niet alles zelf hoeft te bedenken/typen vóór je de winkel in gaat.
+// Puur een startpunt: je kunt zelf altijd eigen punten toevoegen of chips
+// weer verwijderen.
+const AANDACHTSPUNT_SUGGESTIES = {
+  koel_vries: ["Energielabel", "Geluidsniveau (dB)", "Inbouwmaat past?", "Vriesvak-inhoud", "No-frost?", "Garantieperiode"],
+  oven: ["Energielabel", "Pyrolyse zelfreiniging", "Hetelucht + boven/onderwarmte", "Inbouwmaat (60cm?)", "Stoomfunctie", "Garantieperiode"],
+  kookplaat: ["Inductie of keramisch/gas?", "Aantal kookzones", "Vermogen/boost-functie", "Pandetectie", "Inbouwmaat", "Bediening touch/knoppen"],
+  quooker: ["Type reservoir (mini/pro/combi)", "Ook koud/bruisend water?", "Aansluiting waterleiding nodig?", "Onderhoudscontract/filter-kosten", "Garantieperiode"],
+  overig: ["Energielabel", "Garantieperiode", "Afmetingen passen?"],
+};
 
 const STATUSSEN = [
   { id: "idee",       label: "Idee",       icon: "💭", kleur: "#7B92A8" },
@@ -179,6 +216,17 @@ export default function WoonideeenApp() {
 
   function resetForm() { setForm(LEEG_FORM()); setEditId(null); }
 
+  function voegAandachtspuntToe(tekst) {
+    if (!tekst.trim()) return;
+    setForm(f => ({ ...f, aandachtspunten: [...(f.aandachtspunten||[]), { id: uid(), tekst: tekst.trim(), afgevinkt: false }] }));
+  }
+  function toggleAandachtspunt(id) {
+    setForm(f => ({ ...f, aandachtspunten: (f.aandachtspunten||[]).map(a => a.id === id ? { ...a, afgevinkt: !a.afgevinkt } : a) }));
+  }
+  function verwijderAandachtspunt(id) {
+    setForm(f => ({ ...f, aandachtspunten: (f.aandachtspunten||[]).filter(a => a.id !== id) }));
+  }
+
   function opslaanIdee() {
     if (!form.titel.trim()) return;
     const { _visueelGevondenResultaten, ...formSchoon } = form;
@@ -204,6 +252,7 @@ export default function WoonideeenApp() {
       titel: i.titel || "", link: i.link || "", omschrijving: i.omschrijving || "",
       prijs: i.prijs != null ? String(i.prijs) : "", categorie: i.categorie || "overig",
       kamer: i.kamer || "overig", notitie: i.notitie || "", foto: i.foto || null,
+      keukenType: i.keukenType || "overig", energielabel: i.energielabel || "", aandachtspunten: i.aandachtspunten || [],
     });
     setEditId(i.id);
     setShowForm(true);
@@ -224,6 +273,27 @@ export default function WoonideeenApp() {
       ? { ...i, sterren: { ...(i.sterren||{Pepijn:0,Tessa:0}), [persoon]: n === ((i.sterren?.[persoon])||0) ? 0 : n } }
       : i
     ));
+  }
+
+  // Voor het afvinken/toevoegen van aandachtspunten op een AL OPGESLAGEN idee
+  // (bv. terwijl je met je telefoon in de winkel staat) — dit werkt op de
+  // echte data, in tegenstelling tot voegAandachtspuntToe/toggleAandachtspunt
+  // die alleen het formulier bijwerken vóór het opslaan.
+  function toggleAandachtspuntOpIdee(ideeId, puntId) {
+    persist(ideeen.map(i => i.id !== ideeId ? i : {
+      ...i, aandachtspunten: (i.aandachtspunten||[]).map(a => a.id === puntId ? { ...a, afgevinkt: !a.afgevinkt } : a),
+    }));
+  }
+  function voegAandachtspuntToeOpIdee(ideeId, tekst) {
+    if (!tekst.trim()) return;
+    persist(ideeen.map(i => i.id !== ideeId ? i : {
+      ...i, aandachtspunten: [...(i.aandachtspunten||[]), { id: uid(), tekst: tekst.trim(), afgevinkt: false }],
+    }));
+  }
+  function verwijderAandachtspuntOpIdee(ideeId, puntId) {
+    persist(ideeen.map(i => i.id !== ideeId ? i : {
+      ...i, aandachtspunten: (i.aandachtspunten||[]).filter(a => a.id !== puntId),
+    }));
   }
 
   async function handleFotoUpload(file) {
@@ -384,9 +454,11 @@ export default function WoonideeenApp() {
       editId={editId} resetForm={resetForm} opslaanIdee={opslaanIdee}
       bewerkIdee={bewerkIdee} verwijderIdee={verwijderIdee}
       zetStatus={zetStatus} zetSter={zetSter}
+      toggleAandachtspuntOpIdee={toggleAandachtspuntOpIdee} voegAandachtspuntToeOpIdee={voegAandachtspuntToeOpIdee} verwijderAandachtspuntOpIdee={verwijderAandachtspuntOpIdee}
       handleFotoUpload={handleFotoUpload} haalInfoUitLink={haalInfoUitLink} linkLoading={linkLoading}
       scanScreenshot={scanScreenshot} screenshotInputRef={screenshotInputRef}
       fotoInputRef={fotoInputRef}
+      voegAandachtspuntToe={voegAandachtspuntToe} toggleAandachtspunt={toggleAandachtspunt} verwijderAandachtspunt={verwijderAandachtspunt}
       showDetail={showDetail} setShowDetail={setShowDetail}
       prijsLoading={prijsLoading} zoekBestePrijs={zoekBestePrijs} bijwerkenPrijs={bijwerkenPrijs}
       showBudget={showBudget} setShowBudget={setShowBudget}
@@ -401,7 +473,10 @@ export default function WoonideeenApp() {
 }
 
 function LEEG_FORM() {
-  return { titel: "", link: "", omschrijving: "", prijs: "", categorie: "overig", kamer: "overig", notitie: "", foto: null };
+  return {
+    titel: "", link: "", omschrijving: "", prijs: "", categorie: "overig", kamer: "overig", notitie: "", foto: null,
+    keukenType: "overig", energielabel: "", aandachtspunten: [],
+  };
 }
 const C = {
   bg: "#F6F4F1", surf: "#FFFFFF", card: "#EDE8E0",
@@ -457,7 +532,9 @@ function WoonideeenView({
   toonAfgehandeld, setToonAfgehandeld,
   showForm, setShowForm, form, setForm, editId, resetForm, opslaanIdee,
   bewerkIdee, verwijderIdee, zetStatus, zetSter,
+  toggleAandachtspuntOpIdee, voegAandachtspuntToeOpIdee, verwijderAandachtspuntOpIdee,
   handleFotoUpload, haalInfoUitLink, linkLoading, scanScreenshot, screenshotInputRef, fotoInputRef,
+  voegAandachtspuntToe, toggleAandachtspunt, verwijderAandachtspunt,
   showDetail, setShowDetail, prijsLoading, zoekBestePrijs, bijwerkenPrijs,
   showBudget, setShowBudget, vergelijkModus, setVergelijkModus,
   vergelijkIds, setVergelijkIds, showVergelijk, setShowVergelijk,
@@ -465,6 +542,7 @@ function WoonideeenView({
   sortering, setSortering, toast,
 }) {
   const detailIdee = showDetail ? ideeen.find(i => i.id === showDetail) : null;
+  const [eigenAandachtspunt, setEigenAandachtspunt] = useState("");
 
   function deelLijst(kamerId) {
     const items = kamerId ? ideeen.filter(i => i.kamer === kamerId) : ideeen;
@@ -594,6 +672,14 @@ function WoonideeenView({
                 {gemiddeldeSterren(i) > 0 && (
                   <span style={{ fontSize: 11, color: C.muted }}>{"⭐".repeat(Math.round(gemiddeldeSterren(i)))}</span>
                 )}
+                {i.categorie === "keukenapparatuur" && i.energielabel && (
+                  <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, borderRadius: 4, background: ENERGIELABELS.find(e => e.id === i.energielabel)?.kleur || C.muted, color: "#FFF", fontWeight: 800, fontSize: 10 }}>
+                    {i.energielabel}
+                  </span>
+                )}
+                {i.categorie === "keukenapparatuur" && (i.aandachtspunten||[]).some(a => !a.afgevinkt) && (
+                  <span style={{ fontSize: 11, color: C.accent }}>📝 {(i.aandachtspunten||[]).filter(a=>!a.afgevinkt).length} open</span>
+                )}
               </div>
             </div>
           </div>
@@ -700,6 +786,70 @@ function WoonideeenView({
               {CATEGORIEEN.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
             </select>
 
+            {form.categorie === "keukenapparatuur" && (
+              <div style={{ background: C.card, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Type apparaat</label>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                  {KEUKEN_TYPES.map(t => (
+                    <button key={t.id} type="button" style={S.chip(form.keukenType === t.id)}
+                      onClick={() => setForm(f => ({ ...f, keukenType: t.id }))}>
+                      {t.icon} {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                  Energielabel <span style={{ fontWeight: 400 }}>(optioneel — kookplaten hebben er vaak geen)</span>
+                </label>
+                <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                  {ENERGIELABELS.map(e => (
+                    <button key={e.id} type="button" onClick={() => setForm(f => ({ ...f, energielabel: f.energielabel === e.id ? "" : e.id }))}
+                      style={{ width: 34, height: 34, borderRadius: 8, border: form.energielabel === e.id ? `2px solid ${C.accentDark}` : "1px solid transparent", background: e.kleur, color: "#FFF", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>
+                      {e.id}
+                    </button>
+                  ))}
+                </div>
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                  Aandachtspunten <span style={{ fontWeight: 400 }}>— dingen die je niet wilt vergeten te vragen in de winkel</span>
+                </label>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                  {(AANDACHTSPUNT_SUGGESTIES[form.keukenType] || AANDACHTSPUNT_SUGGESTIES.overig)
+                    .filter(sug => !(form.aandachtspunten||[]).some(a => a.tekst === sug))
+                    .map(sug => (
+                      <button key={sug} type="button" style={{ ...S.chip(false), fontSize: 11 }} onClick={() => voegAandachtspuntToe(sug)}>
+                        + {sug}
+                      </button>
+                    ))}
+                </div>
+                {(form.aandachtspunten||[]).length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    {form.aandachtspunten.map(a => (
+                      <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0" }}>
+                        <span onClick={() => toggleAandachtspunt(a.id)} style={{
+                          width: 18, height: 18, borderRadius: 5, border: `1.5px solid ${a.afgevinkt ? C.accent : C.border}`,
+                          background: a.afgevinkt ? C.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
+                        }}>
+                          {a.afgevinkt && <Check size={12} color="#FFF" />}
+                        </span>
+                        <span style={{ flex: 1, fontSize: 13, textDecoration: a.afgevinkt ? "line-through" : "none", color: a.afgevinkt ? C.muted : C.text }}>{a.tekst}</span>
+                        <button onClick={() => verwijderAandachtspunt(a.id)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={13} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input style={{ ...S.inp, fontSize: 13 }} placeholder="Eigen aandachtspunt…" value={eigenAandachtspunt}
+                    onChange={e => setEigenAandachtspunt(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") { voegAandachtspuntToe(eigenAandachtspunt); setEigenAandachtspunt(""); } }} />
+                  <button type="button" style={{ ...S.btn(C.card, C.accentDark), border: `1px solid ${C.border}`, padding: "0 14px", fontSize: 13 }}
+                    onClick={() => { voegAandachtspuntToe(eigenAandachtspunt); setEigenAandachtspunt(""); }}>
+                    + Toevoegen
+                  </button>
+                </div>
+              </div>
+            )}
+
             <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Kamer</label>
             <select style={{ ...S.inp, marginBottom: 10 }} value={form.kamer} onChange={e => setForm(f => ({ ...f, kamer: e.target.value }))}>
               {KAMERS.map(k => <option key={k.id} value={k.id}>{k.icon} {k.label}</option>)}
@@ -790,6 +940,53 @@ function WoonideeenView({
                 <p style={{ margin: 0, fontSize: 12, color: C.muted }}>{detailIdee.prijsvergelijkingOpmerking || "Niets vergelijkbaars gevonden bij andere aanbieders."}</p>
               )}
             </div>
+
+            {/* Keukenapparatuur: type, energielabel, aandachtspunten-checklist */}
+            {detailIdee.categorie === "keukenapparatuur" && (
+              <div style={{ ...S.card, marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+                    {KEUKEN_TYPE_MAP[detailIdee.keukenType]?.icon || "🔌"} {KEUKEN_TYPE_MAP[detailIdee.keukenType]?.label || "Keukenapparaat"}
+                  </span>
+                  {detailIdee.energielabel && (
+                    <span style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, borderRadius: 6,
+                      background: ENERGIELABELS.find(e => e.id === detailIdee.energielabel)?.kleur || C.muted, color: "#FFF", fontWeight: 800, fontSize: 13,
+                    }}>
+                      {detailIdee.energielabel}
+                    </span>
+                  )}
+                </div>
+
+                <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700, color: C.text }}>📝 Aandachtspunten voor in de winkel</p>
+                {(detailIdee.aandachtspunten||[]).length === 0 && (
+                  <p style={{ margin: "0 0 8px", fontSize: 12, color: C.muted }}>Nog niets genoteerd — voeg hieronder toe wat je niet wilt vergeten te vragen.</p>
+                )}
+                {(detailIdee.aandachtspunten||[]).map(a => (
+                  <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0" }}>
+                    <span onClick={() => toggleAandachtspuntOpIdee(detailIdee.id, a.id)} style={{
+                      width: 20, height: 20, borderRadius: 5, border: `1.5px solid ${a.afgevinkt ? C.accent : C.border}`,
+                      background: a.afgevinkt ? C.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
+                    }}>
+                      {a.afgevinkt && <Check size={13} color="#FFF" />}
+                    </span>
+                    <span onClick={() => toggleAandachtspuntOpIdee(detailIdee.id, a.id)} style={{ flex: 1, fontSize: 14, cursor: "pointer", textDecoration: a.afgevinkt ? "line-through" : "none", color: a.afgevinkt ? C.muted : C.text }}>
+                      {a.tekst}
+                    </span>
+                    <button onClick={() => verwijderAandachtspuntOpIdee(detailIdee.id, a.id)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><X size={13} /></button>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <input style={{ ...S.inp, fontSize: 13 }} placeholder="Nog iets vragen…" value={eigenAandachtspunt}
+                    onChange={e => setEigenAandachtspunt(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") { voegAandachtspuntToeOpIdee(detailIdee.id, eigenAandachtspunt); setEigenAandachtspunt(""); } }} />
+                  <button style={{ ...S.btn(C.card, C.accentDark), border: `1px solid ${C.border}`, padding: "0 14px", fontSize: 13 }}
+                    onClick={() => { voegAandachtspuntToeOpIdee(detailIdee.id, eigenAandachtspunt); setEigenAandachtspunt(""); }}>
+                    +
+                  </button>
+                </div>
+              </div>
+            )}
 
             <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 6 }}>Status</label>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
