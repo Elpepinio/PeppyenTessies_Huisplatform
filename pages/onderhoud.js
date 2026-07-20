@@ -3,6 +3,25 @@ import Link from "next/link";
 import { Plus, X, ChevronLeft, AlertCircle, Check, Clock, ExternalLink } from "lucide-react";
 
 const OBJECT_ICONEN = ["🏠","🚐","🚗","🔧","❄️","🌡️","💧","⚡","🌿","📦","🛁","🍳","🔑","🏊","📺","💻"];
+
+// Zelfde categorieën als in Woonideeën — hier alleen voor de iconen/labels,
+// zodat de kostenlijst per categorie gegroepeerd kan worden i.p.v. één lange
+// platte lijst. Bewust een kleine, losse kopie (geen gedeelde import tussen
+// pagina's) i.p.v. een cross-tool afhankelijkheid.
+const WOONIDEE_CATEGORIEEN = {
+  verlichting:      { label: "Verlichting",         icon: "💡" },
+  tafels:           { label: "Tafels",               icon: "🪵" },
+  zitmeubels:       { label: "Zitmeubels",           icon: "🛋️" },
+  vloerkleden:      { label: "Vloerkleden",          icon: "🧶" },
+  kasten:           { label: "Kasten & opbergen",    icon: "🗄️" },
+  wanddecoratie:    { label: "Wanddecoratie",        icon: "🖼️" },
+  planten_vazen:    { label: "Planten & vazen",      icon: "🪴" },
+  textiel:          { label: "Textiel",              icon: "🧵" },
+  keuken_tafelen:   { label: "Keuken & tafelen",     icon: "🍽️" },
+  keukenapparatuur: { label: "Keukenapparatuur",     icon: "🔌" },
+  buiten_tuin:      { label: "Buiten & tuin",        icon: "🌿" },
+  overig:           { label: "Overig",               icon: "📦" },
+};
 const INTERVALLEN = [
   { label: "Wekelijks",     dagen: 7   },
   { label: "Maandelijks",   dagen: 30  },
@@ -1340,6 +1359,14 @@ export default function OnderhoudApp() {
               {(() => {
                 const gekoppeldeIds = project.gekoppeldeIdeeIds || [];
                 const gekoppeldeItems = woonideeenItems.filter(w => gekoppeldeIds.includes(w.id));
+                // Groeperen per Woonideeën-categorie, zodat de lijst
+                // overzichtelijk blijft naarmate er meer items bij komen.
+                const gekoppeldPerCategorie = {};
+                gekoppeldeItems.forEach(w => {
+                  const cat = w.categorie || "overig";
+                  (gekoppeldPerCategorie[cat] = gekoppeldPerCategorie[cat] || []).push(w);
+                });
+                const gekoppeldCategorieOrder = Object.keys(WOONIDEE_CATEGORIEEN).filter(cat => gekoppeldPerCategorie[cat]);
                 const extraKosten = project.extraKosten || [];
                 const betaalStatus = project.betaalStatus || {};
                 const facturenFotos = project.facturenFotos || {};
@@ -1352,6 +1379,12 @@ export default function OnderhoudApp() {
                 const gefilterdeIdeeen = woonideeenItems.filter(w =>
                   !kostenZoek.trim() || (w.titel||"").toLowerCase().includes(kostenZoek.toLowerCase())
                 );
+                const gefilterdPerCategorie = {};
+                gefilterdeIdeeen.forEach(w => {
+                  const cat = w.categorie || "overig";
+                  (gefilterdPerCategorie[cat] = gefilterdPerCategorie[cat] || []).push(w);
+                });
+                const gefilterdCategorieOrder = Object.keys(WOONIDEE_CATEGORIEEN).filter(cat => gefilterdPerCategorie[cat]);
 
                 return (
                   <div style={{ ...S.card, background:`${C.purple}08`, border:`1px solid ${C.purple}33`, marginBottom:14 }}>
@@ -1371,27 +1404,34 @@ export default function OnderhoudApp() {
 
                     {gekoppeldeItems.length > 0 && (
                       <div style={{ marginBottom:10 }}>
-                        {gekoppeldeItems.map(w => (
-                          <div key={w.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:13 }}>
-                            <span style={{ textDecoration: betaalStatus[w.id] ? "line-through" : "none", color: betaalStatus[w.id] ? C.muted : C.text }}>{w.titel}</span>
-                            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                              {w.link && (
-                                <a href={w.link} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
-                                  style={{ color:C.purple, display:"flex", alignItems:"center" }} title="Naar webshop">
-                                  <ExternalLink size={13} />
-                                </a>
-                              )}
-                              <span style={{ fontWeight:600 }}>€ {(w.prijs||0).toFixed(0)}</span>
-                              <button onClick={() => { if (facturenFotos[w.id]) { setFactuurDoelId({ projectId: project.id, itemId: w.id }); setShowFactuurPreview(facturenFotos[w.id]); } else startFactuurUpload(project.id, w.id); }}
-                                title={facturenFotos[w.id] ? "Bekijk factuur" : "Factuur toevoegen"}
-                                style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, opacity: facturenFotos[w.id]?1:0.4 }}>
-                                📎
-                              </button>
-                              <button onClick={() => toggleBetaald(project.id, w.id)}
-                                style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${betaalStatus[w.id]?C.green:C.border}`, background:betaalStatus[w.id]?`${C.green}18`:"transparent", color:betaalStatus[w.id]?C.green:C.muted, cursor:"pointer", whiteSpace:"nowrap" }}>
-                                {betaalStatus[w.id] ? "✅ Betaald" : "Nog te betalen"}
-                              </button>
-                            </div>
+                        {gekoppeldCategorieOrder.map(cat => (
+                          <div key={cat}>
+                            <p style={{ margin:"8px 0 2px", fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.03em" }}>
+                              {WOONIDEE_CATEGORIEEN[cat]?.icon} {WOONIDEE_CATEGORIEEN[cat]?.label}
+                            </p>
+                            {gekoppeldPerCategorie[cat].map(w => (
+                              <div key={w.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:13 }}>
+                                <span style={{ textDecoration: betaalStatus[w.id] ? "line-through" : "none", color: betaalStatus[w.id] ? C.muted : C.text }}>{w.titel}</span>
+                                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                                  {w.link && (
+                                    <a href={w.link} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
+                                      style={{ color:C.purple, display:"flex", alignItems:"center" }} title="Naar webshop">
+                                      <ExternalLink size={13} />
+                                    </a>
+                                  )}
+                                  <span style={{ fontWeight:600 }}>€ {(w.prijs||0).toFixed(0)}</span>
+                                  <button onClick={() => { if (facturenFotos[w.id]) { setFactuurDoelId({ projectId: project.id, itemId: w.id }); setShowFactuurPreview(facturenFotos[w.id]); } else startFactuurUpload(project.id, w.id); }}
+                                    title={facturenFotos[w.id] ? "Bekijk factuur" : "Factuur toevoegen"}
+                                    style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, opacity: facturenFotos[w.id]?1:0.4 }}>
+                                    📎
+                                  </button>
+                                  <button onClick={() => toggleBetaald(project.id, w.id)}
+                                    style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${betaalStatus[w.id]?C.green:C.border}`, background:betaalStatus[w.id]?`${C.green}18`:"transparent", color:betaalStatus[w.id]?C.green:C.muted, cursor:"pointer", whiteSpace:"nowrap" }}>
+                                    {betaalStatus[w.id] ? "✅ Betaald" : "Nog te betalen"}
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         ))}
                       </div>
@@ -1442,20 +1482,27 @@ export default function OnderhoudApp() {
                         {woonideeenItems.length === 0 && (
                           <p style={{ fontSize:12, color:C.muted, textAlign:"center", margin:"8px 0" }}>Nog geen woonideeën gevonden — voeg ze eerst toe in de Woonideeën-tool.</p>
                         )}
-                        <div style={{ maxHeight:220, overflowY:"auto" }}>
-                          {gefilterdeIdeeen.map(w => {
-                            const aan = gekoppeldeIds.includes(w.id);
-                            return (
-                              <div key={w.id} onClick={() => toggleGekoppeldIdee(project.id, w.id)}
-                                style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 4px", cursor:"pointer", borderBottom:`1px solid ${C.border}` }}>
-                                <span style={{ width:18, height:18, borderRadius:5, border:`1.5px solid ${aan?C.purple:C.border}`, background:aan?C.purple:"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                                  {aan && <Check size={12} color="#FFF" />}
-                                </span>
-                                <span style={{ flex:1, fontSize:13 }}>{w.titel}</span>
-                                <span style={{ fontSize:12, color:C.muted }}>{w.prijs != null ? `€${w.prijs}` : "—"}</span>
-                              </div>
-                            );
-                          })}
+                        <div style={{ maxHeight:260, overflowY:"auto" }}>
+                          {gefilterdCategorieOrder.map(cat => (
+                            <div key={cat}>
+                              <p style={{ margin:"8px 0 2px", fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.03em", position:"sticky", top:0, background:C.surf }}>
+                                {WOONIDEE_CATEGORIEEN[cat]?.icon} {WOONIDEE_CATEGORIEEN[cat]?.label}
+                              </p>
+                              {gefilterdPerCategorie[cat].map(w => {
+                                const aan = gekoppeldeIds.includes(w.id);
+                                return (
+                                  <div key={w.id} onClick={() => toggleGekoppeldIdee(project.id, w.id)}
+                                    style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 4px", cursor:"pointer", borderBottom:`1px solid ${C.border}` }}>
+                                    <span style={{ width:18, height:18, borderRadius:5, border:`1.5px solid ${aan?C.purple:C.border}`, background:aan?C.purple:"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                                      {aan && <Check size={12} color="#FFF" />}
+                                    </span>
+                                    <span style={{ flex:1, fontSize:13 }}>{w.titel}</span>
+                                    <span style={{ fontSize:12, color:C.muted }}>{w.prijs != null ? `€${w.prijs}` : "—"}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))}
                         </div>
                       </div>
                     )}
