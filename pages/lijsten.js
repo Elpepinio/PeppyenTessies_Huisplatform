@@ -729,6 +729,19 @@ export default function LijstenApp() {
     showToast(leegmaken ? "✅ Lijst geleegd — alles opgeslagen" : "✅ Klaar! Vinkjes gereset voor volgende keer");
   }
 
+  // Start een nieuwe boodschappen-/pakronde. inCart wordt hier altijd hard
+  // gereset naar false, ongeacht of de vorige ronde netjes is afgesloten via
+  // finishPacking — anders lijkt het net alsof alles al gepakt is terwijl je
+  // nog moet beginnen, bijvoorbeeld als je de vorige keer de app gewoon
+  // hebt weggeklikt zonder op "Klaar" te drukken.
+  function startPakken() {
+    updateList(activeListId, l => ({
+      ...l,
+      items: l.items.map(i => i.checked ? { ...i, inCart: false } : i),
+    }));
+    setMode("pakken");
+  }
+
   function laadVorigeLijst(ronde) {
     if (!activeList) return;
     const bestaandeNamen = new Set(activeList.items.map(i => i.name.toLowerCase()));
@@ -1501,7 +1514,7 @@ export default function LijstenApp() {
             <button
               style={{ ...S.btn(checkedCount === 0 ? "#E4DCCB" : "#C86E4A", checkedCount === 0 ? "#B8B2A8" : "#FAF6F0"), flex: 1, borderRadius: 16, boxShadow: checkedCount > 0 ? "0 6px 16px rgba(200,110,74,0.28)" : "none" }}
               disabled={checkedCount === 0}
-              onClick={() => setMode("pakken")}>
+              onClick={startPakken}>
               {activeList.name.toLowerCase().includes("boodschappen")
                 ? `Start boodschappen (${checkedCount})`
                 : `Start pakken (${checkedCount})`}
