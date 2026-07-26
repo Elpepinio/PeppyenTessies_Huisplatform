@@ -409,6 +409,68 @@ export default function OnderhoudApp() {
   const [showMijlpaalForm, setShowMijlpaalForm] = useState(false);
   const [mijlpaalForm, setMijlpaalForm] = useState({ naam: "", datum: new Date().toISOString().slice(0,10) });
 
+  // ── Scrum-bord (Backlog → Opgepakt → Bezig → Klaar) ─────────────────────
+  // Een lichte, "kind of Scrum"-laag bovenop de bestaande CPM-planning: de
+  // datums/afhankelijkheden blijven leidend voor de planning zelf, maar dit
+  // geeft een simpel pull-bord om dagelijks te bepalen wat je oppakt. Nieuw
+  // veld "opgepakt" (bool) — ontbreekt 'ie (bestaande taken), dan begint de
+  // taak gewoon in de Backlog, geen migratie nodig.
+  const boardDragTaakRef = useRef(null);
+  const [boardDragTaskId, setBoardDragTaskId] = useState(null);
+  const [boardDragOverKolom, setBoardDragOverKolom] = useState(null);
+
+  function kolomVanTaak(taak) {
+    if (taak.werkelijkEind) return "klaar";
+    if (taak.werkelijkeStart) return "bezig";
+    if (taak.opgepakt) return "opgepakt";
+    return "backlog";
+  }
+
+  function zetKolom(taak, kolom) {
+    if (kolom === kolomVanTaak(taak)) return; // niks veranderd, niks doen
+    if (kolom === "backlog") {
+      persistProjectData(projecten, projectTaken.map(t => t.id === taak.id ? { ...t, opgepakt: false, werkelijkeStart: null, werkelijkEind: null } : t));
+      showToast(`📋 ${taak.naam} terug naar backlog`);
+    } else if (kolom === "opgepakt") {
+      persistProjectData(projecten, projectTaken.map(t => t.id === taak.id ? { ...t, opgepakt: true, werkelijkeStart: null, werkelijkEind: null } : t));
+      showToast(`📌 ${taak.naam} opgepakt`);
+    } else if (kolom === "bezig") {
+      persistProjectData(projecten, projectTaken.map(t => t.id === taak.id ? { ...t, opgepakt: true, werkelijkeStart: t.werkelijkeStart || fmtDatum(new Date()), werkelijkEind: null } : t));
+      showToast(`▶️ ${taak.naam} gestart`);
+    } else if (kolom === "klaar") {
+      // Hergebruikt de bestaande datum-flow (belangrijk: die datum bepaalt
+      // hoe eventuele vertraging/voorsprong doorwerkt in de CPM-planning).
+      setKlaarTaakId(taak.id); setKlaarDatum(fmtDatum(new Date())); setShowKlaarForm(true);
+    }
+  }
+
+  function handleBoardPointerDown(e, taak) {
+    e.preventDefault();
+    boardDragTaakRef.current = taak;
+    setBoardDragTaskId(taak.id);
+    setBoardDragOverKolom(kolomVanTaak(taak));
+    window.addEventListener("pointermove", handleBoardPointerMove);
+    window.addEventListener("pointerup", handleBoardPointerUp);
+  }
+
+  function handleBoardPointerMove(e) {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const kolomEl = el && el.closest("[data-kolom]");
+    setBoardDragOverKolom(kolomEl ? kolomEl.getAttribute("data-kolom") : null);
+  }
+
+  function handleBoardPointerUp() {
+    window.removeEventListener("pointermove", handleBoardPointerMove);
+    window.removeEventListener("pointerup", handleBoardPointerUp);
+    const taak = boardDragTaakRef.current;
+    setBoardDragOverKolom(kolom => {
+      if (taak && kolom) zetKolom(taak, kolom);
+      return null;
+    });
+    setBoardDragTaskId(null);
+    boardDragTaakRef.current = null;
+  }
+
   const persistData = useCallback((nextObjecten, nextTaken) => {
     lastWriteRef.current = Date.now();
     setObjectenState(nextObjecten);
@@ -1619,6 +1681,8 @@ export default function OnderhoudApp() {
                     onClick={() => setProjectWeergave("lijst")}>📋 Lijst</button>
                   <button style={{ flex:1, border:"none", background:projectWeergave==="tijdlijn"?C.purple:"transparent", color:projectWeergave==="tijdlijn"?"#FFF":C.muted, borderRadius:8, padding:"8px 0", fontSize:12, fontWeight:600, cursor:"pointer" }}
                     onClick={() => setProjectWeergave("tijdlijn")}>📊 Tijdlijn</button>
+                  <button style={{ flex:1, border:"none", background:projectWeergave==="bord"?C.purple:"transparent", color:projectWeergave==="bord"?"#FFF":C.muted, borderRadius:8, padding:"8px 0", fontSize:12, fontWeight:600, cursor:"pointer" }}
+                    onClick={() => setProjectWeergave("bord")}>🗂️ Bord</button>
                 </div>
               )}
 
@@ -1752,6 +1816,48 @@ export default function OnderhoudApp() {
                   </div>
                 );
               })}
+
+              {projectWeergave === "bord" && (() => {
+                const KOLOMMEN = [
+                  { id: "backlog",  label: "📋 Backlog",  kleur: C.muted },
+                  { id: "opgepakt", label: "📌 Opgepakt", kleur: C.purple },
+                  { id: "bezig",    label: "▶️ Bezig",    kleur: C.purple },
+                  { id: "klaar",    label: "✅ Klaar",    kleur: C.green },
+                ];
+                return (
+                  <div style={{ display:"flex", gap:10, overflowX:"auto", paddingBottom:8, margin:"0 -20px", padding:"0 20px 8px" }}>
+                    {KOLOMMEN.map(kol => {
+                      const takenInKolom = pTaken.filter(t => kolomVanTaak(t) === kol.id);
+                      const overDeze = boardDragOverKolom === kol.id;
+                      return (
+                        <div key={kol.id} data-kolom={kol.id}
+                          style={{ minWidth:200, maxWidth:200, flexShrink:0, background: overDeze ? `${kol.kleur}15` : C.card, borderRadius:12, padding:8, border: overDeze ? `2px dashed ${kol.kleur}` : "2px dashed transparent" }}>
+                          <p style={{ margin:"2px 0 8px", fontSize:11, fontWeight:700, color:kol.kleur, textTransform:"uppercase", letterSpacing:"0.03em" }}>
+                            {kol.label} <span style={{ color:C.muted, fontWeight:400 }}>({takenInKolom.length})</span>
+                          </p>
+                          {takenInKolom.length === 0 && (
+                            <p style={{ fontSize:11, color:C.muted, textAlign:"center", padding:"14px 4px" }}>—</p>
+                          )}
+                          {takenInKolom.map(t => (
+                            <div key={t.id} data-kolom={kol.id}
+                              onPointerDown={e => handleBoardPointerDown(e, t)}
+                              style={{
+                                background:C.surf, borderRadius:9, padding:"9px 10px", marginBottom:6, cursor:"grab", touchAction:"none", userSelect:"none",
+                                border:`1px solid ${C.border}`, opacity: boardDragTaskId===t.id ? 0.35 : 1,
+                              }}>
+                              <p style={{ margin:0, fontSize:12.5, fontWeight:700, color:C.text }}>{t.naam}</p>
+                              {t.uitvoerder && <p style={{ margin:"3px 0 0", fontSize:10, color:C.muted }}>👷 {t.uitvoerder}</p>}
+                              {(t.afhankelijkheden||[]).length > 0 && kol.id === "backlog" && (
+                                <p style={{ margin:"3px 0 0", fontSize:9, color:C.muted }}>⛓️ {(t.afhankelijkheden||[]).length} afhankelijkhe{(t.afhankelijkheden||[]).length===1?"id":"den"}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </>
           );
         })()}
