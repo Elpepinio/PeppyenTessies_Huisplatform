@@ -703,7 +703,9 @@ export default function BudgetApp() {
 
     const refresh = async () => {
       if (Date.now() - lastLocalWriteRef.current < 5000) return;
+      const aanvraagGestart = Date.now();
       const data = await loadBudgetData();
+      if (lastLocalWriteRef.current > aanvraagGestart) return; // ondertussen lokaal geschreven — dit antwoord is alweer verouderd
       if (active && data) {
         setSetupDoneState(!!data.setupDone);
         setThemeNameState(data.theme || "dark");

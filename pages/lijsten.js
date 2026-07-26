@@ -458,7 +458,9 @@ export default function LijstenApp() {
     let active = true;
     const refresh = async () => {
       if (Date.now() - lastWriteRef.current < 5000) return;
+      const aanvraagGestart = Date.now();
       const data = await loadData();
+      if (lastWriteRef.current > aanvraagGestart) return; // ondertussen lokaal geschreven — dit antwoord is alweer verouderd
       if (active && data) {
         setListsState(data.lists || []);
         setLoading(false);

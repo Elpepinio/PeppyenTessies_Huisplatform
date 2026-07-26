@@ -145,7 +145,9 @@ export default function MoodboardApp() {
     let actief = true;
     const refresh = async () => {
       if (Date.now() - lastWriteRef.current < 5000) return;
+      const aanvraagGestart = Date.now();
       const data = await laadData();
+      if (lastWriteRef.current > aanvraagGestart) return; // ondertussen lokaal geschreven — dit antwoord is alweer verouderd
       if (actief && data) {
         setStalenState(data.stalen || []);
         setLoading(false);

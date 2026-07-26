@@ -434,7 +434,13 @@ export default function MaaltijdApp() {
     let active = true;
     const refresh = async () => {
       if (Date.now() - lastWriteRef.current < 5000) return;
+      const aanvraagGestart = Date.now();
       const data = await loadData();
+      // Als er tíjdens deze aanvraag een nieuwe lokale wijziging is gedaan
+      // (bv. een AI-kok-recept dat net is opgeslagen terwijl deze ververs-
+      // aanvraag al onderweg was), is dit antwoord alweer verouderd — dan
+      // NIET toepassen, anders overschrijft het de zojuist toegevoegde data.
+      if (lastWriteRef.current > aanvraagGestart) return;
       if (active && data) {
         setReceptenState(data.recepten || []);
         setWeekmenuState(data.weekmenu || {});

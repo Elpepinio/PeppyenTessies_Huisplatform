@@ -401,7 +401,9 @@ export default function PlacesApp() {
     let active = true;
     const refresh = async () => {
       if (Date.now() - lastWriteRef.current < 5000) return;
+      const aanvraagGestart = Date.now();
       const data = await loadData();
+      if (lastWriteRef.current > aanvraagGestart) return; // ondertussen lokaal geschreven — dit antwoord is alweer verouderd
       if (active && data) { setPlacesState(data.places || []); setTripsState(data.trips || []); setLoading(false); }
       else if (active) setLoading(false);
     };
