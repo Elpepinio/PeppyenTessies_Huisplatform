@@ -83,6 +83,43 @@ function guessHoofdingredient(ingredienten) {
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+// Zet een hoeveelheid-string om naar een bruikbaar getal. Begrijpt:
+//  - Nederlandse komma-notatie: "1,5" → 1.5
+//  - Gewone breuken: "1/8", "3/4" → 0.125, 0.75
+//  - Gemengde breuken: "1 1/2" → 1.5
+//  - Unicode-breuktekens: "½", "¼", "¾" enz. → 0.5, 0.25, 0.75
+// Nodig omdat de AI-scanner (foto/URL/AI-kok) recepten soms teruggeeft met
+// dit soort notaties, terwijl de rest van de tool overal simpelweg `+waarde`
+// gebruikt — en dat begrijpt geen breuken of komma's, en valt dan terug op 0.
+const UNICODE_BREUKEN = { "½":0.5, "⅓":1/3, "⅔":2/3, "¼":0.25, "¾":0.75, "⅕":0.2, "⅖":0.4, "⅗":0.6, "⅘":0.8, "⅙":1/6, "⅚":5/6, "⅛":0.125, "⅜":0.375, "⅝":0.625, "⅞":0.875 };
+function parseHoeveelheid(waarde) {
+  if (waarde == null) return 0;
+  if (typeof waarde === "number") return waarde;
+  let tekst = String(waarde).trim().replace(",", ".");
+  if (!tekst) return 0;
+
+  // Unicode-breukteken (evt. met een heel getal ervoor, bv. "1½")
+  for (const [teken, decimaal] of Object.entries(UNICODE_BREUKEN)) {
+    if (tekst.includes(teken)) {
+      const rest = tekst.replace(teken, "").trim();
+      const heel = rest ? parseFloat(rest) || 0 : 0;
+      return heel + decimaal;
+    }
+  }
+
+  // Gemengde breuk "1 1/2" of losse breuk "1/2"
+  const breukMatch = tekst.match(/^(\d+\s+)?(\d+)\s*\/\s*(\d+)$/);
+  if (breukMatch) {
+    const heel = breukMatch[1] ? parseFloat(breukMatch[1]) || 0 : 0;
+    const teller = parseFloat(breukMatch[2]);
+    const noemer = parseFloat(breukMatch[3]);
+    if (noemer > 0) return heel + teller / noemer;
+  }
+
+  const getal = parseFloat(tekst);
+  return isNaN(getal) ? 0 : getal;
+}
+
 // Een stap is meestal gewoon platte tekst, maar kan ook een object zijn
 // { tekst, timerStart } zodra er een specifiek moment is vastgelegd waarop de
 // timer moet starten (bv. "zodra het water kookt" of "als de boter bruist").
@@ -547,7 +584,7 @@ export default function MaaltijdApp() {
       (r.ingredienten || []).forEach(i => {
         const key = i.naam.toLowerCase();
         if (!ingredienten[key]) ingredienten[key] = { naam: i.naam, hoeveelheid: 0, eenheid: i.eenheid };
-        ingredienten[key].hoeveelheid += (+i.hoeveelheid || 0) * schaal;
+        ingredienten[key].hoeveelheid += parseHoeveelheid(i.hoeveelheid) * schaal;
       });
     });
 
@@ -763,7 +800,7 @@ Format:
   "porties": 4,
   "kcal": 0,
   "beschrijving": "...",
-  "ingredienten": [{"naam": "...", "hoeveelheid": "100", "eenheid": "g"}],
+  "ingredienten": [{"naam": "...", "hoeveelheid": "100 (ALTIJD decimaal met een punt, bv. 0.5 of 1.25 — reken breuken (1/2) en komma-notatie (1,5) zelf om naar deze vorm, nooit teruggeven als breuk of met komma)", "eenheid": "g"}],
   "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
 }`,
         "maaltijden-ai-kok-import"
@@ -850,7 +887,7 @@ Format:
   "porties": 4,
   "kcal": 0,
   "beschrijving": "korte beschrijving of ondertitel",
-  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
+  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100 (ALTIJD decimaal met een punt, bv. 0.5 of 1.25 — reken breuken (1/2) en komma-notatie (1,5) zelf om naar deze vorm, nooit teruggeven als breuk of met komma)", "eenheid": "g"}],
   "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
 }
 
@@ -904,7 +941,7 @@ Format:
   "porties": 4,
   "kcal": 0,
   "beschrijving": "korte beschrijving, vermeld dat dit een AI-inschatting is op basis van een foto",
-  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
+  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100 (ALTIJD decimaal met een punt, bv. 0.5 of 1.25 — reken breuken (1/2) en komma-notatie (1,5) zelf om naar deze vorm, nooit teruggeven als breuk of met komma)", "eenheid": "g"}],
   "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
 }
 
@@ -963,7 +1000,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   "porties": 4,
   "kcal": 0,
   "beschrijving": "korte beschrijving",
-  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
+  "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100 (ALTIJD decimaal met een punt, bv. 0.5 of 1.25 — reken breuken (1/2) en komma-notatie (1,5) zelf om naar deze vorm, nooit teruggeven als breuk of met komma)", "eenheid": "g"}],
   "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
 }`,
           imageBase64: base64,
@@ -1048,7 +1085,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
   function geschaaldHoeveelheid(recept, ingredient) {
     const p = porties[recept.id] || recept.porties || 4;
     const schaal = p / (recept.porties || 4);
-    const h = (+ingredient.hoeveelheid || 0) * schaal;
+    const h = parseHoeveelheid(ingredient.hoeveelheid) * schaal;
     return h % 1 === 0 ? h : h.toFixed(1);
   }
 
@@ -1075,7 +1112,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
           item.naam.toLowerCase().includes(ing.naam.toLowerCase().trim())
         );
         if (!match) return item;
-        const gebruikt = (+match.hoeveelheid || 0) * schaal;
+        const gebruikt = parseHoeveelheid(match.hoeveelheid) * schaal;
         // Alleen zinvol aftrekken als de eenheden overeenkomen of het om stuks gaat
         if (match.eenheid !== item.eenheid && !(match.eenheid === "stuks" && item.eenheid === "stuks")) return item;
         bijgewerkt++;

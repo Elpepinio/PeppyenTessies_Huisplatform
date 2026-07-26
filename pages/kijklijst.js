@@ -17,6 +17,19 @@ const STATUSSEN = [
   { id: "gekeken",       label: "Gekeken",        icon: "✅" },
 ];
 
+// Nederlandse Kijkwijzer-classificatie — de standaard leeftijdsindicatie op
+// NL streamingdiensten/bioscopen, dus bruikbaarder hier dan een Amerikaanse
+// MPAA-rating (die OMDb wel teruggeeft maar hier niet 1-op-1 op past).
+const LEEFTIJDEN = [
+  { id: "AL", label: "Alle leeftijden", kleur: "#2D6A4F" },
+  { id: "6",  label: "6 jaar",          kleur: "#4C9A2A" },
+  { id: "9",  label: "9 jaar",          kleur: "#C9A700" },
+  { id: "12", label: "12 jaar",         kleur: "#C97D0C" },
+  { id: "16", label: "16 jaar",         kleur: "#D6541F" },
+  { id: "18", label: "18 jaar",         kleur: "#C0392B" },
+];
+const LEEFTIJD_MAP = Object.fromEntries(LEEFTIJDEN.map(l => [l.id, l]));
+
 const WIE_BADGE_VENSTER_MS = 24 * 60 * 60 * 1000;
 
 // ---- Helpers ----
@@ -119,6 +132,7 @@ export default function KijklijstApp() {
 
   const [statusFilter, setStatusFilter] = useState("wil_kijken");
   const [typeFilter, setTypeFilter] = useState(null);
+  const [jimmyFilter, setJimmyFilter] = useState(false);
   const [zoekterm, setZoekterm] = useState("");
   const [toast, setToast] = useState(null);
 
@@ -141,6 +155,7 @@ export default function KijklijstApp() {
     regisseur: "", acteurs: "",
     poster: "", waarTeZien: [], status: "wil_kijken",
     beoordelingen: { Pepijn: 0, Tessa: 0 }, notitie: "",
+    leeftijd: "", voorJimmy: false,
   });
 
   useEffect(() => {
@@ -186,7 +201,7 @@ export default function KijklijstApp() {
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
 
   function resetForm() {
-    setForm({ titel: "", type: "film", jaar: "", genre: "", imdbRating: "", regisseur: "", acteurs: "", poster: "", waarTeZien: [], status: "wil_kijken", beoordelingen: { Pepijn: 0, Tessa: 0 }, notitie: "" });
+    setForm({ titel: "", type: "film", jaar: "", genre: "", imdbRating: "", regisseur: "", acteurs: "", poster: "", waarTeZien: [], status: "wil_kijken", beoordelingen: { Pepijn: 0, Tessa: 0 }, notitie: "", leeftijd: "", voorJimmy: false });
     setEditId(null);
   }
 
@@ -285,6 +300,7 @@ export default function KijklijstApp() {
       regisseur: item.regisseur || "", acteurs: item.acteurs || "",
       imdbRating: item.imdbRating ?? "", poster: item.poster || "", waarTeZien: item.waarTeZien || [],
       status: item.status, beoordelingen: item.beoordelingen || { Pepijn: 0, Tessa: 0 }, notitie: item.notitie || "",
+      leeftijd: item.leeftijd || "", voorJimmy: !!item.voorJimmy,
     });
     setEditId(item.id);
     setShowAdd(true);
@@ -416,6 +432,7 @@ export default function KijklijstApp() {
   let zichtbaar = items;
   if (statusFilter) zichtbaar = zichtbaar.filter(i => i.status === statusFilter);
   if (typeFilter) zichtbaar = zichtbaar.filter(i => i.type === typeFilter);
+  if (jimmyFilter) zichtbaar = zichtbaar.filter(i => i.voorJimmy);
   if (zoekterm.trim()) zichtbaar = zichtbaar.filter(i => i.titel.toLowerCase().includes(zoekterm.toLowerCase()));
   zichtbaar = [...zichtbaar].sort((a, b) => (b.imdbRating || 0) - (a.imdbRating || 0));
 
@@ -469,10 +486,11 @@ export default function KijklijstApp() {
         </div>
 
         {/* Type-filter */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
           <button style={S.chip(!typeFilter)} onClick={() => setTypeFilter(null)}>Alles</button>
           <button style={S.chip(typeFilter === "film")} onClick={() => setTypeFilter(typeFilter === "film" ? null : "film")}><Film size={11} style={{ verticalAlign: "middle", marginRight: 3 }} />Films</button>
           <button style={S.chip(typeFilter === "serie")} onClick={() => setTypeFilter(typeFilter === "serie" ? null : "serie")}><Tv size={11} style={{ verticalAlign: "middle", marginRight: 3 }} />Series</button>
+          <button style={S.chip(jimmyFilter)} onClick={() => setJimmyFilter(v => !v)}>👦 Jimmy</button>
         </div>
 
         {items.length === 0 && (
@@ -501,6 +519,15 @@ export default function KijklijstApp() {
                 <div style={{ flex: 1, minWidth: 0 }} onClick={() => bewerkItem(item)}>
                   <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
                     <span style={{ fontSize: 15, fontWeight: 700 }}>{item.titel}</span>
+                    {item.leeftijd && (
+                      <span title={`Kijkwijzer: ${LEEFTIJD_MAP[item.leeftijd]?.label}`} style={{
+                        display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 20, height: 18, padding: "0 4px", borderRadius: 5,
+                        background: LEEFTIJD_MAP[item.leeftijd]?.kleur || C.muted, color: "#FFF", fontWeight: 800, fontSize: 10,
+                      }}>
+                        {item.leeftijd}
+                      </span>
+                    )}
+                    {item.voorJimmy && <span title="Voor Jimmy" style={{ fontSize: 13 }}>👦</span>}
                     <WieBadge persoon={item.lastActionBy} tijdstip={item.lastActionAt} />
                   </div>
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
@@ -675,6 +702,27 @@ export default function KijklijstApp() {
                 ))}
               </div>
             ))}
+
+            <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 6 }}>Leeftijd (Kijkwijzer)</label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+              {LEEFTIJDEN.map(l => (
+                <button key={l.id} type="button" onClick={() => setForm(f => ({ ...f, leeftijd: f.leeftijd === l.id ? "" : l.id }))}
+                  style={{ border: `1.5px solid ${form.leeftijd === l.id ? l.kleur : C.border}`, background: form.leeftijd === l.id ? l.kleur : "#FFFFFF", color: form.leeftijd === l.id ? "#FFF" : C.muted, borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                  {l.id}
+                </button>
+              ))}
+            </div>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, cursor: "pointer" }}>
+              <span style={{
+                width: 20, height: 20, borderRadius: 6, border: `1.5px solid ${form.voorJimmy ? C.accent : C.border}`,
+                background: form.voorJimmy ? C.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                {form.voorJimmy && <span style={{ color: "#FFF", fontSize: 12, fontWeight: 800 }}>✓</span>}
+              </span>
+              <input type="checkbox" checked={form.voorJimmy} onChange={e => setForm(f => ({ ...f, voorJimmy: e.target.checked }))} style={{ display: "none" }} />
+              <span style={{ fontSize: 13, color: C.text }}>👦 Geschikt voor Jimmy</span>
+            </label>
 
             <textarea style={{ ...S.inp, marginTop: 6, marginBottom: 16, height: 60, resize: "none" }} placeholder="Notitie (optioneel, bv. wie het aanraadde)" value={form.notitie}
               onChange={e => setForm(f => ({ ...f, notitie: e.target.value }))} />

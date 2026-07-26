@@ -91,7 +91,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown, in dit exacte formaat �
       "porties": 4,
       "kcal": 0,
       "beschrijving": "korte beschrijving",
-      "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100", "eenheid": "g"}],
+      "ingredienten": [{"naam": "ingrediënt", "hoeveelheid": "100 (ALTIJD decimaal met een punt, bv. 0.5 of 1.25 — reken breuken (1/2) en komma-notatie (1,5) zelf om naar deze vorm, nooit teruggeven als breuk of met komma)", "eenheid": "g"}],
       "stappen": [{"tekst": "stap zonder wachttijd"}, {"tekst": "stap met wachttijd, bv. koken/bakken/rusten", "timerStart": "het fysieke/visuele moment waarop je pas moet beginnen te timen, bv. 'zodra het water kookt' of 'als de boter bruint en begint te schuimen' — WEGLATEN als de stap geen timer nodig heeft of het startmoment vanzelfsprekend is (gewoon meteen beginnen)"}]
     }
   ]

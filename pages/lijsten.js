@@ -799,10 +799,11 @@ export default function LijstenApp() {
   // ════════════════════════════
   if (activeList && mode === "pakken") {
     const teNemen = activeList.items.filter(i => i.checked);
+    const sorteerAlfabetisch = (a, b) => a.name.localeCompare(b.name, "nl", { sensitivity: "base" });
     const grouped = activeList.categories
-      .map(cat => ({ cat, items: teNemen.filter(i => i.category === cat.id) }))
+      .map(cat => ({ cat, items: teNemen.filter(i => i.category === cat.id).sort(sorteerAlfabetisch) }))
       .filter(g => g.items.length > 0);
-    const uncategorized = teNemen.filter(i => !activeList.categories.find(c => c.id === i.category));
+    const uncategorized = teNemen.filter(i => !activeList.categories.find(c => c.id === i.category)).sort(sorteerAlfabetisch);
     const done = teNemen.filter(i => i.inCart).length;
     const isVakantie = !activeList.name.toLowerCase().includes("boodschappen");
 
@@ -1035,14 +1036,15 @@ export default function LijstenApp() {
       ? alleItems.filter(i => i.name.toLowerCase().includes(zoekLower))
       : alleItems;
 
+    const sorteerAlfabetisch = (a, b) => a.name.localeCompare(b.name, "nl", { sensitivity: "base" });
     const grouped = activeList.categories
       .map(cat => ({
         cat,
-        items: gefilterd.filter(i => i.category === cat.id),
+        items: gefilterd.filter(i => i.category === cat.id).sort(sorteerAlfabetisch),
       }))
       .filter(g => g.items.length > 0);
 
-    const uncategorized = gefilterd.filter(i => !activeList.categories.find(c => c.id === i.category));
+    const uncategorized = gefilterd.filter(i => !activeList.categories.find(c => c.id === i.category)).sort(sorteerAlfabetisch);
 
     return (
       <div style={S.appBg}>
