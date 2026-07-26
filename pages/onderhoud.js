@@ -310,6 +310,63 @@ export default function OnderhoudApp() {
   // ── Verbouwplanner ──────────────────────────────────────
   const [actieefProjectId, setActieefProjectId] = useState(null);
 
+  // ── Taken verslepen om zelf de volgorde/prioriteit te bepalen ──────────
+  // Werkt via Pointer Events (i.p.v. de oudere HTML5 drag-API) omdat die
+  // ook op iPhone/aanraakschermen betrouwbaar werkt. De afhankelijkheden-
+  // gebaseerde planning (CPM) blijft leidend voor de daadwerkelijke data's —
+  // slepen wijzigt alleen "prioriteit", de tie-breaker binnen taken die toch
+  // al gelijktijdig gepland staan (dus: geen harde afhankelijkheid van
+  // elkaar). Zo bepaal je zelf welke van de "kan nu al beginnen"-taken
+  // bovenaan (= als eerst opgepakt) komt te staan.
+  const rowRefs = useRef({});
+  const dragState = useRef({ taskId: null, startIndex: -1, projectId: null, taakLijst: null });
+  const [draggingTaskId, setDraggingTaskId] = useState(null);
+  const [dragOverIndex, setDragOverIndex] = useState(null);
+
+  function handleRowPointerDown(e, taskId, index, projectId, taakLijst) {
+    e.preventDefault();
+    dragState.current = { taskId, startIndex: index, projectId, taakLijst };
+    setDraggingTaskId(taskId);
+    setDragOverIndex(index);
+    window.addEventListener("pointermove", handleRowPointerMove);
+    window.addEventListener("pointerup", handleRowPointerUp);
+  }
+
+  function handleRowPointerMove(e) {
+    const { taakLijst } = dragState.current;
+    if (!taakLijst) return;
+    let nieuweIndex = taakLijst.length - 1;
+    for (let i = 0; i < taakLijst.length; i++) {
+      const node = rowRefs.current[taakLijst[i].taak.id];
+      if (!node) continue;
+      const rect = node.getBoundingClientRect();
+      const midden = rect.top + rect.height / 2;
+      if (e.clientY < midden) { nieuweIndex = i; break; }
+    }
+    setDragOverIndex(nieuweIndex);
+  }
+
+  function handleRowPointerUp() {
+    window.removeEventListener("pointermove", handleRowPointerMove);
+    window.removeEventListener("pointerup", handleRowPointerUp);
+    const { taskId, startIndex, projectId, taakLijst } = dragState.current;
+    setDragOverIndex(eindIndex => {
+      if (taskId && taakLijst && eindIndex != null && eindIndex !== startIndex) {
+        const volgordeIds = taakLijst.map(ti => ti.taak.id);
+        const [verplaatst] = volgordeIds.splice(startIndex, 1);
+        volgordeIds.splice(eindIndex, 0, verplaatst);
+        persistProjectData(projecten, projectTaken.map(t => {
+          if (t.projectId !== projectId) return t;
+          const idx = volgordeIds.indexOf(t.id);
+          return idx === -1 ? t : { ...t, prioriteit: idx };
+        }));
+      }
+      return null;
+    });
+    setDraggingTaskId(null);
+    dragState.current = { taskId: null, startIndex: -1, projectId: null, taakLijst: null };
+  }
+
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [editProjectId, setEditProjectId] = useState(null);
   const [projectWeergave, setProjectWeergave] = useState("lijst"); // "lijst" | "tijdlijn"
@@ -608,10 +665,12 @@ export default function OnderhoudApp() {
       persistProjectData(projecten, projectTaken.map(t => t.id === editProjectTaakId ? { ...t, ...projectTaakForm, duurDagen: +projectTaakForm.duurDagen || 1 } : t));
       showToast("✅ Taak bijgewerkt");
     } else {
+      const projectTakenHuidig = projectTaken.filter(t => t.projectId === actieefProjectId);
       const nieuw = {
         ...projectTaakForm, id: uid(), projectId: actieefProjectId,
         duurDagen: +projectTaakForm.duurDagen || 1,
         werkelijkeStart: null, werkelijkEind: null,
+        prioriteit: projectTakenHuidig.length, // achteraan de huidige volgorde
         aangemaaktOp: Date.now(),
       };
       persistProjectData(projecten, [...projectTaken, nieuw]);
@@ -1305,7 +1364,7 @@ export default function OnderhoudApp() {
             const status = t.werkelijkEind ? "klaar" : t.werkelijkeStart ? "bezig" : "todo";
             const kritiek = status !== "klaar" && (speling[t.id] ?? 0) === 0;
             return { taak: t, start: act?.start, eind: act?.eind, vertragingDagen, status, kritiek, speling: speling[t.id] ?? 0 };
-          }).sort((a,b) => (a.start||0) - (b.start||0));
+          }).sort((a,b) => (a.start||0) - (b.start||0) || (a.taak.prioriteit ?? 9999) - (b.taak.prioriteit ?? 9999));
 
           const projectEind = taakInfo.length ? taakInfo.reduce((max, ti) => ti.eind > max ? ti.eind : max, taakInfo[0].eind) : null;
           const totaalVertraging = taakInfo.length ? Math.max(...taakInfo.map(ti => ti.vertragingDagen), 0) : 0;
@@ -1634,14 +1693,23 @@ export default function OnderhoudApp() {
               {projectWeergave === "lijst" && taakInfo.map(({ taak: t, start, eind, vertragingDagen, status, kritiek }, i) => {
                 const kleur = status === "klaar" ? C.green : status === "bezig" ? C.purple : vertragingDagen > 0 ? C.red : C.muted;
                 const afhankelijkNamen = (t.afhankelijkheden || []).map(id => pTaken.find(x => x.id === id)?.naam).filter(Boolean);
+                const wordtGesleept = draggingTaskId === t.id;
+                const toonDropLijnBoven = draggingTaskId && dragOverIndex === i && dragState.current.startIndex > i;
+                const toonDropLijnOnder = draggingTaskId && dragOverIndex === i && dragState.current.startIndex < i;
                 return (
-                  <div key={t.id} style={{ display:"flex", gap:10, marginBottom:4 }}>
+                  <div key={t.id} ref={el => { rowRefs.current[t.id] = el; }} style={{ display:"flex", gap:10, marginBottom:4, opacity: wordtGesleept ? 0.4 : 1 }}>
                     {/* Tijdlijn-lijn */}
                     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", width:16, flexShrink:0 }}>
                       <div style={{ width:12, height:12, borderRadius:"50%", background:kleur, marginTop:6, flexShrink:0 }} />
                       {i < taakInfo.length - 1 && <div style={{ width:2, flex:1, background:C.border, marginTop:2 }} />}
                     </div>
-                    <div style={{ ...S.card, flex:1, marginBottom:14, borderLeft:`3px solid ${kleur}` }}>
+                    <div style={{ ...S.card, flex:1, marginBottom:14, borderLeft:`3px solid ${kleur}`, borderTop: toonDropLijnBoven ? `2px solid ${C.purple}` : undefined, borderBottom: toonDropLijnOnder ? `2px solid ${C.purple}` : undefined, display:"flex", gap:8 }}>
+                      <div onPointerDown={e => handleRowPointerDown(e, t.id, i, project.id, taakInfo)}
+                        style={{ cursor:"grab", color:C.muted, fontSize:16, padding:"2px 4px", touchAction:"none", userSelect:"none", flexShrink:0, alignSelf:"center" }}
+                        title="Sleep om de volgorde te wijzigen">
+                        ⠿
+                      </div>
+                      <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
                         <div style={{ flex:1, minWidth:0 }}>
                           <p style={{ margin:"0 0 3px", fontWeight:700, fontSize:14, color:C.text }}>{t.naam}</p>
@@ -1678,6 +1746,7 @@ export default function OnderhoudApp() {
                         )}
                         <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, fontSize:11, padding:"6px 10px" }} onClick={() => bewerkProjectTaak(t)}>✏️ Bewerk</button>
                         <button style={{ ...S.btn(C.card, C.red), border:`1px solid ${C.border}`, fontSize:11, padding:"6px 10px" }} onClick={() => verwijderProjectTaak(t.id)}>🗑</button>
+                      </div>
                       </div>
                     </div>
                   </div>
