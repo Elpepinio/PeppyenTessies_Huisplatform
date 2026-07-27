@@ -66,20 +66,18 @@ async function saveData(data) {
 // Maakt (of hergebruikt) een cadeaulijst in de Lijsten-tool voor deze persoon.
 async function startCadeaulijst(naam) {
   try {
-    const res = await fetch("/api/lijsten");
-    if (!res.ok) return null;
-    const data = await res.json();
-    const lists = data.lists || [];
     const nieuweLijst = {
       id: uid(), name: `Cadeaus voor ${naam}`, icon: "🎁", type: "cadeau",
       categories: [{ id: "cadeaus", label: "Cadeau-ideeën", icon: "🎁" }],
       items: [], history: {}, favorites: [], createdAt: Date.now(),
     };
-    const nextLists = [...lists, nieuweLijst];
+    // Bewust de "listUpdate"-modus i.p.v. alle lijsten terugsturen: deze tool
+    // hoeft de andere lijsten niet te kennen, en kan zo nooit per ongeluk
+    // iets anders raken dan deze ene nieuwe cadeaulijst.
     await fetch("/api/lijsten", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...data, lists: nextLists }),
+      body: JSON.stringify({ listUpdate: nieuweLijst }),
     });
     return nieuweLijst.id;
   } catch (e) {

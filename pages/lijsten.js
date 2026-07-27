@@ -523,7 +523,10 @@ export default function LijstenApp() {
 
   function verwijderLijst(id) {
     if (!window.confirm("Weet je zeker dat je deze lijst wil verwijderen?")) return;
-    persistLists(lists.filter(l => l.id !== id));
+    lastWriteRef.current = Date.now();
+    const nextLists = lists.filter(l => l.id !== id);
+    setListsState(nextLists);
+    saveData({ lists: nextLists, deletedListIds: [id] });
     if (activeListId === id) setActiveListId(null);
   }
 

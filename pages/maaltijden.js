@@ -242,6 +242,16 @@ const S = {
 export default function MaaltijdApp() {
   const [recepten, setReceptenState] = useState([]);
   const [weekmenu, setWeekmenuState] = useState({});
+  // Altijd-actuele refs — nodig omdat AI-functies (importeren, verfijnen,
+  // weekmenu voorstellen) een paar seconden wachten op de AI. Als ze op dat
+  // moment de `recepten`/`weekmenu` uit hun eigen render-closure gebruiken
+  // (die dateert van vóór het wachten), overschrijft de uiteindelijke save
+  // stilletjes alles wat er ondertussen (via een poll of een andere actie)
+  // bij is gekomen — dat was de kern van het "AI-recepten verdwijnen"-bug.
+  const receptenRef = useRef([]);
+  const weekmenuRef = useRef({});
+  useEffect(() => { receptenRef.current = recepten; }, [recepten]);
+  useEffect(() => { weekmenuRef.current = weekmenu; }, [weekmenu]);
   const [aiKostenMaand, setAiKostenMaand] = useState(null);
 
   useEffect(() => {
@@ -487,7 +497,7 @@ export default function MaaltijdApp() {
       aangemaaktOp: Date.now(),
     };
     delete nieuw.stapTimers;
-    persistData([...recepten, nieuw], weekmenu);
+    persistData([...receptenRef.current, nieuw], weekmenuRef.current);
     setReceptForm({ naam: "", keuken: "Nederlands", gangtype: "Hoofdgerecht", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], stapTimers: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null });
     setShowReceptForm(false);
     showToast(`✅ ${nieuw.naam} toegevoegd`);
@@ -520,7 +530,7 @@ export default function MaaltijdApp() {
     if (!window.confirm("Recept verwijderen?")) return;
     const nextWeekmenu = {};
     Object.entries(weekmenu).forEach(([k, v]) => { if (v !== id) nextWeekmenu[k] = v; });
-    persistData(recepten.filter(r => r.id !== id), nextWeekmenu);
+    persistData(receptenRef.current.filter(r => r.id !== id), nextWeekmenu);
     if (actieefReceptId === id) setActieefReceptId(null);
   }
 
@@ -530,7 +540,7 @@ export default function MaaltijdApp() {
     const next = { ...weekmenu };
     if (receptId) next[key] = receptId;
     else delete next[key];
-    persistData(recepten, next);
+    persistData(receptenRef.current, next);
   }
 
   function weekKey(dag, moment) {
@@ -650,11 +660,14 @@ export default function MaaltijdApp() {
       }));
 
       const updatedList = { ...boodschappenLijst, categories: categorieenVoorLijst, items: [...boodschappenLijst.items, ...nieuweItems] };
-      const updatedLists = data.lists.map(l => l.id === boodschappenLijst.id ? updatedList : l);
+      // Bewust de "listUpdate"-modus i.p.v. alle lijsten terugsturen: deze
+      // tool hoeft de andere lijsten (vakantie, cadeaus, etc.) niet te
+      // kennen, en kan zo ook nooit per ongeluk iets anders raken dan de
+      // boodschappenlijst zelf.
       await fetch("/api/lijsten", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lists: updatedLists }),
+        body: JSON.stringify({ listUpdate: updatedList }),
       });
       showToast(`✅ ${items.length} ingrediënten naar boodschappenlijst${groepeerPerRecept ? ` (bij elkaar onder "${recepten_[0].naam}")` : ""}${alInVoorraad > 0 ? ` (${alInVoorraad} al deels in voorraad, verrekend)` : ""}`);
     } catch (e) { showToast("❌ Kon niet toevoegen aan boodschappenlijst"); }
@@ -769,7 +782,7 @@ ${aiPrompt.toLowerCase().includes("recept") || aiPrompt.toLowerCase().includes("
       );
       const schoon = tekst.replace(/```json|```/g, "").trim();
       const suggestie = JSON.parse(schoon);
-      const nieuweWeekmenu = { ...weekmenu };
+      const nieuweWeekmenu = { ...weekmenuRef.current };
       let aantalGepland = 0;
       openDagen.forEach(dag => {
         const naam = suggestie[dag];
@@ -780,7 +793,7 @@ ${aiPrompt.toLowerCase().includes("recept") || aiPrompt.toLowerCase().includes("
           aantalGepland++;
         }
       });
-      persistData(recepten, nieuweWeekmenu);
+      persistData(receptenRef.current, nieuweWeekmenu);
       showToast(vasteDagen.length > 0 ? `✅ ${aantalGepland} open dagen ingevuld, ${vasteDagen.length} vaste dagen ongewijzigd` : `✅ ${aantalGepland} dagen ingepland`);
       setShowWeekSuggestie(false);
     } catch (e) {
@@ -1062,7 +1075,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
       const r = linkKeuzeRecepten[i];
       return { ...r, id: uid(), hoofdingredient: guessHoofdingredient(r.ingredienten), gangtype: r.gangtype || "Hoofdgerecht", aangemaaktOp: Date.now() };
     });
-    persistData([...recepten, ...nieuwe], weekmenu);
+    persistData([...receptenRef.current, ...nieuwe], weekmenuRef.current);
     showToast(`✅ ${nieuwe.length} recept${nieuwe.length === 1 ? "" : "en"} toegevoegd`);
     setLinkKeuzeRecepten(null);
     setImportUrl("");
@@ -1071,7 +1084,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
   function slaReceptOp(parsed, opties = {}) {
     const nieuw = { ...parsed, id: uid(), hoofdingredient: parsed.hoofdingredient || guessHoofdingredient(parsed.ingredienten), gangtype: parsed.gangtype || "Hoofdgerecht", aangemaaktOp: Date.now() };
-    persistData([...recepten, nieuw], weekmenu);
+    persistData([...receptenRef.current, nieuw], weekmenuRef.current);
     showToast(`✅ "${nieuw.naam}" toegevoegd`);
     setAiResultaat(null);
     setAiPrompt("");
@@ -1097,7 +1110,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
   // ── Recept bewerken ───────────────────────────────────
   function updateRecept(id, fields) {
-    persistData(recepten.map(r => r.id === id ? { ...r, ...fields } : r), weekmenu);
+    persistData(receptenRef.current.map(r => r.id === id ? { ...r, ...fields } : r), weekmenuRef.current);
   }
 
   // ── Voorraad-koppeling ─────────────────────────────────

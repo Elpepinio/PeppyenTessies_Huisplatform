@@ -83,24 +83,26 @@ async function voegToeAanBoodschappenlijst(item, huidigeGebruiker) {
       lastActionBy: huidigeGebruiker, lastActionAt: Date.now(),
     };
 
-    let nextLists;
+    let bijgewerkteLijst;
     if (lijst) {
       const bestaat = lijst.items.some(i => i.name.toLowerCase() === item.naam.toLowerCase() && !i.checked);
       if (bestaat) return { ok: true, alBestaand: true };
-      nextLists = lists.map(l => l.id === lijst.id ? { ...l, items: [...l.items, nieuwItem] } : l);
+      bijgewerkteLijst = { ...lijst, items: [...lijst.items, nieuwItem] };
     } else {
-      const nieuweLijst = {
+      bijgewerkteLijst = {
         id: uid(), name: "Boodschappen", icon: "🛒",
         categories: CATEGORIEEN.map(c => ({ id: c.id, label: c.label, icon: c.icon })),
         items: [nieuwItem], history: {}, favorites: [], createdAt: Date.now(),
       };
-      nextLists = [...lists, nieuweLijst];
     }
 
+    // Bewust de "listUpdate"-modus i.p.v. alle lijsten terugsturen: deze tool
+    // hoeft de andere lijsten niet te kennen, en kan zo nooit per ongeluk
+    // iets anders raken dan deze ene boodschappenlijst.
     await fetch("/api/lijsten", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...data, lists: nextLists }),
+      body: JSON.stringify({ listUpdate: bijgewerkteLijst }),
     });
     return { ok: true };
   } catch (e) {

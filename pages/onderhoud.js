@@ -4,6 +4,19 @@ import { Plus, X, ChevronLeft, AlertCircle, Check, Clock, ExternalLink } from "l
 
 const OBJECT_ICONEN = ["🏠","🚐","🚗","🔧","❄️","🌡️","💧","⚡","🌿","📦","🛁","🍳","🔑","🏊","📺","💻"];
 
+// Handmatige taakstatus, bovenop de automatisch afgeleide status (die puur
+// op de werkelijkeStart/werkelijkEind-datums draait, en de CPM-planning blijft
+// aansturen — dat blijft ongewijzigd). "Gepauzeerd" en "Geblokkeerd" zijn
+// extra, informatieve statussen die je zelf zet, bv. omdat een taak wacht op
+// materiaal of een aannemer — zonder dat je daarvoor de datums hoeft aan te
+// passen. Alleen relevant zolang een taak niet al "klaar" is.
+const HANDMATIGE_STATUSSEN = [
+  { id: "wachten_op",  label: "Wachten op",  icon: "⏳", kleur: "#2E86AB" },
+  { id: "gepauzeerd",  label: "Gepauzeerd",  icon: "⏸️", kleur: "#C97D0C" },
+  { id: "geblokkeerd", label: "Geblokkeerd", icon: "🚧", kleur: "#C0392B" },
+];
+const HANDMATIGE_STATUS_MAP = Object.fromEntries(HANDMATIGE_STATUSSEN.map(s => [s.id, s]));
+
 // Zelfde categorieën als in Woonideeën — hier alleen voor de iconen/labels,
 // zodat de kostenlijst per categorie gegroepeerd kan worden i.p.v. één lange
 // platte lijst. Bewust een kleine, losse kopie (geen gedeelde import tussen
@@ -346,20 +359,68 @@ export default function OnderhoudApp() {
     setDragOverIndex(nieuweIndex);
   }
 
+  // Herbruikbare kernlogica voor het herordenen: gegeven de (gesorteerde)
+  // taaklijst van een project, verplaats één taak van startIndex naar
+  // eindIndex en ken iedereen een nieuwe prioriteit toe op basis van de
+  // resulterende volgorde. Wordt gebruikt door zowel het slepen als de
+  // ▲▼-pijltjes, zodat ze altijd exact hetzelfde resultaat geven.
+  function herordenTaken(projectId, taakLijst, startIndex, eindIndex) {
+    if (startIndex === eindIndex || eindIndex < 0 || eindIndex >= taakLijst.length) return;
+    const volgordeIds = taakLijst.map(ti => ti.taak.id);
+    const [verplaatst] = volgordeIds.splice(startIndex, 1);
+    volgordeIds.splice(eindIndex, 0, verplaatst);
+    persistProjectData(projecten, projectTaken.map(t => {
+      if (t.projectId !== projectId) return t;
+      const idx = volgordeIds.indexOf(t.id);
+      return idx === -1 ? t : { ...t, prioriteit: idx };
+    }));
+  }
+
+  function verplaatsTaak(projectId, taakLijst, taskId, richting) {
+    const startIndex = taakLijst.findIndex(ti => ti.taak.id === taskId);
+    if (startIndex === -1) return;
+    herordenTaken(projectId, taakLijst, startIndex, startIndex + richting);
+  }
+
+  // ── Bulkacties op taken ──────────────────────────────────────────────
+  function toggleBulkSelectie(id) {
+    setBulkSelectie(sel => sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
+  }
+  function verlaatBulkModus() {
+    setBulkModus(false); setBulkSelectie([]); setShowBulkUitvoerder(false); setBulkUitvoerderInvoer("");
+  }
+  function bulkVerwijder() {
+    if (!window.confirm(`${bulkSelectie.length} taken verwijderen?`)) return;
+    persistProjectData(projecten, projectTaken.filter(t => !bulkSelectie.includes(t.id))
+      .map(t => ({ ...t, afhankelijkheden: (t.afhankelijkheden||[]).filter(d => !bulkSelectie.includes(d)) })));
+    showToast(`🗑 ${bulkSelectie.length} taken verwijderd`);
+    verlaatBulkModus();
+  }
+  function bulkZetUitvoerder() {
+    if (!bulkUitvoerderInvoer.trim()) return;
+    persistProjectData(projecten, projectTaken.map(t => bulkSelectie.includes(t.id) ? { ...t, uitvoerder: bulkUitvoerderInvoer.trim() } : t));
+    showToast(`👷 Uitvoerder ingesteld voor ${bulkSelectie.length} taken`);
+    verlaatBulkModus();
+  }
+  function bulkZetHandmatigeStatus(statusId) {
+    if (statusId === "wachten_op") {
+      const reden = window.prompt(`Waar wacht deze ${bulkSelectie.length} taken op? (mag leeg)`, "");
+      if (reden === null) return;
+      persistProjectData(projecten, projectTaken.map(t => bulkSelectie.includes(t.id) ? { ...t, handmatigeStatus: "wachten_op", wachtOpReden: reden.trim() } : t));
+    } else {
+      persistProjectData(projecten, projectTaken.map(t => bulkSelectie.includes(t.id) ? { ...t, handmatigeStatus: statusId } : t));
+    }
+    showToast(`${statusId ? HANDMATIGE_STATUS_MAP[statusId]?.icon : "↩️"} Status bijgewerkt voor ${bulkSelectie.length} taken`);
+    verlaatBulkModus();
+  }
+
   function handleRowPointerUp() {
     window.removeEventListener("pointermove", handleRowPointerMove);
     window.removeEventListener("pointerup", handleRowPointerUp);
     const { taskId, startIndex, projectId, taakLijst } = dragState.current;
     setDragOverIndex(eindIndex => {
       if (taskId && taakLijst && eindIndex != null && eindIndex !== startIndex) {
-        const volgordeIds = taakLijst.map(ti => ti.taak.id);
-        const [verplaatst] = volgordeIds.splice(startIndex, 1);
-        volgordeIds.splice(eindIndex, 0, verplaatst);
-        persistProjectData(projecten, projectTaken.map(t => {
-          if (t.projectId !== projectId) return t;
-          const idx = volgordeIds.indexOf(t.id);
-          return idx === -1 ? t : { ...t, prioriteit: idx };
-        }));
+        herordenTaken(projectId, taakLijst, startIndex, eindIndex);
       }
       return null;
     });
@@ -369,7 +430,15 @@ export default function OnderhoudApp() {
 
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [editProjectId, setEditProjectId] = useState(null);
-  const [projectWeergave, setProjectWeergave] = useState("lijst"); // "lijst" | "tijdlijn"
+  const [projectWeergave, setProjectWeergave] = useState("lijst"); // "lijst" | "tijdlijn" | "bord"
+  const [bulkModus, setBulkModus] = useState(false);
+  const [bulkSelectie, setBulkSelectie] = useState([]);
+  const [showBulkUitvoerder, setShowBulkUitvoerder] = useState(false);
+  const [bulkUitvoerderInvoer, setBulkUitvoerderInvoer] = useState("");
+
+  useEffect(() => {
+    setBulkModus(false); setBulkSelectie([]); setShowBulkUitvoerder(false); setBulkUitvoerderInvoer("");
+  }, [actieefProjectId]);
   const [projectForm, setProjectForm] = useState({ naam: "", beschrijving: "", startDatum: new Date().toISOString().slice(0,10), werkdagenOnly: false });
   const [showProjectTaakForm, setShowProjectTaakForm] = useState(false);
   const [editProjectTaakId, setEditProjectTaakId] = useState(null);
@@ -683,7 +752,8 @@ export default function OnderhoudApp() {
   const facturenInputRef = useRef(null);
   const [factuurDoelId, setFactuurDoelId] = useState(null); // {projectId, itemId}
   const [factuurUploadBezig, setFactuurUploadBezig] = useState(false);
-  const [showFactuurPreview, setShowFactuurPreview] = useState(null); // dataURL
+  const [showFactuurPreview, setShowFactuurPreview] = useState(null);
+  const [teBesprekenInvoer, setTeBesprekenInvoer] = useState({}); // dataURL
 
   function startFactuurUpload(projectId, itemId) {
     setFactuurDoelId({ projectId, itemId });
@@ -717,6 +787,40 @@ export default function OnderhoudApp() {
       delete facturen[itemId];
       facturenFotos[itemId] = null; // expliciet null meesturen zodat de API-route 'm ook uit Redis verwijdert
       return { ...p, facturen, facturenFotos };
+    }), projectTaken);
+  }
+
+  // ── Met aannemer bespreken: foto + notitie, hergebruikt de facturen-
+  // foto-opslag (zelfde patroon, itemId is hier gewoon het teBespreken-id
+  // i.p.v. een kosten-id — werkt identiek, geen nieuwe opslaglaag nodig). ──
+  function voegTeBesprekenToe(projectId) {
+    const nieuw = { id: uid(), notitie: "", afgevinkt: false, aangemaaktOp: Date.now() };
+    persistProjectData(projecten.map(p => p.id === projectId
+      ? { ...p, teBespreken: [nieuw, ...(p.teBespreken||[])] }
+      : p
+    ), projectTaken);
+    return nieuw.id;
+  }
+  function bewerkTeBesprekenNotitie(projectId, id, notitie) {
+    persistProjectData(projecten.map(p => p.id === projectId
+      ? { ...p, teBespreken: (p.teBespreken||[]).map(x => x.id === id ? { ...x, notitie } : x) }
+      : p
+    ), projectTaken);
+  }
+  function toggleTeBesprekenAfgevinkt(projectId, id) {
+    persistProjectData(projecten.map(p => p.id === projectId
+      ? { ...p, teBespreken: (p.teBespreken||[]).map(x => x.id === id ? { ...x, afgevinkt: !x.afgevinkt } : x) }
+      : p
+    ), projectTaken);
+  }
+  function verwijderTeBespreken(projectId, id) {
+    persistProjectData(projecten.map(p => {
+      if (p.id !== projectId) return p;
+      const facturen = { ...(p.facturen||{}) };
+      const facturenFotos = { ...(p.facturenFotos||{}) };
+      delete facturen[id];
+      facturenFotos[id] = null;
+      return { ...p, teBespreken: (p.teBespreken||[]).filter(x => x.id !== id), facturen, facturenFotos };
     }), projectTaken);
   }
 
@@ -763,6 +867,46 @@ export default function OnderhoudApp() {
   function markeerGestart(taak) {
     persistProjectData(projecten, projectTaken.map(t => t.id === taak.id ? { ...t, werkelijkeStart: fmtDatum(new Date()) } : t));
     showToast(`▶️ ${taak.naam} gestart`);
+  }
+
+  // Checkt of het toevoegen van "nieuweDepId" als afhankelijkheid van
+  // "taakId" een cirkel zou veroorzaken — d.w.z. of nieuweDepId (via zijn
+  // eigen afhankelijkheden-keten) uiteindelijk al bij taakId zelf uitkomt.
+  // Zo ja, dan zou taakId indirect van zichzelf afhankelijk worden, wat de
+  // planning-berekening in de war zou schoppen.
+  function zouCyclusVeroorzaken(alleTaken, taakId, nieuweDepId) {
+    const bezocht = new Set();
+    function heeftPadNaar(vanId, naarId) {
+      if (vanId === naarId) return true;
+      if (bezocht.has(vanId)) return false;
+      bezocht.add(vanId);
+      const taak = alleTaken.find(t => t.id === vanId);
+      return (taak?.afhankelijkheden || []).some(d => heeftPadNaar(d, naarId));
+    }
+    return heeftPadNaar(nieuweDepId, taakId);
+  }
+
+  function toggleAfhankelijkheid(t) {
+    const actief = (projectTaakForm.afhankelijkheden||[]).includes(t.id);
+    if (!actief && editProjectTaakId && zouCyclusVeroorzaken(projectTaken, editProjectTaakId, t.id)) {
+      showToast(`⚠️ Kan niet: "${t.naam}" is (indirect) al afhankelijk van deze taak — dat zou een cirkel maken`);
+      return;
+    }
+    setProjectTaakForm(f => ({ ...f, afhankelijkheden: actief ? f.afhankelijkheden.filter(id=>id!==t.id) : [...(f.afhankelijkheden||[]), t.id] }));
+  }
+
+  function zetHandmatigeStatus(taak, statusId) {
+    const wordtUitgezet = taak.handmatigeStatus === statusId;
+    if (statusId === "wachten_op" && !wordtUitgezet) {
+      const reden = window.prompt("Waar wacht je op? (bv. materiaal, aannemer, vergunning — mag leeg)", taak.wachtOpReden || "");
+      if (reden === null) return; // geannuleerd
+      persistProjectData(projecten, projectTaken.map(t => t.id === taak.id ? { ...t, handmatigeStatus: statusId, wachtOpReden: reden.trim() } : t));
+      showToast(`⏳ ${taak.naam}: wachten op${reden.trim() ? ` ${reden.trim()}` : ""}`);
+      return;
+    }
+    persistProjectData(projecten, projectTaken.map(t => t.id === taak.id ? { ...t, handmatigeStatus: wordtUitgezet ? null : statusId } : t));
+    const nieuw = wordtUitgezet ? null : statusId;
+    showToast(nieuw ? `${HANDMATIGE_STATUS_MAP[nieuw].icon} ${taak.naam}: ${HANDMATIGE_STATUS_MAP[nieuw].label}` : `${taak.naam}: status hersteld`);
   }
 
   // Markeert een taak als klaar op een (evt. handmatig gekozen) datum — dit is
@@ -827,9 +971,16 @@ export default function OnderhoudApp() {
       const clean = data.text.replace(/```json|```/g, "").trim();
       const advies = JSON.parse(clean).taken || [];
       const perId = Object.fromEntries(advies.map(a => [a.id, a]));
-      persistProjectData(projecten, projectTaken.map(t => perId[t.id]
+      const voorgesteld = projectTaken.map(t => perId[t.id]
         ? { ...t, duurDagen: perId[t.id].duurDagen || t.duurDagen, afhankelijkheden: (perId[t.id].afhankelijkheden || []).filter(id => huidigeTaken.some(h => h.id === id)) }
-        : t));
+        : t);
+      // Vangnet: mocht de AI per ongeluk een cirkel voorstellen, filter die
+      // er hier alsnog uit — nooit een cirkel laten wegschrijven.
+      const veilig = voorgesteld.map(t => ({
+        ...t,
+        afhankelijkheden: (t.afhankelijkheden || []).filter(depId => !zouCyclusVeroorzaken(voorgesteld, t.id, depId)),
+      }));
+      persistProjectData(projecten, veilig);
       showToast("✨ Volgorde en duur voorgesteld — controleer en pas aan waar nodig");
       setShowAiAdviesForm(false);
       setAiAdviesInput("");
@@ -1118,7 +1269,7 @@ export default function OnderhoudApp() {
                 const actief = (projectTaakForm.afhankelijkheden||[]).includes(t.id);
                 return (
                   <button key={t.id} style={{ border:`1px solid ${actief?C.purple:C.border}`, background:actief?C.purple:"transparent", color:actief?"#FFF":C.muted, borderRadius:20, padding:"5px 12px", fontSize:12, cursor:"pointer" }}
-                    onClick={() => setProjectTaakForm(f => ({ ...f, afhankelijkheden: actief ? f.afhankelijkheden.filter(id=>id!==t.id) : [...(f.afhankelijkheden||[]), t.id] }))}>
+                    onClick={() => toggleAfhankelijkheid(t)}>
                     {t.naam}
                   </button>
                 );
@@ -1424,8 +1575,12 @@ export default function OnderhoudApp() {
             const basis = basisSchema[t.id];
             const vertragingDagen = act && basis ? dagVerschil(fmtDatum(act.eind), fmtDatum(basis.eind)) : 0;
             const status = t.werkelijkEind ? "klaar" : t.werkelijkeStart ? "bezig" : "todo";
+            // Handmatige status (gepauzeerd/geblokkeerd) overschrijft alleen de
+            // WEERGAVE, nooit de onderliggende datums/CPM-berekening — en telt
+            // niet meer mee zodra een taak al écht klaar is.
+            const weergaveStatus = t.handmatigeStatus && status !== "klaar" ? t.handmatigeStatus : status;
             const kritiek = status !== "klaar" && (speling[t.id] ?? 0) === 0;
-            return { taak: t, start: act?.start, eind: act?.eind, vertragingDagen, status, kritiek, speling: speling[t.id] ?? 0 };
+            return { taak: t, start: act?.start, eind: act?.eind, vertragingDagen, status, weergaveStatus, kritiek, speling: speling[t.id] ?? 0 };
           }).sort((a,b) => (a.start||0) - (b.start||0) || (a.taak.prioriteit ?? 9999) - (b.taak.prioriteit ?? 9999));
 
           const projectEind = taakInfo.length ? taakInfo.reduce((max, ti) => ti.eind > max ? ti.eind : max, taakInfo[0].eind) : null;
@@ -1648,6 +1803,47 @@ export default function OnderhoudApp() {
                 );
               })()}
 
+              {/* Met aannemer bespreken: foto + notitie per punt */}
+              {(() => {
+                const punten = project.teBespreken || [];
+                const facturenFotos = project.facturenFotos || {};
+                return (
+                  <div style={{ ...S.card, background:`${C.purple}08`, border:`1px solid ${C.purple}33`, marginBottom:14 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                      <p style={{ margin:0, fontWeight:700, fontSize:15, color:C.purple }}>💬 Met aannemer bespreken</p>
+                      <button style={{ ...S.btn(C.purple), fontSize:12, padding:"6px 12px" }} onClick={() => voegTeBesprekenToe(project.id)}>+ Punt</button>
+                    </div>
+                    {punten.length === 0 && (
+                      <p style={{ fontSize:12, color:C.muted, margin:0 }}>Maak een foto van iets dat je nog wilt bespreken — bv. een detail, een twijfel, of iets dat anders lijkt dan verwacht.</p>
+                    )}
+                    {punten.map(x => (
+                      <div key={x.id} style={{ display:"flex", gap:10, padding:"9px 0", borderTop:`1px solid ${C.border}` }}>
+                        <button onClick={() => { if (facturenFotos[x.id]) { setFactuurDoelId({ projectId: project.id, itemId: x.id }); setShowFactuurPreview(facturenFotos[x.id]); } else startFactuurUpload(project.id, x.id); }}
+                          style={{ width:52, height:52, borderRadius:9, border:`1px dashed ${C.border}`, background:facturenFotos[x.id]?`url(${facturenFotos[x.id]})`:C.card, backgroundSize:"cover", backgroundPosition:"center", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, cursor:"pointer" }}>
+                          {!facturenFotos[x.id] && "📷"}
+                        </button>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <textarea
+                            value={teBesprekenInvoer[x.id] ?? x.notitie}
+                            onChange={e => setTeBesprekenInvoer(inv => ({ ...inv, [x.id]: e.target.value }))}
+                            onBlur={e => bewerkTeBesprekenNotitie(project.id, x.id, e.target.value)}
+                            placeholder="Waar gaat dit over?"
+                            style={{ width:"100%", boxSizing:"border-box", border:`1px solid ${C.border}`, borderRadius:8, padding:"6px 8px", fontSize:12.5, resize:"none", height:40, textDecoration: x.afgevinkt ? "line-through" : "none", color: x.afgevinkt ? C.muted : C.text, fontFamily:"inherit" }}
+                          />
+                        </div>
+                        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:6, flexShrink:0 }}>
+                          <button onClick={() => toggleTeBesprekenAfgevinkt(project.id, x.id)} title="Besproken"
+                            style={{ width:22, height:22, borderRadius:6, border:`1.5px solid ${x.afgevinkt?C.green:C.border}`, background:x.afgevinkt?C.green:"transparent", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
+                            {x.afgevinkt && <Check size={13} color="#FFF" />}
+                          </button>
+                          <button onClick={() => verwijderTeBespreken(project.id, x.id)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer" }}><X size={14} /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
               {pTaken.length === 0 && (
                 <p style={{ color:C.muted, textAlign:"center", padding:"30px 0", fontSize:14 }}>Nog geen taken — tik + om te beginnen</p>
               )}
@@ -1684,6 +1880,13 @@ export default function OnderhoudApp() {
                   <button style={{ flex:1, border:"none", background:projectWeergave==="bord"?C.purple:"transparent", color:projectWeergave==="bord"?"#FFF":C.muted, borderRadius:8, padding:"8px 0", fontSize:12, fontWeight:600, cursor:"pointer" }}
                     onClick={() => setProjectWeergave("bord")}>🗂️ Bord</button>
                 </div>
+              )}
+
+              {pTaken.length > 0 && projectWeergave === "lijst" && (
+                <button onClick={() => bulkModus ? verlaatBulkModus() : setBulkModus(true)}
+                  style={{ ...S.btn(bulkModus ? C.purple : C.card, bulkModus ? "#FFF" : C.purple), border:`1px solid ${C.border}`, fontSize:12, padding:"7px 12px", marginBottom:10, width:"100%" }}>
+                  {bulkModus ? `✕ Bulkselectie sluiten (${bulkSelectie.length} geselecteerd)` : "☑️ Meerdere taken tegelijk bewerken"}
+                </button>
               )}
 
               {/* Tijdlijn (Gantt-weergave) */}
@@ -1725,10 +1928,10 @@ export default function OnderhoudApp() {
                         );
                       })}
                       {/* Taakbalken */}
-                      {taakInfo.map(({ taak: t, start, eind, status, kritiek }, i) => {
+                      {taakInfo.map(({ taak: t, start, eind, status, weergaveStatus, kritiek }, i) => {
                         const offsetDagen = Math.max(0, dagVerschil(fmtDatum(start), fmtDatum(projectStart)));
                         const breedteDagen = Math.max(1, dagVerschil(fmtDatum(eind), fmtDatum(start)));
-                        const kleur = status === "klaar" ? C.green : status === "bezig" ? C.purple : kritiek ? C.red : C.muted;
+                        const kleur = HANDMATIGE_STATUS_MAP[weergaveStatus]?.kleur || (status === "klaar" ? C.green : status === "bezig" ? C.purple : kritiek ? C.red : C.muted);
                         return (
                           <div key={t.id} style={{ display:"flex", alignItems:"center", height:34, position:"relative" }}>
                             <div style={{ width:140, flexShrink:0, fontSize:11, fontWeight:600, color:C.text, paddingRight:8, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={t.naam}>
@@ -1754,24 +1957,38 @@ export default function OnderhoudApp() {
               })()}
 
               {/* Lijstweergave */}
-              {projectWeergave === "lijst" && taakInfo.map(({ taak: t, start, eind, vertragingDagen, status, kritiek }, i) => {
-                const kleur = status === "klaar" ? C.green : status === "bezig" ? C.purple : vertragingDagen > 0 ? C.red : C.muted;
+              {projectWeergave === "lijst" && taakInfo.map(({ taak: t, start, eind, vertragingDagen, status, weergaveStatus, kritiek }, i) => {
+                const kleur = HANDMATIGE_STATUS_MAP[weergaveStatus]?.kleur || (status === "klaar" ? C.green : status === "bezig" ? C.purple : vertragingDagen > 0 ? C.red : C.muted);
                 const afhankelijkNamen = (t.afhankelijkheden || []).map(id => pTaken.find(x => x.id === id)?.naam).filter(Boolean);
                 const wordtGesleept = draggingTaskId === t.id;
                 const toonDropLijnBoven = draggingTaskId && dragOverIndex === i && dragState.current.startIndex > i;
                 const toonDropLijnOnder = draggingTaskId && dragOverIndex === i && dragState.current.startIndex < i;
                 return (
                   <div key={t.id} ref={el => { rowRefs.current[t.id] = el; }} style={{ display:"flex", gap:10, marginBottom:4, opacity: wordtGesleept ? 0.4 : 1 }}>
+                    {bulkModus && (
+                      <button onClick={() => toggleBulkSelectie(t.id)}
+                        style={{ width:22, height:22, borderRadius:6, border:`1.5px solid ${bulkSelectie.includes(t.id)?C.purple:C.border}`, background:bulkSelectie.includes(t.id)?C.purple:"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, alignSelf:"center", cursor:"pointer" }}>
+                        {bulkSelectie.includes(t.id) && <Check size={14} color="#FFF" />}
+                      </button>
+                    )}
                     {/* Tijdlijn-lijn */}
                     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", width:16, flexShrink:0 }}>
                       <div style={{ width:12, height:12, borderRadius:"50%", background:kleur, marginTop:6, flexShrink:0 }} />
                       {i < taakInfo.length - 1 && <div style={{ width:2, flex:1, background:C.border, marginTop:2 }} />}
                     </div>
                     <div style={{ ...S.card, flex:1, marginBottom:14, borderLeft:`3px solid ${kleur}`, borderTop: toonDropLijnBoven ? `2px solid ${C.purple}` : undefined, borderBottom: toonDropLijnOnder ? `2px solid ${C.purple}` : undefined, display:"flex", gap:8 }}>
-                      <div onPointerDown={e => handleRowPointerDown(e, t.id, i, project.id, taakInfo)}
-                        style={{ cursor:"grab", color:C.muted, fontSize:16, padding:"2px 4px", touchAction:"none", userSelect:"none", flexShrink:0, alignSelf:"center" }}
-                        title="Sleep om de volgorde te wijzigen">
-                        ⠿
+                      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2, flexShrink:0 }}>
+                        <button onClick={() => verplaatsTaak(project.id, taakInfo, t.id, -1)} disabled={i === 0}
+                          style={{ background:"none", border:"none", cursor: i===0 ? "default" : "pointer", color: i===0 ? C.border : C.muted, padding:1, lineHeight:1, fontSize:13 }}
+                          title="Naar boven">▲</button>
+                        <div onPointerDown={e => handleRowPointerDown(e, t.id, i, project.id, taakInfo)}
+                          style={{ cursor:"grab", color:C.muted, fontSize:16, padding:"2px 4px", touchAction:"none", userSelect:"none" }}
+                          title="Sleep om de volgorde te wijzigen">
+                          ⠿
+                        </div>
+                        <button onClick={() => verplaatsTaak(project.id, taakInfo, t.id, 1)} disabled={i === taakInfo.length - 1}
+                          style={{ background:"none", border:"none", cursor: i===taakInfo.length-1 ? "default" : "pointer", color: i===taakInfo.length-1 ? C.border : C.muted, padding:1, lineHeight:1, fontSize:13 }}
+                          title="Naar beneden">▼</button>
                       </div>
                       <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
@@ -1788,7 +2005,9 @@ export default function OnderhoudApp() {
                         </div>
                         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
                           <span style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:20, background:`${kleur}22`, color:kleur, whiteSpace:"nowrap" }}>
-                            {status === "klaar" ? "✅ Klaar" : status === "bezig" ? "▶️ Bezig" : "⏳ Nog te doen"}
+                            {HANDMATIGE_STATUS_MAP[weergaveStatus]
+                              ? `${HANDMATIGE_STATUS_MAP[weergaveStatus].icon} ${HANDMATIGE_STATUS_MAP[weergaveStatus].label}${weergaveStatus==="wachten_op" && t.wachtOpReden ? `: ${t.wachtOpReden}` : ""}`
+                              : status === "klaar" ? "✅ Klaar" : status === "bezig" ? "▶️ Bezig" : "⏳ Nog te doen"}
                           </span>
                           {kritiek && (
                             <span style={{ fontSize:9, fontWeight:700, padding:"2px 7px", borderRadius:20, background:`${C.red}22`, color:C.red, whiteSpace:"nowrap" }} title="Geen speling — vertraging hier vertraagt gegarandeerd de hele oplevering">
@@ -1808,6 +2027,13 @@ export default function OnderhoudApp() {
                         {status === "klaar" && (
                           <button style={{ ...S.btn(C.card, C.muted), border:`1px solid ${C.border}`, fontSize:11, padding:"6px 10px" }} onClick={() => heropenTaak(t)}>↩️ Heropen</button>
                         )}
+                        {status !== "klaar" && HANDMATIGE_STATUSSEN.map(s => (
+                          <button key={s.id}
+                            style={{ ...S.btn(t.handmatigeStatus === s.id ? s.kleur : C.card, t.handmatigeStatus === s.id ? "#FFF" : s.kleur), border:`1px solid ${t.handmatigeStatus===s.id ? s.kleur : C.border}`, fontSize:11, padding:"6px 10px" }}
+                            onClick={() => zetHandmatigeStatus(t, s.id)}>
+                            {s.icon} {t.handmatigeStatus === s.id ? "Herstel" : s.label}
+                          </button>
+                        ))}
                         <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, fontSize:11, padding:"6px 10px" }} onClick={() => bewerkProjectTaak(t)}>✏️ Bewerk</button>
                         <button style={{ ...S.btn(C.card, C.red), border:`1px solid ${C.border}`, fontSize:11, padding:"6px 10px" }} onClick={() => verwijderProjectTaak(t.id)}>🗑</button>
                       </div>
@@ -1827,7 +2053,11 @@ export default function OnderhoudApp() {
                 return (
                   <div style={{ display:"flex", gap:10, overflowX:"auto", paddingBottom:8, margin:"0 -20px", padding:"0 20px 8px" }}>
                     {KOLOMMEN.map(kol => {
-                      const takenInKolom = pTaken.filter(t => kolomVanTaak(t) === kol.id);
+                      // taakInfo staat al in dezelfde volgorde als de Lijst-weergave
+                      // (gesorteerd op berekende startdatum, met prioriteit als tie-
+                      // breaker) — hier alleen filteren, niet opnieuw sorteren, zodat
+                      // het bord die volgorde exact aanhoudt.
+                      const takenInKolom = taakInfo.filter(ti => kolomVanTaak(ti.taak) === kol.id).map(ti => ti.taak);
                       const overDeze = boardDragOverKolom === kol.id;
                       return (
                         <div key={kol.id} data-kolom={kol.id}
@@ -1843,9 +2073,14 @@ export default function OnderhoudApp() {
                               onPointerDown={e => handleBoardPointerDown(e, t)}
                               style={{
                                 background:C.surf, borderRadius:9, padding:"9px 10px", marginBottom:6, cursor:"grab", touchAction:"none", userSelect:"none",
-                                border:`1px solid ${C.border}`, opacity: boardDragTaskId===t.id ? 0.35 : 1,
+                                border:`1px solid ${t.handmatigeStatus ? HANDMATIGE_STATUS_MAP[t.handmatigeStatus]?.kleur : C.border}`, opacity: boardDragTaskId===t.id ? 0.35 : 1,
                               }}>
                               <p style={{ margin:0, fontSize:12.5, fontWeight:700, color:C.text }}>{t.naam}</p>
+                              {t.handmatigeStatus && (
+                                <p style={{ margin:"3px 0 0", fontSize:10, fontWeight:700, color:HANDMATIGE_STATUS_MAP[t.handmatigeStatus].kleur }}>
+                                  {HANDMATIGE_STATUS_MAP[t.handmatigeStatus].icon} {HANDMATIGE_STATUS_MAP[t.handmatigeStatus].label}{t.handmatigeStatus==="wachten_op" && t.wachtOpReden ? `: ${t.wachtOpReden}` : ""}
+                                </p>
+                              )}
                               {t.uitvoerder && <p style={{ margin:"3px 0 0", fontSize:10, color:C.muted }}>👷 {t.uitvoerder}</p>}
                               {(t.afhankelijkheden||[]).length > 0 && kol.id === "backlog" && (
                                 <p style={{ margin:"3px 0 0", fontSize:9, color:C.muted }}>⛓️ {(t.afhankelijkheden||[]).length} afhankelijkhe{(t.afhankelijkheden||[]).length===1?"id":"den"}</p>
@@ -1867,6 +2102,29 @@ export default function OnderhoudApp() {
           vanuit de 📎-knoppen bij kostenregels in het Verbouwing-tabblad. */}
       <input ref={facturenInputRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }}
         onChange={e => { handleFactuurBestand(e.target.files[0]); e.target.value = ""; }} />
+
+      {/* Zwevende bulk-actiebalk */}
+      {bulkModus && bulkSelectie.length > 0 && (
+        <div style={{ position:"fixed", left:16, right:16, bottom:16, background:C.surf, border:`1px solid ${C.border}`, borderRadius:14, padding:12, boxShadow:"0 8px 24px rgba(0,0,0,0.18)", zIndex:120 }}>
+          <p style={{ margin:"0 0 8px", fontSize:12, fontWeight:700, color:C.purple }}>{bulkSelectie.length} taken geselecteerd</p>
+          {!showBulkUitvoerder ? (
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+              <button style={{ ...S.btn(C.card, C.purple), border:`1px solid ${C.border}`, fontSize:12, padding:"7px 10px" }} onClick={() => setShowBulkUitvoerder(true)}>👷 Uitvoerder</button>
+              {HANDMATIGE_STATUSSEN.map(s => (
+                <button key={s.id} style={{ ...S.btn(C.card, s.kleur), border:`1px solid ${C.border}`, fontSize:12, padding:"7px 10px" }} onClick={() => bulkZetHandmatigeStatus(s.id)}>{s.icon} {s.label}</button>
+              ))}
+              <button style={{ ...S.btn(C.card, C.muted), border:`1px solid ${C.border}`, fontSize:12, padding:"7px 10px" }} onClick={() => bulkZetHandmatigeStatus(null)}>↩️ Status wissen</button>
+              <button style={{ ...S.btn(C.red), fontSize:12, padding:"7px 10px" }} onClick={bulkVerwijder}>🗑 Verwijder</button>
+            </div>
+          ) : (
+            <div style={{ display:"flex", gap:6 }}>
+              <input autoFocus style={{ ...S.inp, fontSize:13 }} placeholder="Naam uitvoerder" value={bulkUitvoerderInvoer} onChange={e=>setBulkUitvoerderInvoer(e.target.value)} />
+              <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, fontSize:12, padding:"0 12px" }} onClick={() => setShowBulkUitvoerder(false)}>Terug</button>
+              <button style={{ ...S.btn(C.purple), fontSize:12, padding:"0 12px" }} onClick={bulkZetUitvoerder}>Zet</button>
+            </div>
+          )}
+        </div>
+      )}
 
       {factuurUploadBezig && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:150 }}>
