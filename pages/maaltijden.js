@@ -195,12 +195,21 @@ async function loadData() {
 
 async function saveData(data) {
   try {
-    await fetch("/api/maaltijden", {
+    const res = await fetch("/api/maaltijden", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
-  } catch (e) { console.error("Opslaan mislukt", e); }
+    if (!res.ok) {
+      let bericht = `Server gaf status ${res.status}`;
+      if (res.status === 413) bericht = "De opslag was te groot (waarschijnlijk te veel/te grote foto's in één keer)";
+      else { try { const j = await res.json(); if (j?.error) bericht = j.error; } catch {} }
+      return { ok: false, error: bericht };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || "Netwerkfout" };
+  }
 }
 
 async function callAI(prompt, bron = "maaltijden-overig") {
@@ -250,6 +259,11 @@ export default function MaaltijdApp() {
   // bij is gekomen — dat was de kern van het "AI-recepten verdwijnen"-bug.
   const receptenRef = useRef([]);
   const weekmenuRef = useRef({});
+  // Onthoudt per `${receptId}:${veld}` de laatst BEVESTIGD opgeslagen
+  // fotowaarde, zodat een opslag alleen daadwerkelijk gewijzigde foto's
+  // hoeft mee te sturen i.p.v. steeds de hele fotobibliotheek — zie
+  // persistData hieronder.
+  const laatstOpgeslagenFotoRef = useRef({});
   useEffect(() => { receptenRef.current = recepten; }, [recepten]);
   useEffect(() => { weekmenuRef.current = weekmenu; }, [weekmenu]);
   const [aiKostenMaand, setAiKostenMaand] = useState(null);
@@ -437,7 +451,36 @@ export default function MaaltijdApp() {
     lastWriteRef.current = Date.now();
     setReceptenState(nextRecepten);
     setWeekmenuState(nextWeekmenu);
-    saveData({ recepten: nextRecepten, weekmenu: nextWeekmenu });
+
+    // Stuur per recept alleen de fotovelden mee die daadwerkelijk gewijzigd
+    // zijn t.o.v. wat al bevestigd is opgeslagen. Zonder dit stuurt ELKE
+    // opslag (ook van een heel ander recept, of gewoon een titel-wijziging)
+    // de volledige fotobibliotheek van alle recepten opnieuw mee — en dat
+    // loopt op den duur vast tegen Vercel's harde limiet van 4,5MB per
+    // aanvraag, waarna de hele opslag (incl. het nieuwe recept) stilletjes
+    // wordt geweigerd. Een ontbrekend fotoveld betekent voor de server nu
+    // "niet aangeraakt, laat ongewijzigd" (zie pages/api/maaltijden.js).
+    const receptenOmTeVerzenden = nextRecepten.map(r => {
+      const kopie = { ...r };
+      for (const veld of ["foto", "aiGerechtFoto"]) {
+        if (kopie[veld] === laatstOpgeslagenFotoRef.current[`${r.id}:${veld}`]) {
+          delete kopie[veld];
+        }
+      }
+      return kopie;
+    });
+
+    saveData({ recepten: receptenOmTeVerzenden, weekmenu: nextWeekmenu }).then(resultaat => {
+      if (!resultaat.ok) {
+        showToast(`❌ Opslaan mislukt: ${resultaat.error}`);
+        return;
+      }
+      nextRecepten.forEach(r => {
+        for (const veld of ["foto", "aiGerechtFoto"]) {
+          laatstOpgeslagenFotoRef.current[`${r.id}:${veld}`] = r[veld];
+        }
+      });
+    });
   }, []);
 
   useEffect(() => {
@@ -455,6 +498,13 @@ export default function MaaltijdApp() {
         setReceptenState(data.recepten || []);
         setWeekmenuState(data.weekmenu || {});
         setLoading(false);
+        // Onthoud wat de server nu heeft, zodat een volgende opslag alleen
+        // écht gewijzigde foto's hoeft mee te sturen.
+        (data.recepten || []).forEach(r => {
+          for (const veld of ["foto", "aiGerechtFoto"]) {
+            laatstOpgeslagenFotoRef.current[`${r.id}:${veld}`] = r[veld];
+          }
+        });
       } else if (active) setLoading(false);
     };
     refresh();
@@ -838,7 +888,11 @@ Format:
   // voor permanente opslag in Redis gebruiken we een veel kleinere versie
   // (zelfde formaat als elders in de app), zodat recepten met foto's niet
   // tegen Redis' opslaglimiet per waarde aanlopen naarmate de bibliotheek groeit.
-  async function comprimeerFoto(file, max = 1400, kwaliteit = 0.85) {
+  // Standaard voor AI-herkenning (tekst op een kookboekpagina lezen): 1100px
+  // is ruim genoeg voor leesbare tekst, en blijft ook bij meerdere foto's
+  // tegelijk (importeerViaFoto kan 2-3 pagina's in één AI-aanvraag sturen)
+  // ruim onder een veilige marge.
+  async function comprimeerFoto(file, max = 1100, kwaliteit = 0.8) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
@@ -978,12 +1032,15 @@ Als er totaal geen (deel van een) gerecht op de foto te zien is: {"fout": "Geen 
       const clean = data.text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       if (parsed.fout) throw new Error(parsed.fout);
-      // De weergavefoto is de kleine opslag-variant; de AI-referentiefoto
-      // (voor het eventueel later verfijnen) blijft de grotere/scherpere versie —
-      // dat kan nu veilig, want beide staan in hun eigen Redis-key, niet meer
-      // samen in één groot record.
+      // Zowel de weergavefoto als de AI-referentiefoto (voor eventueel later
+      // verfijnen) worden HIER, vóór opslag, apart en stevig gecomprimeerd —
+      // "aparte Redis-key" loste alleen de opslaggrootte op, niet de omvang
+      // van de aanvraag zodra dit recept ooit weer verstuurd moet worden
+      // (bv. bij verfijnen). Een iets kleinere/mindere referentiefoto is een
+      // prima prijs voor het niet meer kunnen vastlopen op Vercel's limiet.
       const opslagFoto = await comprimeerFotoVoorOpslag(file);
-      const nieuw = slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}`, aiGerechtFoto: `data:image/jpeg;base64,${base64}` }, { opentBewerken: true });
+      const aiReferentieFoto = await comprimeerFoto(file, 1000, 0.75);
+      const nieuw = slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}`, aiGerechtFoto: `data:image/jpeg;base64,${aiReferentieFoto}` }, { opentBewerken: true });
       showToast(`✨ Recept nagemaakt op basis van de foto — pas gerust aan wat niet klopt`);
     } catch (e) {
       setImportFout(e.message);

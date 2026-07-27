@@ -6,10 +6,11 @@ const redis = Redis.fromEnv();
 const DATA_KEY = "huishouden:maaltijden";
 const FOTO_KEY = (id, veld) => `huishouden:maaltijden:foto:${id}:${veld}`;
 
-// Zonder deze instelling gebruikt Next.js de standaardlimiet van 1MB per
-// request — veel te weinig zodra er een paar recepten met foto's bijkomen,
-// want elke opslag stuurt de volledige receptenlijst (incl. alle foto's) in
-// één keer mee. Zelfde aanpak als bij Places, waar dit al langer goed staat.
+// Next.js' eigen bodyParser-limiet ruim gezet — maar let op: dit beschermt
+// NIET tegen Vercel's eigen, harde limiet van 4,5MB per serverless-functie-
+// aanvraag (die kun je met deze instelling niet omzeilen). De clientkant is
+// er daarom op ingericht om nooit de hele fotobibliotheek in één aanvraag
+// mee te sturen — alleen foto's die daadwerkelijk gewijzigd zijn.
 export const config = { api: { bodyParser: { sizeLimit: "20mb" } } };
 
 const EMPTY = { recepten: [], weekmenu: {}, boodschappenlijst: [] };
@@ -51,14 +52,31 @@ export default async function handler(req, res) {
     try {
       const recepten = req.body.recepten || [];
 
+      // Voor het correct behouden van foto's die deze keer niet zijn
+      // meegestuurd, moeten we weten wat er al lag opgeslagen.
+      const huidig = await redis.get(DATA_KEY);
+      const huidigParsed = huidig ? (typeof huidig === "string" ? JSON.parse(huidig) : huidig) : EMPTY;
+      const huidigeReceptenById = Object.fromEntries((huidigParsed.recepten || []).map(r => [r.id, r]));
+
       // Sla fotovelden apart op, bewaar in het hoofd-record alleen een vlaggetje.
+      // BELANGRIJK: als een fotoveld helemaal NIET is meegestuurd (de tool
+      // stuurt tegenwoordig alleen gewijzigde foto's mee, niet meer de hele
+      // fotobibliotheek bij elke opslag), betekent dat "ongewijzigd laten" —
+      // niet "verwijderen". Alleen een expliciet meegestuurde lege waarde
+      // (bv. de gebruiker heeft de foto zelf verwijderd) verwijdert 'm echt.
       const receptenMeta = await Promise.all(
         recepten.map(async r => {
           const rest = { ...r };
+          const bestaand = huidigeReceptenById[r.id];
           const vlaggen = {};
           for (const veld of FOTO_VELDEN) {
+            const veldMeegestuurd = Object.prototype.hasOwnProperty.call(rest, veld);
             const waarde = rest[veld];
             delete rest[veld];
+            if (!veldMeegestuurd) {
+              if (bestaand?.[`heeft_${veld}`]) vlaggen[`heeft_${veld}`] = true;
+              continue;
+            }
             if (waarde) {
               await redis.set(FOTO_KEY(r.id, veld), waarde);
               vlaggen[`heeft_${veld}`] = true;
