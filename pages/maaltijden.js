@@ -195,12 +195,21 @@ async function loadData() {
 
 async function saveData(data) {
   try {
-    await fetch("/api/maaltijden", {
+    const res = await fetch("/api/maaltijden", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
-  } catch (e) { console.error("Opslaan mislukt", e); }
+    if (!res.ok) {
+      let bericht = `Server gaf status ${res.status}`;
+      if (res.status === 413) bericht = "De opslag was te groot (waarschijnlijk te veel/te grote foto's in één keer)";
+      else { try { const j = await res.json(); if (j?.error) bericht = j.error; } catch {} }
+      return { ok: false, error: bericht };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || "Netwerkfout" };
+  }
 }
 
 async function callAI(prompt, bron = "maaltijden-overig") {
@@ -242,6 +251,21 @@ const S = {
 export default function MaaltijdApp() {
   const [recepten, setReceptenState] = useState([]);
   const [weekmenu, setWeekmenuState] = useState({});
+  // Altijd-actuele refs — nodig omdat AI-functies (importeren, verfijnen,
+  // weekmenu voorstellen) een paar seconden wachten op de AI. Als ze op dat
+  // moment de `recepten`/`weekmenu` uit hun eigen render-closure gebruiken
+  // (die dateert van vóór het wachten), overschrijft de uiteindelijke save
+  // stilletjes alles wat er ondertussen (via een poll of een andere actie)
+  // bij is gekomen — dat was de kern van het "AI-recepten verdwijnen"-bug.
+  const receptenRef = useRef([]);
+  const weekmenuRef = useRef({});
+  // Onthoudt per `${receptId}:${veld}` de laatst BEVESTIGD opgeslagen
+  // fotowaarde, zodat een opslag alleen daadwerkelijk gewijzigde foto's
+  // hoeft mee te sturen i.p.v. steeds de hele fotobibliotheek — zie
+  // persistData hieronder.
+  const laatstOpgeslagenFotoRef = useRef({});
+  useEffect(() => { receptenRef.current = recepten; }, [recepten]);
+  useEffect(() => { weekmenuRef.current = weekmenu; }, [weekmenu]);
   const [aiKostenMaand, setAiKostenMaand] = useState(null);
 
   useEffect(() => {
@@ -311,7 +335,27 @@ export default function MaaltijdApp() {
   const [verfijnInstructie, setVerfijnInstructie] = useState("");
   const [verfijnLoading, setVerfijnLoading] = useState(false);
 
-  const [porties, setPorties] = useState({});
+  // Aangepast aantal personen per recept — dit is bewust NIET het recept
+  // zelf bewerken (dat blijft "porties" op het recept, het standaardaantal),
+  // maar een tijdelijke weergave-aanpassing: "vanavond koken we voor 6 i.p.v.
+  // de standaard 4". Bewaard in localStorage (overleeft een pagina-refresh
+  // of het herstarten van de PWA op de telefoon) zodat een aanpassing niet
+  // stilletjes verloren gaat vlak vóórdat je 'm naar de boodschappenlijst
+  // stuurt — dat was de kern van de gemelde bug.
+  const [porties, setPortiesState] = useState(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const opgeslagen = window.localStorage.getItem("huisplatform_maaltijden_porties");
+      return opgeslagen ? JSON.parse(opgeslagen) : {};
+    } catch { return {}; }
+  });
+  function setPorties(updater) {
+    setPortiesState(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      try { window.localStorage.setItem("huisplatform_maaltijden_porties", JSON.stringify(next)); } catch { /* localStorage niet beschikbaar (bv. privénavigatie) — dan blijft de aanpassing alsnog werken binnen deze sessie */ }
+      return next;
+    });
+  }
   const [bewerkReceptId, setBewerkReceptId] = useState(null); // recept-id -> porties override
   const [toast, setToast] = useState(null);
   const [kookModusActief, setKookModusActief] = useState(false);
@@ -427,7 +471,36 @@ export default function MaaltijdApp() {
     lastWriteRef.current = Date.now();
     setReceptenState(nextRecepten);
     setWeekmenuState(nextWeekmenu);
-    saveData({ recepten: nextRecepten, weekmenu: nextWeekmenu });
+
+    // Stuur per recept alleen de fotovelden mee die daadwerkelijk gewijzigd
+    // zijn t.o.v. wat al bevestigd is opgeslagen. Zonder dit stuurt ELKE
+    // opslag (ook van een heel ander recept, of gewoon een titel-wijziging)
+    // de volledige fotobibliotheek van alle recepten opnieuw mee — en dat
+    // loopt op den duur vast tegen Vercel's harde limiet van 4,5MB per
+    // aanvraag, waarna de hele opslag (incl. het nieuwe recept) stilletjes
+    // wordt geweigerd. Een ontbrekend fotoveld betekent voor de server nu
+    // "niet aangeraakt, laat ongewijzigd" (zie pages/api/maaltijden.js).
+    const receptenOmTeVerzenden = nextRecepten.map(r => {
+      const kopie = { ...r };
+      for (const veld of ["foto", "aiGerechtFoto"]) {
+        if (kopie[veld] === laatstOpgeslagenFotoRef.current[`${r.id}:${veld}`]) {
+          delete kopie[veld];
+        }
+      }
+      return kopie;
+    });
+
+    saveData({ recepten: receptenOmTeVerzenden, weekmenu: nextWeekmenu }).then(resultaat => {
+      if (!resultaat.ok) {
+        showToast(`❌ Opslaan mislukt: ${resultaat.error}`);
+        return;
+      }
+      nextRecepten.forEach(r => {
+        for (const veld of ["foto", "aiGerechtFoto"]) {
+          laatstOpgeslagenFotoRef.current[`${r.id}:${veld}`] = r[veld];
+        }
+      });
+    });
   }, []);
 
   useEffect(() => {
@@ -445,6 +518,13 @@ export default function MaaltijdApp() {
         setReceptenState(data.recepten || []);
         setWeekmenuState(data.weekmenu || {});
         setLoading(false);
+        // Onthoud wat de server nu heeft, zodat een volgende opslag alleen
+        // écht gewijzigde foto's hoeft mee te sturen.
+        (data.recepten || []).forEach(r => {
+          for (const veld of ["foto", "aiGerechtFoto"]) {
+            laatstOpgeslagenFotoRef.current[`${r.id}:${veld}`] = r[veld];
+          }
+        });
       } else if (active) setLoading(false);
     };
     refresh();
@@ -487,7 +567,7 @@ export default function MaaltijdApp() {
       aangemaaktOp: Date.now(),
     };
     delete nieuw.stapTimers;
-    persistData([...recepten, nieuw], weekmenu);
+    persistData([...receptenRef.current, nieuw], weekmenuRef.current);
     setReceptForm({ naam: "", keuken: "Nederlands", gangtype: "Hoofdgerecht", bereidingstijd: "30", porties: "4", beschrijving: "", kcal: "", koolhydraten: "", eiwitten: "", vetten: "", ingredienten: [{ naam: "", hoeveelheid: "", eenheid: "g" }], stappen: [""], stapTimers: [""], dieet: [], kamado: { temperatuur: "", hitte: "indirect", rooktijd: "" }, foto: null });
     setShowReceptForm(false);
     showToast(`✅ ${nieuw.naam} toegevoegd`);
@@ -520,7 +600,7 @@ export default function MaaltijdApp() {
     if (!window.confirm("Recept verwijderen?")) return;
     const nextWeekmenu = {};
     Object.entries(weekmenu).forEach(([k, v]) => { if (v !== id) nextWeekmenu[k] = v; });
-    persistData(recepten.filter(r => r.id !== id), nextWeekmenu);
+    persistData(receptenRef.current.filter(r => r.id !== id), nextWeekmenu);
     if (actieefReceptId === id) setActieefReceptId(null);
   }
 
@@ -530,7 +610,7 @@ export default function MaaltijdApp() {
     const next = { ...weekmenu };
     if (receptId) next[key] = receptId;
     else delete next[key];
-    persistData(recepten, next);
+    persistData(receptenRef.current, next);
   }
 
   function weekKey(dag, moment) {
@@ -650,11 +730,14 @@ export default function MaaltijdApp() {
       }));
 
       const updatedList = { ...boodschappenLijst, categories: categorieenVoorLijst, items: [...boodschappenLijst.items, ...nieuweItems] };
-      const updatedLists = data.lists.map(l => l.id === boodschappenLijst.id ? updatedList : l);
+      // Bewust de "listUpdate"-modus i.p.v. alle lijsten terugsturen: deze
+      // tool hoeft de andere lijsten (vakantie, cadeaus, etc.) niet te
+      // kennen, en kan zo ook nooit per ongeluk iets anders raken dan de
+      // boodschappenlijst zelf.
       await fetch("/api/lijsten", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lists: updatedLists }),
+        body: JSON.stringify({ listUpdate: updatedList }),
       });
       showToast(`✅ ${items.length} ingrediënten naar boodschappenlijst${groepeerPerRecept ? ` (bij elkaar onder "${recepten_[0].naam}")` : ""}${alInVoorraad > 0 ? ` (${alInVoorraad} al deels in voorraad, verrekend)` : ""}`);
     } catch (e) { showToast("❌ Kon niet toevoegen aan boodschappenlijst"); }
@@ -769,7 +852,7 @@ ${aiPrompt.toLowerCase().includes("recept") || aiPrompt.toLowerCase().includes("
       );
       const schoon = tekst.replace(/```json|```/g, "").trim();
       const suggestie = JSON.parse(schoon);
-      const nieuweWeekmenu = { ...weekmenu };
+      const nieuweWeekmenu = { ...weekmenuRef.current };
       let aantalGepland = 0;
       openDagen.forEach(dag => {
         const naam = suggestie[dag];
@@ -780,7 +863,7 @@ ${aiPrompt.toLowerCase().includes("recept") || aiPrompt.toLowerCase().includes("
           aantalGepland++;
         }
       });
-      persistData(recepten, nieuweWeekmenu);
+      persistData(receptenRef.current, nieuweWeekmenu);
       showToast(vasteDagen.length > 0 ? `✅ ${aantalGepland} open dagen ingevuld, ${vasteDagen.length} vaste dagen ongewijzigd` : `✅ ${aantalGepland} dagen ingepland`);
       setShowWeekSuggestie(false);
     } catch (e) {
@@ -825,7 +908,11 @@ Format:
   // voor permanente opslag in Redis gebruiken we een veel kleinere versie
   // (zelfde formaat als elders in de app), zodat recepten met foto's niet
   // tegen Redis' opslaglimiet per waarde aanlopen naarmate de bibliotheek groeit.
-  async function comprimeerFoto(file, max = 1400, kwaliteit = 0.85) {
+  // Standaard voor AI-herkenning (tekst op een kookboekpagina lezen): 1100px
+  // is ruim genoeg voor leesbare tekst, en blijft ook bij meerdere foto's
+  // tegelijk (importeerViaFoto kan 2-3 pagina's in één AI-aanvraag sturen)
+  // ruim onder een veilige marge.
+  async function comprimeerFoto(file, max = 1100, kwaliteit = 0.8) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
@@ -965,12 +1052,15 @@ Als er totaal geen (deel van een) gerecht op de foto te zien is: {"fout": "Geen 
       const clean = data.text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       if (parsed.fout) throw new Error(parsed.fout);
-      // De weergavefoto is de kleine opslag-variant; de AI-referentiefoto
-      // (voor het eventueel later verfijnen) blijft de grotere/scherpere versie —
-      // dat kan nu veilig, want beide staan in hun eigen Redis-key, niet meer
-      // samen in één groot record.
+      // Zowel de weergavefoto als de AI-referentiefoto (voor eventueel later
+      // verfijnen) worden HIER, vóór opslag, apart en stevig gecomprimeerd —
+      // "aparte Redis-key" loste alleen de opslaggrootte op, niet de omvang
+      // van de aanvraag zodra dit recept ooit weer verstuurd moet worden
+      // (bv. bij verfijnen). Een iets kleinere/mindere referentiefoto is een
+      // prima prijs voor het niet meer kunnen vastlopen op Vercel's limiet.
       const opslagFoto = await comprimeerFotoVoorOpslag(file);
-      const nieuw = slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}`, aiGerechtFoto: `data:image/jpeg;base64,${base64}` }, { opentBewerken: true });
+      const aiReferentieFoto = await comprimeerFoto(file, 1000, 0.75);
+      const nieuw = slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}`, aiGerechtFoto: `data:image/jpeg;base64,${aiReferentieFoto}` }, { opentBewerken: true });
       showToast(`✨ Recept nagemaakt op basis van de foto — pas gerust aan wat niet klopt`);
     } catch (e) {
       setImportFout(e.message);
@@ -1062,7 +1152,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
       const r = linkKeuzeRecepten[i];
       return { ...r, id: uid(), hoofdingredient: guessHoofdingredient(r.ingredienten), gangtype: r.gangtype || "Hoofdgerecht", aangemaaktOp: Date.now() };
     });
-    persistData([...recepten, ...nieuwe], weekmenu);
+    persistData([...receptenRef.current, ...nieuwe], weekmenuRef.current);
     showToast(`✅ ${nieuwe.length} recept${nieuwe.length === 1 ? "" : "en"} toegevoegd`);
     setLinkKeuzeRecepten(null);
     setImportUrl("");
@@ -1071,7 +1161,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
   function slaReceptOp(parsed, opties = {}) {
     const nieuw = { ...parsed, id: uid(), hoofdingredient: parsed.hoofdingredient || guessHoofdingredient(parsed.ingredienten), gangtype: parsed.gangtype || "Hoofdgerecht", aangemaaktOp: Date.now() };
-    persistData([...recepten, nieuw], weekmenu);
+    persistData([...receptenRef.current, nieuw], weekmenuRef.current);
     showToast(`✅ "${nieuw.naam}" toegevoegd`);
     setAiResultaat(null);
     setAiPrompt("");
@@ -1097,7 +1187,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
 
   // ── Recept bewerken ───────────────────────────────────
   function updateRecept(id, fields) {
-    persistData(recepten.map(r => r.id === id ? { ...r, ...fields } : r), weekmenu);
+    persistData(receptenRef.current.map(r => r.id === id ? { ...r, ...fields } : r), weekmenuRef.current);
   }
 
   // ── Voorraad-koppeling ─────────────────────────────────
@@ -1785,7 +1875,7 @@ Geef ALLEEN geldige JSON terug, geen uitleg of markdown backticks, in exact dit 
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:8, marginBottom:14 }}>
                   {[
                     { naam:"Zacht", minuten:6, sub:"lopend eigeel", emoji:"🟡" },
-                    { naam:"Halfhard", minuten:8, sub:"licht gebonden", emoji:"🟠" },
+                    { naam:"Halfhard", minuten:7, sub:"zachtjes gebonden, loopt nog", emoji:"🟠" },
                     { naam:"Hard", minuten:10, sub:"volledig gaar", emoji:"🔴" },
                   ].map(preset => (
                     <button key={preset.naam} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 6px", cursor:"pointer", textAlign:"center" }}

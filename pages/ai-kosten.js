@@ -22,6 +22,8 @@ const BRON_LABELS = {
   "maaltijden-overig": { emoji: "🍽️", label: "Maaltijden — Overig" },
   "places-foto-herkenning": { emoji: "🗺️", label: "Places — Foto herkennen" },
   "kijklijst-suggesties": { emoji: "🎬", label: "Kijklijst — Suggesties" },
+  "gezondheid-patronen": { emoji: "🩺", label: "Gezondheid — Patroonanalyse" },
+  "gezondheid-vragenlijst": { emoji: "❓", label: "Gezondheid — Vragenlijst dokter" },
   "bonnetjes-scan": { emoji: "🧾", label: "Bonnetjes — Bon scannen" },
   "bonnetjes-overig": { emoji: "🧾", label: "Bonnetjes — Overig" },
   "woonideeen-link-import": { emoji: "🏡", label: "Woonideeën — Link-import" },
