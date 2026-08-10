@@ -3,6 +3,52 @@ import Link from "next/link";
 import { BUILD_INFO } from "../lib/build-info";
 import { Home, List, Wallet, LogOut, Lock, KeyRound, Settings, Eye, EyeOff } from "lucide-react";
 
+// Klein samenvattingsblokje bovenaan het dashboard: actieve medicaties +
+// eerstvolgende afspraak, zodat je niet apart de Gezondheid-tool hoeft te
+// openen om te zien of er iets speelt. Toont zichzelf niet als er niets te
+// melden is (geen onnodige lege kaart).
+function GezondheidWidget() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    fetch("/api/gezondheid").then(r => r.ok ? r.json() : null).then(d => d && setData(d)).catch(() => {});
+  }, []);
+  if (!data) return null;
+
+  const nu = new Date();
+  const vandaag = `${nu.getFullYear()}-${String(nu.getMonth()+1).padStart(2,"0")}-${String(nu.getDate()).padStart(2,"0")}`;
+  const actieveMedicatie = (data.medicatie || []).filter(m => !m.tot || m.tot >= vandaag);
+  const komendeAfspraken = (data.afspraken || [])
+    .filter(a => !a.gedaan && a.datum >= vandaag)
+    .sort((a,b) => (a.datum||"").localeCompare(b.datum||""));
+  const eerstvolgende = komendeAfspraken[0];
+
+  if (actieveMedicatie.length === 0 && !eerstvolgende) return null;
+
+  const dagenTot = eerstvolgende ? Math.round((new Date(eerstvolgende.datum) - new Date(vandaag)) / (1000*60*60*24)) : null;
+
+  return (
+    <Link href="/gezondheid" style={{
+      display: "flex", alignItems: "center", gap: 10, background: "#FFFFFF", border: "1px solid #DBE0DA",
+      borderRadius: 14, padding: "12px 16px", marginBottom: 14, textDecoration: "none", color: "#262A27",
+    }}>
+      <span style={{ fontSize: 22 }}>🩺</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12.5 }}>
+          {actieveMedicatie.length > 0 && (
+            <span>💊 {actieveMedicatie.length} actieve medicatie{actieveMedicatie.length===1?"":"s"}</span>
+          )}
+          {eerstvolgende && (
+            <span style={{ color: dagenTot <= 3 ? "#C0392B" : "#262A27", fontWeight: dagenTot <= 3 ? 700 : 400 }}>
+              📅 {eerstvolgende.omschrijving} over {dagenTot === 0 ? "vandaag" : dagenTot === 1 ? "1 dag" : `${dagenTot} dagen`}
+            </span>
+          )}
+        </div>
+      </div>
+      <span style={{ color: "#8A9089", fontSize: 13 }}>›</span>
+    </Link>
+  );
+}
+
 const TOOLS = [
   {
     href: "/lijsten",
@@ -73,6 +119,13 @@ const TOOLS = [
     description: "Schoolagenda, vrije dagen en vaste weekitems",
     emoji: "🏫",
     color: "#2C6E8C",
+  },
+  {
+    href: "/gezondheid",
+    label: "Gezondheid",
+    description: "Klachtenlogboek, patronen en medicatie — per persoon apart",
+    emoji: "🩺",
+    color: "#4A7A6B",
   },
   {
     href: "/bonnetjes",
@@ -826,6 +879,7 @@ export default function Platform() {
       )}
 
       <main style={S.grid}>
+        <div style={{ gridColumn: "1 / -1" }}><GezondheidWidget /></div>
         {gesorteerdeTools.map((tool, idx) => (
           <div key={tool.href} style={{ position: "relative" }}>
             {bewerkVolgorde ? (
