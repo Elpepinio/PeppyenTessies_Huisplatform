@@ -10,22 +10,28 @@ function extraheerBlok(bestandspad, startPatroon) {
   if (startIdx === -1) throw new Error(`Patroon niet gevonden in ${bestandspad}: ${startPatroon}`);
 
   const eersteAccolade = inhoud.indexOf("{", startIdx);
+  const eersteBlokhaak = inhoud.indexOf("[", startIdx);
   const eersteKommapunt = inhoud.indexOf(";", startIdx);
 
-  // Simpele losse const-declaratie zonder blok (bv. `const X = "...";`) —
-  // als het kommapunt vóór de eerstvolgende accolade komt (of er is
-  // helemaal geen accolade), is dit zo'n eenregelige declaratie.
-  if (eersteKommapunt !== -1 && (eersteAccolade === -1 || eersteKommapunt < eersteAccolade)) {
+  // Welke opent het eerst: een blok ({...}), een array ([...]), of is het
+  // een simpele eenregelige declaratie zonder blok/array (bv. `const X = "...";`)?
+  const kandidaten = [
+    eersteAccolade !== -1 ? { idx: eersteAccolade, open: "{", close: "}" } : null,
+    eersteBlokhaak !== -1 ? { idx: eersteBlokhaak, open: "[", close: "]" } : null,
+  ].filter(Boolean).sort((a, b) => a.idx - b.idx);
+  const eersteOpener = kandidaten[0] || null;
+
+  if (eersteKommapunt !== -1 && (!eersteOpener || eersteKommapunt < eersteOpener.idx)) {
     return inhoud.slice(startIdx, eersteKommapunt + 1);
   }
 
-  if (eersteAccolade === -1) throw new Error(`Geen openende accolade of kommapunt gevonden na patroon in ${bestandspad}`);
+  if (!eersteOpener) throw new Error(`Geen openende accolade/blokhaak of kommapunt gevonden na patroon in ${bestandspad}`);
 
   let diepte = 0;
   let eindIdx = -1;
-  for (let i = eersteAccolade; i < inhoud.length; i++) {
-    if (inhoud[i] === "{") diepte++;
-    else if (inhoud[i] === "}") {
+  for (let i = eersteOpener.idx; i < inhoud.length; i++) {
+    if (inhoud[i] === eersteOpener.open) diepte++;
+    else if (inhoud[i] === eersteOpener.close) {
       diepte--;
       if (diepte === 0) { eindIdx = i + 1; break; }
     }

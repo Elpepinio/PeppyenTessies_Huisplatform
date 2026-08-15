@@ -64,7 +64,51 @@ const POLLEN_TYPES = [
   { id: "ragweed_pollen", label: "Ambrosia" },
 ];
 
+// Europese Luchtkwaliteitsindex (EAQI) — standaard banden zoals gehanteerd
+// door CAMS/EEA, 0-100+ schaal.
+const LUCHTKWALITEIT_NIVEAUS = [
+  { max: 20,  label: "Goed",       kleur: "#2D6A4F" },
+  { max: 40,  label: "Redelijk",   kleur: "#4C9A2A" },
+  { max: 60,  label: "Matig",      kleur: "#C97D0C" },
+  { max: 80,  label: "Onvoldoende", kleur: "#E06A1F" },
+  { max: 100, label: "Slecht",     kleur: "#D6273C" },
+  { max: Infinity, label: "Zeer slecht", kleur: "#8B1A2B" },
+];
+function luchtkwaliteitNiveau(waarde) {
+  return LUCHTKWALITEIT_NIVEAUS.find(n => waarde <= n.max) || LUCHTKWALITEIT_NIVEAUS[LUCHTKWALITEIT_NIVEAUS.length-1];
+}
+
 const MAAND_NAMEN = ["januari","februari","maart","april","mei","juni","juli","augustus","september","oktober","november","december"];
+
+// Maanfase — puur sterrenkundig berekend op basis van een bekende
+// referentie-nieuwemaan (6 januari 2000) en de synodische maancyclus
+// (~29,53 dagen), dus geen API nodig en werkt voor elke datum, ook in het
+// verleden. Nauwkeurig genoeg voor "welke fase was het" (ruim binnen een dag).
+const MAAN_REFERENTIE = Date.UTC(2000, 0, 6, 18, 14);
+const SYNODISCHE_MAAND = 29.53058868; // dagen
+const MAANFASEN = [
+  { max: 0.033, id: "nieuwe_maan",      label: "Nieuwe maan",      emoji: "🌑" },
+  { max: 0.216, id: "wassende_sikkel",  label: "Wassende sikkel",  emoji: "🌒" },
+  { max: 0.283, id: "eerste_kwartier",  label: "Eerste kwartier",  emoji: "🌓" },
+  { max: 0.466, id: "wassende_maan",    label: "Wassende maan",    emoji: "🌔" },
+  { max: 0.533, id: "volle_maan",       label: "Volle maan",       emoji: "🌕" },
+  { max: 0.716, id: "afnemende_maan",   label: "Afnemende maan",   emoji: "🌖" },
+  { max: 0.783, id: "laatste_kwartier", label: "Laatste kwartier", emoji: "🌗" },
+  { max: 0.966, id: "afnemende_sikkel", label: "Afnemende sikkel", emoji: "🌘" },
+  { max: 1,     id: "nieuwe_maan",      label: "Nieuwe maan",      emoji: "🌑" },
+];
+function berekenMaanfase(datumStr) {
+  if (!datumStr) return null;
+  const [j, m, d] = datumStr.split("-").map(Number);
+  const middagUtc = Date.UTC(j, m - 1, d, 12); // rond het midden van de dag
+  const dagenSindsReferentie = (middagUtc - MAAN_REFERENTIE) / (1000 * 60 * 60 * 24);
+  let fractie = (dagenSindsReferentie % SYNODISCHE_MAAND) / SYNODISCHE_MAAND;
+  if (fractie < 0) fractie += 1; // ook correct vóór de referentiedatum
+  const fase = MAANFASEN.find(f => fractie <= f.max) || MAANFASEN[MAANFASEN.length - 1];
+  // Illuminatie: 0% bij nieuwe maan, 100% bij volle maan, sinusvormig ertussenin.
+  const illuminatie = Math.round((1 - Math.cos(fractie * 2 * Math.PI)) / 2 * 100);
+  return { id: fase.id, label: fase.label, emoji: fase.emoji, illuminatie };
+}
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -117,14 +161,14 @@ async function haalWeerEnPollenOp() {
     navigator.geolocation.getCurrentPosition(async pos => {
       try {
         const { latitude: lat, longitude: lon } = pos.coords;
-        const [weerRes, pollenRes] = await Promise.all([
+        const [weerRes, luchtRes] = await Promise.all([
           fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=auto`),
-          fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=${POLLEN_TYPES.map(p=>p.id).join(",")}&timezone=auto`),
+          fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=${POLLEN_TYPES.map(p=>p.id).join(",")},european_aqi,pm2_5,pm10&timezone=auto`),
         ]);
         const weerData = await weerRes.json();
-        const pollenData = await pollenRes.json();
+        const luchtData = await luchtRes.json();
 
-        const pollenWaarden = POLLEN_TYPES.map(p => ({ type: p.id, label: p.label, waarde: pollenData.current?.[p.id] ?? 0 }));
+        const pollenWaarden = POLLEN_TYPES.map(p => ({ type: p.id, label: p.label, waarde: luchtData.current?.[p.id] ?? 0 }));
         const hoogste = pollenWaarden.reduce((max, p) => p.waarde > max.waarde ? p : max, pollenWaarden[0]);
 
         resolve({
@@ -138,11 +182,61 @@ async function haalWeerEnPollenOp() {
             hoogsteType: hoogste?.label ?? null,
             hoogsteWaarde: hoogste?.waarde ?? 0,
           },
+          luchtkwaliteit: {
+            europeanAqi: luchtData.current?.european_aqi ?? null,
+            pm25: luchtData.current?.pm2_5 ?? null,
+            pm10: luchtData.current?.pm10 ?? null,
+          },
           opgehaaldOp: Date.now(),
         });
       } catch { resolve(null); }
     }, () => resolve(null), { timeout: 8000 });
   });
+}
+
+// Zelfde als hierboven, maar voor een specifieke datum uit het verleden —
+// gebruikt om ontbrekende weer/pollen/luchtkwaliteit-data bij oudere,
+// al bestaande registraties alsnog aan te vullen. Open-Meteo's archief-APIs
+// ondersteunen historische aanvragen (weer sinds 1940, pollen/luchtkwaliteit
+// officieel tot ~92 dagen terug, vaak ook verder) — maar hoe verder terug,
+// hoe groter de kans dat een datum simpelweg geen data meer heeft; dat vangen
+// we hier af door dan gewoon null terug te geven voor dat onderdeel.
+async function haalHistorischWeerEnPollenOp(lat, lon, datumStr) {
+  try {
+    const [weerRes, luchtRes] = await Promise.all([
+      fetch(`https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&start_date=${datumStr}&end_date=${datumStr}&daily=temperature_2m_mean,relative_humidity_2m_mean,wind_speed_10m_mean&timezone=auto`),
+      fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&start_date=${datumStr}&end_date=${datumStr}&hourly=${POLLEN_TYPES.map(p=>p.id).join(",")},european_aqi,pm2_5,pm10&timezone=auto`),
+    ]);
+    const weerData = await weerRes.json();
+    const luchtData = await luchtRes.json();
+
+    // Uit de uurlijkse pollen/luchtkwaliteit-reeks pakken we het middaguur
+    // (12:00) als representatief moment voor die dag.
+    const uren = luchtData.hourly?.time || [];
+    const middagIdx = uren.findIndex(t => t.endsWith("T12:00"));
+    const idx = middagIdx !== -1 ? middagIdx : Math.floor(uren.length / 2);
+
+    const weer = weerData.daily?.temperature_2m_mean?.[0] != null ? {
+      temperatuur: weerData.daily.temperature_2m_mean[0],
+      luchtvochtigheid: weerData.daily.relative_humidity_2m_mean?.[0] ?? null,
+      windkmh: weerData.daily.wind_speed_10m_mean?.[0] ?? null,
+    } : null;
+
+    let pollen = null, luchtkwaliteit = null;
+    if (idx !== -1 && luchtData.hourly) {
+      const pollenWaarden = POLLEN_TYPES.map(p => ({ type: p.id, label: p.label, waarde: luchtData.hourly[p.id]?.[idx] ?? 0 }));
+      const hoogste = pollenWaarden.reduce((max, p) => p.waarde > max.waarde ? p : max, pollenWaarden[0]);
+      if (pollenWaarden.some(p => p.waarde > 0) || hoogste) {
+        pollen = { waarden: pollenWaarden, hoogsteType: hoogste?.label ?? null, hoogsteWaarde: hoogste?.waarde ?? 0 };
+      }
+      if (luchtData.hourly.european_aqi?.[idx] != null) {
+        luchtkwaliteit = { europeanAqi: luchtData.hourly.european_aqi[idx], pm25: luchtData.hourly.pm2_5?.[idx] ?? null, pm10: luchtData.hourly.pm10?.[idx] ?? null };
+      }
+    }
+
+    if (!weer && !pollen && !luchtkwaliteit) return null;
+    return { weer, pollen, luchtkwaliteit, opgehaaldOp: Date.now() };
+  } catch { return null; }
 }
 
 function PersoonBadge({ persoon, groot }) {
@@ -221,25 +315,33 @@ function berekenTrendData(klachten) {
 function berekenWeerCorrelatie(klachten) {
   const perCat = {};
   klachten.forEach(k => {
-    if (!k.pollen && !k.weer) return;
-    if (!perCat[k.categorie]) perCat[k.categorie] = { metPollen: 0, hoogPollen: 0, temperaturen: [] };
+    if (!k.pollen && !k.weer && !k.luchtkwaliteit) return;
+    if (!perCat[k.categorie]) perCat[k.categorie] = { metPollen: 0, hoogPollen: 0, temperaturen: [], metLucht: 0, slechteLucht: 0 };
     if (k.pollen) {
       perCat[k.categorie].metPollen++;
       const niveau = pollenNiveau(k.pollen.hoogsteWaarde||0);
       if (niveau.label === "Hoog" || niveau.label === "Zeer hoog") perCat[k.categorie].hoogPollen++;
     }
+    if (k.luchtkwaliteit?.europeanAqi != null) {
+      perCat[k.categorie].metLucht++;
+      const niveau = luchtkwaliteitNiveau(k.luchtkwaliteit.europeanAqi);
+      if (niveau.label === "Onvoldoende" || niveau.label === "Slecht" || niveau.label === "Zeer slecht") perCat[k.categorie].slechteLucht++;
+    }
     if (k.weer?.temperatuur != null) perCat[k.categorie].temperaturen.push(k.weer.temperatuur);
   });
   return Object.entries(perCat)
-    .filter(([,d]) => d.metPollen >= 3) // pas zinvol vanaf een paar metingen
+    .filter(([,d]) => d.metPollen >= 3 || d.metLucht >= 3) // pas zinvol vanaf een paar metingen
     .map(([catId, d]) => ({
       categorie: catId,
       metPollen: d.metPollen,
       hoogPollen: d.hoogPollen,
-      percentage: Math.round((d.hoogPollen / d.metPollen) * 100),
+      percentage: d.metPollen ? Math.round((d.hoogPollen / d.metPollen) * 100) : 0,
+      metLucht: d.metLucht,
+      slechteLucht: d.slechteLucht,
+      luchtPercentage: d.metLucht ? Math.round((d.slechteLucht / d.metLucht) * 100) : 0,
       gemTemp: d.temperaturen.length ? Math.round(d.temperaturen.reduce((s,t)=>s+t,0) / d.temperaturen.length) : null,
     }))
-    .sort((a,b) => b.percentage - a.percentage);
+    .sort((a,b) => Math.max(b.percentage,b.luchtPercentage) - Math.max(a.percentage,a.luchtPercentage));
 }
 
 export default function GezondheidApp() {
@@ -268,7 +370,10 @@ export default function GezondheidApp() {
   const [toast, setToast] = useState(null);
 
   const [showForm, setShowForm] = useState(false);
+  const [toonMeerDetails, setToonMeerDetails] = useState(false);
   const [weerLoading, setWeerLoading] = useState(false);
+  const [backfillBezig, setBackfillBezig] = useState(false);
+  const [backfillVoortgang, setBackfillVoortgang] = useState({ gedaan: 0, totaal: 0 });
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState(LEEG_FORM());
   const [showDetail, setShowDetail] = useState(null);
@@ -398,7 +503,7 @@ export default function GezondheidApp() {
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2800); }
 
-  function resetForm() { setForm(LEEG_FORM()); setEditId(null); }
+  function resetForm() { setForm(LEEG_FORM()); setEditId(null); setToonMeerDetails(false); }
   function resetMedForm() { setMedForm(LEEG_MED_FORM()); setEditMedId(null); }
   function resetAfspraakForm() { setAfspraakForm(LEEG_AFSPRAAK_FORM()); setEditAfspraakId(null); }
 
@@ -421,10 +526,14 @@ export default function GezondheidApp() {
       persoon: k.persoon, datum: k.datum || vandaagStr(), categorie: k.categorie || "overig",
       ernst: k.ernst || 0, benauwdheidScore: k.benauwdheidScore || 0, notitie: k.notitie || "", foto: k.foto || null,
       medicatieIds: k.medicatieIds || [], hielp: k.hielp || "",
-      weer: k.weer || null, pollen: k.pollen || null,
+      weer: k.weer || null, pollen: k.pollen || null, luchtkwaliteit: k.luchtkwaliteit || null,
+      duurDagen: k.duurDagen || "", contextTags: k.contextTags || [], slaapUren: k.slaapUren || "",
+      slaapKwaliteit: k.slaapKwaliteit || "", energieNiveau: k.energieNiveau || 0,
+      waargenomenDoor: k.waargenomenDoor || "", aantalKeerVandaag: k.aantalKeerVandaag || "",
     });
     setEditId(k.id);
     setShowForm(true);
+    setToonMeerDetails(!!(k.duurDagen || (k.contextTags||[]).length || k.slaapUren || k.slaapKwaliteit || k.energieNiveau || k.waargenomenDoor || k.aantalKeerVandaag));
   }
 
   function verwijderKlacht(id) {
@@ -442,9 +551,43 @@ export default function GezondheidApp() {
   async function haalWeerOp() {
     setWeerLoading(true);
     const resultaat = await haalWeerEnPollenOp();
-    if (resultaat) setForm(f => ({ ...f, weer: resultaat.weer, pollen: resultaat.pollen }));
-    else showToast("⚠️ Kon weer/pollen niet ophalen (locatietoegang nodig)");
+    if (resultaat) setForm(f => ({ ...f, weer: resultaat.weer, pollen: resultaat.pollen, luchtkwaliteit: resultaat.luchtkwaliteit }));
+    else showToast("⚠️ Kon weer/pollen/luchtkwaliteit niet ophalen (locatietoegang nodig)");
     setWeerLoading(false);
+  }
+
+  // Vult weer/pollen/luchtkwaliteit met terugwerkende kracht aan bij
+  // bestaande registraties die deze data nog missen (bv. omdat ze zijn
+  // aangemaakt vóórdat deze functie bestond). Gebruikt de HUIDIGE locatie
+  // voor alle datums — een aanname die opgaat zolang het gezin niet
+  // verhuisd is sinds die oude registraties.
+  async function vulHistorischWeerAan() {
+    if (!navigator.geolocation) { showToast("⚠️ Locatietoegang niet beschikbaar"); return; }
+    const teVullen = klachtenRef.current.filter(k => !k.weer && !k.pollen && !k.luchtkwaliteit && k.datum);
+    if (teVullen.length === 0) { showToast("✅ Alle registraties hebben al weer-/pollendata (of missen een datum)"); return; }
+
+    setBackfillBezig(true);
+    setBackfillVoortgang({ gedaan: 0, totaal: teVullen.length });
+
+    const positie = await new Promise(resolve => {
+      navigator.geolocation.getCurrentPosition(pos => resolve(pos.coords), () => resolve(null), { timeout: 8000 });
+    });
+    if (!positie) { showToast("⚠️ Kon locatie niet bepalen"); setBackfillBezig(false); return; }
+
+    let aangevuld = 0;
+    const updates = {};
+    for (let i = 0; i < teVullen.length; i++) {
+      const k = teVullen[i];
+      const resultaat = await haalHistorischWeerEnPollenOp(positie.latitude, positie.longitude, k.datum);
+      if (resultaat) { updates[k.id] = resultaat; aangevuld++; }
+      setBackfillVoortgang({ gedaan: i + 1, totaal: teVullen.length });
+    }
+
+    if (aangevuld > 0) {
+      persist({ klachten: klachtenRef.current.map(k => updates[k.id] ? { ...k, ...updates[k.id] } : k) });
+    }
+    showToast(`✅ ${aangevuld} van de ${teVullen.length} registraties aangevuld${aangevuld < teVullen.length ? " (voor de rest was geen historische data beschikbaar)" : ""}`);
+    setBackfillBezig(false);
   }
 
   // Bij het openen van een NIEUWE registratie voor vandaag automatisch het
@@ -606,7 +749,11 @@ export default function GezondheidApp() {
       const scoreText = k.categorie === "benauwdheid"
         ? ` (benauwdheid ${k.benauwdheidScore||0}/10 — ${benauwdheidsNiveau(k.benauwdheidScore||0).label})`
         : k.ernst ? ` (ernst ${k.ernst}/5)` : "";
-      regels.push(`• ${formatDatum(k.datum)} — ${cat}${scoreText}${k.notitie ? `: ${k.notitie}` : ""}`);
+      const extraDetails = [
+        k.duurDagen ? `duur ${k.duurDagen}d` : null,
+        k.aantalKeerVandaag ? `${k.aantalKeerVandaag}x die dag` : null,
+      ].filter(Boolean).join(", ");
+      regels.push(`• ${formatDatum(k.datum)} — ${cat}${scoreText}${extraDetails ? ` [${extraDetails}]` : ""}${k.notitie ? `: ${k.notitie}` : ""}`);
     });
     regels.push("", "Huidige medicatie:");
     if (actieveMedicatie.length === 0) regels.push("  (geen)");
@@ -626,17 +773,23 @@ export default function GezondheidApp() {
 
   // ── Exporteren van het logboek ────────────────────────────
   function exporteerCsv() {
-    const kolommen = ["Persoon","Datum","Categorie","Ernst","BenauwdheidScore","Notitie","Medicatie","Hielp","Pollen(hoogste)","Temperatuur"];
+    const kolommen = ["Persoon","Datum","Categorie","Ernst","BenauwdheidScore","Notitie","Medicatie","Hielp","Pollen(hoogste)","Luchtkwaliteit(AQI)","Temperatuur","Maanfase","DuurDagen","AantalKeerVandaag","ContextTags","SlaapUren","SlaapKwaliteit","Energieniveau","WaargenomenDoor"];
     const regels = [kolommen.join(";")];
     klachtenRef.current.slice().sort((a,b)=>(a.datum||"").localeCompare(b.datum||"")).forEach(k => {
       const medNamen = (k.medicatieIds||[]).map(id => medicatieRef.current.find(m=>m.id===id)?.naam).filter(Boolean).join(", ");
       const veld = v => `"${String(v??"").replace(/"/g,'""')}"`;
+      const maan = berekenMaanfase(k.datum);
       regels.push([
         veld(k.persoon), veld(k.datum), veld(KLACHT_CAT_MAP[k.categorie]?.label || k.categorie),
         veld(k.ernst||""), veld(k.categorie==="benauwdheid" ? (k.benauwdheidScore??"") : ""),
         veld(k.notitie||""), veld(medNamen), veld(k.hielp ? HIELP_MAP[k.hielp]?.label : ""),
         veld(k.pollen ? `${k.pollen.hoogsteType||""} (${k.pollen.hoogsteWaarde??""})` : ""),
+        veld(k.luchtkwaliteit?.europeanAqi != null ? `${luchtkwaliteitNiveau(k.luchtkwaliteit.europeanAqi).label} (${k.luchtkwaliteit.europeanAqi})` : ""),
         veld(k.weer?.temperatuur ?? ""),
+        veld(maan ? `${maan.label} (${maan.illuminatie}%)` : ""),
+        veld(k.duurDagen || ""), veld(k.aantalKeerVandaag || ""), veld((k.contextTags||[]).join(", ")),
+        veld(k.slaapUren || ""), veld(k.slaapKwaliteit ? SLAAPKWALITEIT_MAP[k.slaapKwaliteit]?.label : ""),
+        veld(k.energieNiveau ? ENERGIE_NIVEAUS.find(e=>e.waarde===k.energieNiveau)?.label : ""), veld(k.waargenomenDoor || ""),
       ].join(";"));
     });
     const blob = new Blob(["\uFEFF" + regels.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -781,12 +934,18 @@ export default function GezondheidApp() {
       exporteerCsv={exporteerCsv} exporteerPrint={exporteerPrint}
       zoekVragenVoorDokter={zoekVragenVoorDokter} vragenlijstLoading={vragenlijstLoading} vragenlijst={vragenlijst}
       toast={toast}
+      toonMeerDetails={toonMeerDetails} setToonMeerDetails={setToonMeerDetails}
+      vulHistorischWeerAan={vulHistorischWeerAan} backfillBezig={backfillBezig} backfillVoortgang={backfillVoortgang}
     />
   );
 }
 
 function LEEG_FORM() {
-  return { persoon: "Pepijn", datum: vandaagStr(), categorie: "overig", ernst: 0, benauwdheidScore: 0, notitie: "", foto: null, medicatieIds: [], hielp: "", weer: null, pollen: null };
+  return {
+    persoon: "Pepijn", datum: vandaagStr(), categorie: "overig", ernst: 0, benauwdheidScore: 0, notitie: "", foto: null,
+    medicatieIds: [], hielp: "", weer: null, pollen: null, luchtkwaliteit: null,
+    duurDagen: "", contextTags: [], slaapUren: "", slaapKwaliteit: "", energieNiveau: 0, waargenomenDoor: "", aantalKeerVandaag: "",
+  };
 }
 function LEEG_MED_FORM() {
   return { persoon: "Pepijn", naam: "", dosering: "", frequentie: "", sinds: vandaagStr(), tot: "", reden: "", notitie: "" };
@@ -807,6 +966,22 @@ const HIELP_OPTIES = [
   { id: "nee",   label: "Hielp niet",      icon: "❌" },
 ];
 const HIELP_MAP = Object.fromEntries(HIELP_OPTIES.map(h => [h.id, h]));
+
+// Veelgebruikte context-tags als snelkeuze — vrij aan te vullen met eigen tekst.
+const CONTEXT_TAG_SUGGESTIES = ["Na het sporten", "Op school", "Na het eten", "'s Ochtends", "'s Avonds", "Na buiten zijn", "Bij stress", "In het weekend"];
+const SLAAPKWALITEIT_OPTIES = [
+  { id: "goed",  label: "Goed geslapen",   emoji: "😴" },
+  { id: "matig", label: "Matig geslapen",  emoji: "😐" },
+  { id: "slecht",label: "Slecht geslapen", emoji: "😫" },
+];
+const SLAAPKWALITEIT_MAP = Object.fromEntries(SLAAPKWALITEIT_OPTIES.map(s => [s.id, s]));
+const ENERGIE_NIVEAUS = [
+  { waarde: 1, emoji: "🔋", label: "Erg laag" },
+  { waarde: 2, emoji: "🔋", label: "Laag" },
+  { waarde: 3, emoji: "🔋", label: "Gemiddeld" },
+  { waarde: 4, emoji: "🔋", label: "Goed" },
+  { waarde: 5, emoji: "🔋", label: "Vol energie" },
+];
 
 function LEEG_CONTACT_FORM() {
   return { naam: "", type: "huisarts", telefoon: "", adres: "", notitie: "" };
@@ -885,9 +1060,11 @@ function BenauwdheidsMeter({ waarde, onChange, interactief = true }) {
 }
 
 // Kleine, visuele badges voor het opgehaalde weer + hoogste pollenniveau.
-function WeerPollenBadges({ weer, pollen, groot }) {
-  if (!weer && !pollen) return null;
+function WeerPollenBadges({ weer, pollen, luchtkwaliteit, datum, groot }) {
+  if (!weer && !pollen && !luchtkwaliteit && !datum) return null;
   const pn = pollen ? pollenNiveau(pollen.hoogsteWaarde) : null;
+  const lkn = luchtkwaliteit?.europeanAqi != null ? luchtkwaliteitNiveau(luchtkwaliteit.europeanAqi) : null;
+  const maan = datum ? berekenMaanfase(datum) : null;
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
       {weer?.temperatuur != null && (
@@ -908,6 +1085,16 @@ function WeerPollenBadges({ weer, pollen, groot }) {
       {pollen && (
         <span style={{ fontSize: groot?12:10, background: `${pn.kleur}18`, color: pn.kleur, fontWeight: 700, borderRadius: 8, padding: groot?"4px 8px":"2px 6px" }}>
           🌸 Pollen: {pn.label}{groot && pollen.hoogsteType ? ` (${pollen.hoogsteType})` : ""}
+        </span>
+      )}
+      {lkn && (
+        <span style={{ fontSize: groot?12:10, background: `${lkn.kleur}18`, color: lkn.kleur, fontWeight: 700, borderRadius: 8, padding: groot?"4px 8px":"2px 6px" }}>
+          🏭 Lucht: {lkn.label}{groot ? ` (AQI ${luchtkwaliteit.europeanAqi})` : ""}
+        </span>
+      )}
+      {maan && (
+        <span style={{ fontSize: groot?12:10, background: C.card, borderRadius: 8, padding: groot?"4px 8px":"2px 6px", color: C.text }}>
+          {maan.emoji} {maan.label}{groot ? ` (${maan.illuminatie}% verlicht)` : ""}
         </span>
       )}
     </div>
@@ -935,6 +1122,8 @@ function GezondheidView({
   exporteerCsv, exporteerPrint,
   zoekVragenVoorDokter, vragenlijstLoading, vragenlijst,
   toast,
+  toonMeerDetails, setToonMeerDetails,
+  vulHistorischWeerAan, backfillBezig, backfillVoortgang,
 }) {
   const detailKlacht = showDetail ? klachten.find(k => k.id === showDetail) : null;
   const seizoenspatronen = berekenSeizoenspatronen(persoonFilter ? klachten.filter(k=>k.persoon===persoonFilter) : klachten);
@@ -1045,7 +1234,7 @@ function GezondheidView({
                       <ErnstStippen ernst={k.ernst} />
                     )}
                   </div>
-                  {(k.weer || k.pollen) && <div style={{ marginTop: 4 }}><WeerPollenBadges weer={k.weer} pollen={k.pollen} /></div>}
+                  {(k.weer || k.pollen || k.luchtkwaliteit || k.datum) && <div style={{ marginTop: 4 }}><WeerPollenBadges weer={k.weer} pollen={k.pollen} luchtkwaliteit={k.luchtkwaliteit} datum={k.datum} /></div>}
                   {k.notitie && <p style={{ margin: "4px 0 0", fontSize: 12, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{k.notitie}</p>}
                 </div>
               </div>
@@ -1119,17 +1308,24 @@ function GezondheidView({
 
             {weerCorrelatie.length > 0 && (
               <div style={{ ...S.card, background: `${C.accent}10`, border: `1px solid ${C.accent}33` }}>
-                <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700, color: C.accentDark }}>🌸 Weer/pollen-verband</p>
-                <p style={{ margin: "0 0 10px", fontSize: 11, color: C.muted }}>Van registraties met bekende pollendata — puur een aanwijzing, geen bewezen oorzaak.</p>
+                <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700, color: C.accentDark }}>🌸 Weer/pollen/luchtkwaliteit-verband</p>
+                <p style={{ margin: "0 0 10px", fontSize: 11, color: C.muted }}>Van registraties met bekende pollen-/luchtdata — puur een aanwijzing, geen bewezen oorzaak.</p>
                 {weerCorrelatie.map((w, idx) => (
-                  <div key={idx} style={{ padding: "6px 0", borderTop: idx>0 ? `1px solid ${C.border}` : "none" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-                      <span>{KLACHT_CAT_MAP[w.categorie]?.icon} {KLACHT_CAT_MAP[w.categorie]?.label}</span>
-                      <span style={{ fontWeight: 700, color: w.percentage >= 50 ? C.red : C.muted }}>{w.percentage}% bij hoge pollen</span>
-                    </div>
-                    <p style={{ margin: "2px 0 0", fontSize: 10, color: C.muted }}>
-                      {w.hoogPollen} van de {w.metPollen} keer bij Hoog/Zeer hoog pollen{w.gemTemp != null ? ` · gem. ${w.gemTemp}°C` : ""}
-                    </p>
+                  <div key={idx} style={{ padding: "8px 0", borderTop: idx>0 ? `1px solid ${C.border}` : "none" }}>
+                    <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>{KLACHT_CAT_MAP[w.categorie]?.icon} {KLACHT_CAT_MAP[w.categorie]?.label}</p>
+                    {w.metPollen > 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                        <span style={{ color: C.muted }}>🌸 Hoge pollen</span>
+                        <span style={{ fontWeight: 700, color: w.percentage >= 50 ? C.red : C.text }}>{w.hoogPollen}/{w.metPollen} ({w.percentage}%)</span>
+                      </div>
+                    )}
+                    {w.metLucht > 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                        <span style={{ color: C.muted }}>🏭 Slechte luchtkwaliteit</span>
+                        <span style={{ fontWeight: 700, color: w.luchtPercentage >= 50 ? C.red : C.text }}>{w.slechteLucht}/{w.metLucht} ({w.luchtPercentage}%)</span>
+                      </div>
+                    )}
+                    {w.gemTemp != null && <p style={{ margin: "2px 0 0", fontSize: 10, color: C.muted }}>gem. {w.gemTemp}°C bij deze registraties</p>}
                   </div>
                 ))}
               </div>
@@ -1184,6 +1380,22 @@ function GezondheidView({
                   </ol>
                   <p style={{ fontSize: 10, color: C.muted, marginTop: 10 }}>Dit zijn suggesties om aan de arts te vragen — geen antwoorden of medisch advies.</p>
                 </div>
+              )}
+            </div>
+
+            <div style={{ ...S.card, background: `${C.accent}10`, border: `1px solid ${C.accent}33` }}>
+              <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700, color: C.accentDark }}>🔄 Weer/pollen aanvullen bij oudere logs</p>
+              <p style={{ margin: "0 0 10px", fontSize: 11, color: C.muted }}>
+                Vult ontbrekende weer-, pollen- en luchtkwaliteitsdata met terugwerkende kracht aan, op basis van je huidige locatie. Hoe ouder de datum, hoe kleiner de kans dat er nog historische data beschikbaar is.
+              </p>
+              {backfillBezig ? (
+                <p style={{ margin: 0, fontSize: 12, color: C.accentDark, fontWeight: 600 }}>
+                  Bezig… {backfillVoortgang.gedaan}/{backfillVoortgang.totaal}
+                </p>
+              ) : (
+                <button style={{ ...S.btn(C.card, C.accentDark), border: `1px solid ${C.border}`, fontSize: 12, padding: "9px 14px" }} onClick={vulHistorischWeerAan}>
+                  Ontbrekende data aanvullen
+                </button>
               )}
             </div>
 
@@ -1416,12 +1628,25 @@ function GezondheidView({
 
             <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Categorie</label>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-              {KLACHT_CATEGORIEEN.map(c => (
-                <button key={c.id} type="button" style={S.chip(form.categorie === c.id)}
-                  onClick={() => setForm(f => ({ ...f, categorie: c.id }))}>
-                  {c.icon} {c.label}
-                </button>
-              ))}
+              {(() => {
+                // Meest gebruikte categorieën voor déze persoon vooraan, zodat
+                // je een veelvoorkomende klacht met één tik kunt kiezen i.p.v.
+                // steeds door de hele (statische) lijst te zoeken. "Overig"
+                // blijft bewust altijd achteraan, ongeacht frequentie.
+                const frequentie = {};
+                klachten.forEach(k => { if (k.persoon === form.persoon) frequentie[k.categorie] = (frequentie[k.categorie]||0) + 1; });
+                const gesorteerd = [...KLACHT_CATEGORIEEN].sort((a, b) => {
+                  if (a.id === "overig") return 1;
+                  if (b.id === "overig") return -1;
+                  return (frequentie[b.id]||0) - (frequentie[a.id]||0);
+                });
+                return gesorteerd.map(c => (
+                  <button key={c.id} type="button" style={S.chip(form.categorie === c.id)}
+                    onClick={() => setForm(f => ({ ...f, categorie: c.id }))}>
+                    {c.icon} {c.label}
+                  </button>
+                ));
+              })()}
             </div>
 
             {form.categorie === "benauwdheid" ? (
@@ -1441,18 +1666,19 @@ function GezondheidView({
             )}
 
             <div style={{ ...S.card, marginBottom: 14, background: `${C.accent}08` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: (form.weer||form.pollen) ? 8 : 0 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.accentDark }}>🌤️ Weer & pollen</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.accentDark }}>🌤️ Weer, pollen & maanstand</span>
                 <button type="button" onClick={haalWeerOp} disabled={weerLoading}
                   style={{ background: "none", border: "none", color: C.accent, fontSize: 11, fontWeight: 700, cursor: weerLoading ? "default" : "pointer" }}>
-                  {weerLoading ? "Bezig…" : "🔄 Ververs"}
+                  {weerLoading ? "Bezig…" : "🔄 Ververs weer/pollen"}
                 </button>
               </div>
-              {(form.weer || form.pollen) ? (
-                <WeerPollenBadges weer={form.weer} pollen={form.pollen} groot />
-              ) : (
-                <p style={{ margin: 0, fontSize: 11, color: C.muted }}>
-                  {form.datum === vandaagStr() ? "Nog niet opgehaald — tik op ververs (locatietoegang nodig)." : "Alleen beschikbaar voor vandaag."}
+              {/* Maanfase is puur berekend en dus altijd meteen beschikbaar,
+                  ook zonder op ververs te drukken en voor elke datum. */}
+              <WeerPollenBadges weer={form.weer} pollen={form.pollen} luchtkwaliteit={form.luchtkwaliteit} datum={form.datum} groot />
+              {!(form.weer || form.pollen || form.luchtkwaliteit) && (
+                <p style={{ margin: "6px 0 0", fontSize: 11, color: C.muted }}>
+                  {form.datum === vandaagStr() ? "Weer/pollen nog niet opgehaald — tik op ververs (locatietoegang nodig)." : "Weer/pollen alleen beschikbaar voor vandaag."}
                 </p>
               )}
             </div>
@@ -1506,6 +1732,84 @@ function GezondheidView({
             <textarea style={{ ...S.inp, marginBottom: 16, height: 64, resize: "none", boxSizing: "border-box" }} placeholder="Notitie (optioneel — bv. mogelijke aanleiding, hoe erg, wat hielp)"
               value={form.notitie} onChange={e => setForm(f => ({ ...f, notitie: e.target.value }))} />
 
+            {/* Meer details — bewust dichtgeklapt: dit zijn allemaal optionele
+                verdiepingsvelden, en het basisformulier moet vooral snel
+                blijven voor het dagelijkse, korte logje. */}
+            <button type="button" onClick={() => setToonMeerDetails(v => !v)}
+              style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: C.accent, fontSize: 13, fontWeight: 700, cursor: "pointer", padding: 0, marginBottom: toonMeerDetails ? 12 : 16 }}>
+              {toonMeerDetails ? "▾" : "▸"} Meer details (optioneel)
+            </button>
+
+            {toonMeerDetails && (
+              <div style={{ ...S.card, background: C.card, marginBottom: 16 }}>
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Hoelang duurde het? (dagen)</label>
+                <input style={{ ...S.inp, marginBottom: 14 }} type="number" min="0" placeholder="bv. 3" value={form.duurDagen}
+                  onChange={e => setForm(f => ({ ...f, duurDagen: e.target.value }))} />
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Hoe vaak vandaag? (optioneel)</label>
+                <input style={{ ...S.inp, marginBottom: 14 }} type="number" min="0" placeholder="bv. 5 keer gehoest" value={form.aantalKeerVandaag}
+                  onChange={e => setForm(f => ({ ...f, aantalKeerVandaag: e.target.value }))} />
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Context/aanleiding (tik om toe te voegen)</label>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                  {CONTEXT_TAG_SUGGESTIES.map(tag => {
+                    const actief = form.contextTags.includes(tag);
+                    return (
+                      <button key={tag} type="button" style={S.chip(actief)}
+                        onClick={() => setForm(f => ({ ...f, contextTags: actief ? f.contextTags.filter(t=>t!==tag) : [...f.contextTags, tag] }))}>
+                        {tag}
+                      </button>
+                    );
+                  })}
+                </div>
+                <input style={{ ...S.inp, marginBottom: 14 }} placeholder="Eigen tag toevoegen + Enter"
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && e.target.value.trim()) {
+                      setForm(f => ({ ...f, contextTags: [...f.contextTags, e.target.value.trim()] }));
+                      e.target.value = "";
+                    }
+                  }} />
+                {form.contextTags.filter(t => !CONTEXT_TAG_SUGGESTIES.includes(t)).length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14, marginTop: -8 }}>
+                    {form.contextTags.filter(t => !CONTEXT_TAG_SUGGESTIES.includes(t)).map(tag => (
+                      <button key={tag} type="button" style={S.chip(true)} onClick={() => setForm(f => ({ ...f, contextTags: f.contextTags.filter(t2=>t2!==tag) }))}>
+                        {tag} ✕
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Slaap de nacht ervoor</label>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <input style={S.inp} type="number" min="0" max="24" step="0.5" placeholder="Aantal uur" value={form.slaapUren}
+                    onChange={e => setForm(f => ({ ...f, slaapUren: e.target.value }))} />
+                </div>
+                <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                  {SLAAPKWALITEIT_OPTIES.map(s => (
+                    <button key={s.id} type="button" style={{ flex:1, ...S.chip(form.slaapKwaliteit === s.id), textAlign:"center", padding:"8px 0" }}
+                      onClick={() => setForm(f => ({ ...f, slaapKwaliteit: f.slaapKwaliteit === s.id ? "" : s.id }))}>
+                      {s.emoji} {s.label}
+                    </button>
+                  ))}
+                </div>
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Energieniveau (optioneel)</label>
+                <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                  {ENERGIE_NIVEAUS.map(e => (
+                    <button key={e.waarde} type="button" onClick={() => setForm(f => ({ ...f, energieNiveau: f.energieNiveau === e.waarde ? 0 : e.waarde }))}
+                      title={e.label}
+                      style={{ flex:1, height: 36, borderRadius: 8, border: `1px solid ${form.energieNiveau >= e.waarde ? C.accent : C.border}`, background: form.energieNiveau >= e.waarde ? C.accent : "#FFFFFF", fontSize: 14, cursor: "pointer" }}>
+                      {e.emoji}
+                    </button>
+                  ))}
+                </div>
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Waargenomen door (optioneel)</label>
+                <input style={S.inp} placeholder="bv. Zelf, Juf, Oppas" value={form.waargenomenDoor}
+                  onChange={e => setForm(f => ({ ...f, waargenomenDoor: e.target.value }))} />
+              </div>
+            )}
+
             <button style={{ ...S.btn(), width: "100%", padding: "14px 0", fontSize: 15 }} onClick={opslaanKlacht}>
               {editId ? "Opslaan" : "Toevoegen"}
             </button>
@@ -1544,7 +1848,7 @@ function GezondheidView({
               )}
               {(detailKlacht.weer || detailKlacht.pollen) && (
                 <div style={{ paddingTop: 4 }}>
-                  <WeerPollenBadges weer={detailKlacht.weer} pollen={detailKlacht.pollen} groot />
+                  <WeerPollenBadges weer={detailKlacht.weer} pollen={detailKlacht.pollen} luchtkwaliteit={detailKlacht.luchtkwaliteit} datum={detailKlacht.datum} groot />
                 </div>
               )}
               {(detailKlacht.medicatieIds||[]).length > 0 && (
@@ -1561,6 +1865,18 @@ function GezondheidView({
               {detailKlacht.notitie && (
                 <div style={{ fontSize: 13, color: C.text, marginTop: 4, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
                   📝 {detailKlacht.notitie}
+                </div>
+              )}
+              {(detailKlacht.duurDagen || detailKlacht.aantalKeerVandaag || (detailKlacht.contextTags||[]).length > 0 || detailKlacht.slaapUren || detailKlacht.slaapKwaliteit || detailKlacht.energieNiveau || detailKlacht.waargenomenDoor) && (
+                <div style={{ fontSize: 12, color: C.muted, marginTop: 4, paddingTop: 8, borderTop: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {detailKlacht.duurDagen && <span>⏳ Duur: {detailKlacht.duurDagen} dag{detailKlacht.duurDagen==="1"?"":"en"}</span>}
+                  {detailKlacht.aantalKeerVandaag && <span>🔁 {detailKlacht.aantalKeerVandaag}x die dag</span>}
+                  {(detailKlacht.contextTags||[]).length > 0 && <span>🏷️ {detailKlacht.contextTags.join(", ")}</span>}
+                  {(detailKlacht.slaapUren || detailKlacht.slaapKwaliteit) && (
+                    <span>🛌 {detailKlacht.slaapUren ? `${detailKlacht.slaapUren} uur` : ""}{detailKlacht.slaapUren && detailKlacht.slaapKwaliteit ? " · " : ""}{detailKlacht.slaapKwaliteit ? SLAAPKWALITEIT_MAP[detailKlacht.slaapKwaliteit]?.label : ""}</span>
+                  )}
+                  {detailKlacht.energieNiveau > 0 && <span>{ENERGIE_NIVEAUS.find(e=>e.waarde===detailKlacht.energieNiveau)?.emoji} Energie: {ENERGIE_NIVEAUS.find(e=>e.waarde===detailKlacht.energieNiveau)?.label}</span>}
+                  {detailKlacht.waargenomenDoor && <span>👁️ Waargenomen door: {detailKlacht.waargenomenDoor}</span>}
                 </div>
               )}
             </div>
