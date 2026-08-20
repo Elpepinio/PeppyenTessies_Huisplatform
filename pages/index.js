@@ -128,6 +128,13 @@ const TOOLS = [
     color: "#4A7A6B",
   },
   {
+    href: "/afvalkalender",
+    label: "Afvalkalender",
+    description: "Wanneer welk afval wordt opgehaald",
+    emoji: "🗑️",
+    color: "#3D7A5C",
+  },
+  {
     href: "/bonnetjes",
     label: "Bonnetjes",
     description: "Aankoopbonnetjes scannen, garantie bijhouden en terugvinden",

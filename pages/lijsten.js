@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { Plus, Check, CheckCheck, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift } from "lucide-react";
+import { Plus, Check, CheckCheck, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift, MoreHorizontal } from "lucide-react";
 
 // ---- Constanten ----
 const UNITS = ["stuks", "g", "kg", "ml", "l", "pak"];
@@ -267,6 +267,52 @@ const LIJST_SJABLONEN = [
 
 // ---- Helpers ----
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+// Tijdzone-veilige datumfuncties — nooit toISOString() gebruiken (die schuift
+// een dag op rond middernacht, afhankelijk van tijdzone).
+function vandaagStr() {
+  const nu = new Date();
+  return `${nu.getFullYear()}-${String(nu.getMonth()+1).padStart(2,"0")}-${String(nu.getDate()).padStart(2,"0")}`;
+}
+function datumNaarStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function isVerlopen(datumStr) {
+  return !!datumStr && datumStr < vandaagStr();
+}
+function formatVervaldatum(datumStr) {
+  if (!datumStr) return "";
+  const [j, m, d] = datumStr.split("-").map(Number);
+  const datum = new Date(j, m - 1, d);
+  if (datumStr === vandaagStr()) return "Vandaag";
+  const morgen = new Date(); morgen.setDate(morgen.getDate() + 1);
+  if (datumStr === datumNaarStr(morgen)) return "Morgen";
+  return datum.toLocaleDateString("nl-NL", { day: "numeric", month: "short" });
+}
+// Berekent de volgende vervaldatum voor een herhalende taak, uitgaande van
+// de HUIDIGE vervaldatum (of vandaag, als er nog geen was) — niet vanaf de
+// dag dat je 'm afvinkt, want anders schuift een taak die je een paar dagen
+// laat liggen steeds verder door.
+function volgendeHerhaling(huidigeDatumStr, type) {
+  const basis = huidigeDatumStr ? new Date(...huidigeDatumStr.split("-").map((v,i)=>i===1?+v-1:+v)) : new Date();
+  const volgende = new Date(basis);
+  if (type === "dagelijks") volgende.setDate(volgende.getDate() + 1);
+  else if (type === "wekelijks") volgende.setDate(volgende.getDate() + 7);
+  else if (type === "maandelijks") {
+    // JS-eigenaardigheid: setMonth() op bv. 31 januari + 1 maand "rolt" door
+    // naar 3 maart (want 31 februari bestaat niet) i.p.v. netjes op 28/29
+    // februari uit te komen. Fix: eerst naar de 1e van de maand (voorkomt
+    // die overflow), dan de maand ophogen, en dan de oorspronkelijke
+    // dag-van-de-maand terugzetten — geklemd op de laatste geldige dag van
+    // de nieuwe maand.
+    const dagVanMaand = volgende.getDate();
+    volgende.setDate(1);
+    volgende.setMonth(volgende.getMonth() + 1);
+    const laatsteDagNieuweMaand = new Date(volgende.getFullYear(), volgende.getMonth() + 1, 0).getDate();
+    volgende.setDate(Math.min(dagVanMaand, laatsteDagNieuweMaand));
+  }
+  return datumNaarStr(volgende);
+}
 const CAT_ICONEN = [
   "📌","🥦","🧀","🐟","💐","🥛","🥩","🥐","🥫","🧊","🧴","🧽","🧃","🛒","👕","🏊","📄","🔌","💊","📦","🏠","🌳","👤","👨‍👩‍👧","👫","🎁","🔧","📚","🍽️","🫒","🥓",
   // Eten & drinken
@@ -380,6 +426,7 @@ export default function LijstenApp() {
   const [nieuwNaam, setNieuwNaam] = useState("");
   const [nieuwIcoon, setNieuwIcoon] = useState("📋");
   const [nieuwSjabloon, setNieuwSjabloon] = useState(null);
+  const [nieuwType, setNieuwType] = useState("standaard"); // "standaard" | "todo"
 
   // Lijstbewerking
   const [editListId, setEditListId] = useState(null);
@@ -426,6 +473,9 @@ export default function LijstenApp() {
   const [toast, setToast] = useState(null);
   const [toastType, setToastType] = useState("success"); // success | undo
   const [huidigeGebruiker, setHuidigeGebruiker] = useState(null); // "Pepijn" | "Tessa"
+  const [taakDetailId, setTaakDetailId] = useState(null);
+  const [nieuweSubstap, setNieuweSubstap] = useState("");
+  const [todoSortering, setTodoSortering] = useState("handmatig"); // "handmatig" | "vervaldatum" | "alfabetisch"
 
   // ── Wie ben ik? (voor "wie heeft wat gedaan"-badges) ──
   useEffect(() => {
@@ -510,13 +560,13 @@ export default function LijstenApp() {
     })) || [];
     const newList = {
       id: uid(), name: nieuwNaam.trim(), icon: nieuwIcoon,
-      type: sjabloon?.type || "standaard",
+      type: sjabloon?.type || nieuwType,
       categories: categorieen, items: startItems,
       history: {}, favorites: [], archief: [],
       createdAt: Date.now(),
     };
     persistLists([...lists, newList]);
-    setNieuwNaam(""); setNieuwIcoon("📋"); setNieuwSjabloon(null);
+    setNieuwNaam(""); setNieuwIcoon("📋"); setNieuwSjabloon(null); setNieuwType("standaard");
     setShowNieuw(false); setActiveListId(newList.id);
     showToast(`✅ Lijst "${newList.name}" aangemaakt`);
   }
@@ -595,6 +645,7 @@ export default function LijstenApp() {
 
   const activeList = lists.find(l => l.id === activeListId);
   const isCadeau = activeList?.type === "cadeau";
+  const isTodo = activeList?.type === "todo";
 
   function addItem(name, categoryId, amount, unit, note, status, budget) {
     if (!name.trim() || !activeListId) return;
@@ -609,6 +660,7 @@ export default function LijstenApp() {
         amount: amount || 1, unit: unit || "stuks",
         checked: false, inCart: false,
         note: note || "", status: status || null, budget: budget || null,
+        dueDate: null, assignedTo: null, herhaling: null, substappen: [], belangrijk: false,
         addedAt: Date.now(), addedBy: huidigeGebruiker,
         lastActionBy: huidigeGebruiker, lastActionAt: Date.now(),
       }],
@@ -620,9 +672,17 @@ export default function LijstenApp() {
 
   function toggleCheck(itemId) {
     updateList(activeListId, l => ({
-      ...l, items: l.items.map(i => i.id === itemId
-        ? { ...i, checked: !i.checked, lastActionBy: huidigeGebruiker, lastActionAt: Date.now() }
-        : i),
+      ...l, items: l.items.map(i => {
+        if (i.id !== itemId) return i;
+        // Een herhalende taak "afvinken" betekent: klaar voor nu, maar
+        // schuift meteen door naar de volgende keer i.p.v. afgevinkt te
+        // blijven staan — dat is hoe herhalende taken in de meeste
+        // to-do-apps werken.
+        if (!i.checked && i.herhaling) {
+          return { ...i, dueDate: volgendeHerhaling(i.dueDate, i.herhaling), lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
+        }
+        return { ...i, checked: !i.checked, lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
+      }),
     }));
   }
 
@@ -638,6 +698,83 @@ export default function LijstenApp() {
           : i),
       };
     });
+  }
+
+  // Zet alle items van een to-do-lijst terug naar niet-afgevinkt, zodat de
+  // hele lijst opnieuw doorlopen kan worden (bv. een nieuwe week). Wie het
+  // laatst iets heeft aangevinkt blijft zichtbaar totdat het opnieuw wordt
+  // aangevinkt — dat wissen we hier bewust niet, dat is gewoon geschiedenis.
+  function resetTodoLijst() {
+    if (!window.confirm("Alle items in deze lijst weer op 'niet gedaan' zetten?")) return;
+    updateList(activeListId, l => ({
+      ...l, items: l.items.map(i => ({ ...i, checked: false, inCart: false })),
+    }));
+    showToast("🔄 Lijst gereset — alles staat weer aan");
+  }
+
+  // ── To-do-specifieke item-acties ────────────────────────
+  function zetVervaldatum(itemId, datumStr) {
+    updateList(activeListId, l => ({
+      ...l, items: l.items.map(i => i.id === itemId ? { ...i, dueDate: datumStr || null } : i),
+    }));
+  }
+  function zetToegewezenAan(itemId, persoon) {
+    updateList(activeListId, l => ({
+      ...l, items: l.items.map(i => i.id === itemId ? { ...i, assignedTo: i.assignedTo === persoon ? null : persoon } : i),
+    }));
+  }
+  function toggleBelangrijk(itemId) {
+    updateList(activeListId, l => ({
+      ...l, items: l.items.map(i => i.id === itemId ? { ...i, belangrijk: !i.belangrijk } : i),
+    }));
+  }
+  function zetHerhaling(itemId, type) {
+    updateList(activeListId, l => ({
+      ...l, items: l.items.map(i => {
+        if (i.id !== itemId) return i;
+        const nieuweHerhaling = i.herhaling === type ? null : type;
+        // Zonder vervaldatum heeft "elke week herhalen" geen ankerpunt om
+        // vanaf door te schuiven — zet 'm dan meteen op vandaag.
+        return { ...i, herhaling: nieuweHerhaling, dueDate: nieuweHerhaling && !i.dueDate ? vandaagStr() : i.dueDate };
+      }),
+    }));
+  }
+  function voegSubstapToe(itemId, tekst) {
+    if (!tekst.trim()) return;
+    updateList(activeListId, l => ({
+      ...l, items: l.items.map(i => i.id === itemId
+        ? { ...i, substappen: [...(i.substappen||[]), { id: uid(), tekst: tekst.trim(), afgevinkt: false }] }
+        : i),
+    }));
+  }
+  function toggleSubstap(itemId, stapId) {
+    updateList(activeListId, l => ({
+      ...l, items: l.items.map(i => i.id === itemId
+        ? { ...i, substappen: (i.substappen||[]).map(s => s.id === stapId ? { ...s, afgevinkt: !s.afgevinkt } : s) }
+        : i),
+    }));
+  }
+  function verwijderSubstap(itemId, stapId) {
+    updateList(activeListId, l => ({
+      ...l, items: l.items.map(i => i.id === itemId
+        ? { ...i, substappen: (i.substappen||[]).filter(s => s.id !== stapId) }
+        : i),
+    }));
+  }
+
+  // Zelfde logica als toggleCheck, maar werkt op een expliciet meegegeven
+  // lijst-id i.p.v. altijd de actieve lijst — nodig voor "Mijn dag", waar
+  // taken uit meerdere to-do-lijsten tegelijk getoond en afgevinkt worden.
+  function toggleCheckInList(listId, itemId) {
+    updateList(listId, l => ({
+      ...l, items: l.items.map(i => {
+        if (i.id !== itemId) return i;
+        if (!i.checked && i.herhaling) {
+          return { ...i, dueDate: volgendeHerhaling(i.dueDate, i.herhaling), lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
+        }
+        return { ...i, checked: !i.checked, lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
+      }),
+    }));
   }
 
   function toggleInCart(itemId) {
@@ -1042,14 +1179,26 @@ export default function LijstenApp() {
       : alleItems;
 
     const sorteerAlfabetisch = (a, b) => a.name.localeCompare(b.name, "nl", { sensitivity: "base" });
+    // Voor to-do-lijsten is de sortering zelf gekozen (handmatig/vervaldatum/
+    // alfabetisch) — "handmatig" laat de invoegvolgorde met rust, dat is de
+    // enige plek waar we bewust NIET automatisch sorteren.
+    const sorteerFn = isTodo
+      ? todoSortering === "vervaldatum"
+        ? (a, b) => (a.dueDate || "9999") .localeCompare(b.dueDate || "9999") || sorteerAlfabetisch(a, b)
+        : todoSortering === "alfabetisch"
+          ? sorteerAlfabetisch
+          : null // handmatig: geen sortering, invoegvolgorde behouden
+      : sorteerAlfabetisch;
+    const toepassenSortering = arr => sorteerFn ? [...arr].sort(sorteerFn) : arr;
+
     const grouped = activeList.categories
       .map(cat => ({
         cat,
-        items: gefilterd.filter(i => i.category === cat.id).sort(sorteerAlfabetisch),
+        items: toepassenSortering(gefilterd.filter(i => i.category === cat.id)),
       }))
       .filter(g => g.items.length > 0);
 
-    const uncategorized = gefilterd.filter(i => !activeList.categories.find(c => c.id === i.category)).sort(sorteerAlfabetisch);
+    const uncategorized = toepassenSortering(gefilterd.filter(i => !activeList.categories.find(c => c.id === i.category)));
 
     return (
       <div style={S.appBg}>
@@ -1119,6 +1268,97 @@ export default function LijstenApp() {
             </div>
           </div>
         )}
+
+        {/* Taakdetail-modal (to-do-lijsten): vervaldatum, toewijzen, herhaling, belangrijk, substappen */}
+        {taakDetailId && activeList.items.find(i => i.id === taakDetailId) && (() => {
+          const taak = activeList.items.find(i => i.id === taakDetailId);
+          const HERHALINGEN = [["dagelijks","Dagelijks"],["wekelijks","Wekelijks"],["maandelijks","Maandelijks"]];
+          const TOEWIJSBAAR = ["Pepijn", "Tessa", "Jimmy"];
+          return (
+            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setTaakDetailId(null)}>
+              <div style={{ background: "#FFFFFF", width: "100%", maxHeight: "88vh", overflowY: "auto", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20 }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button onClick={() => toggleBelangrijk(taak.id)} title="Belangrijk" style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      <Star size={18} color={taak.belangrijk ? "#C97D0C" : "#D8D0BF"} fill={taak.belangrijk ? "#C97D0C" : "none"} />
+                    </button>
+                    <p style={{ margin: 0, fontWeight: 700, fontSize: 16 }}>{taak.name}</p>
+                  </div>
+                  <button onClick={() => setTaakDetailId(null)} aria-label="Sluiten" style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                    <X size={18} color="#B8B2A8" />
+                  </button>
+                </div>
+
+                <p style={{ fontSize: 12, color: "#8C8576", fontWeight: 600, margin: "0 0 6px" }}>Vervaldatum</p>
+                <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                  <input type="date" style={{ ...S.inp, flex: 1 }} value={taak.dueDate || ""}
+                    onChange={e => zetVervaldatum(taak.id, e.target.value)} />
+                  {taak.dueDate && (
+                    <button style={{ ...S.iconBtn, border: "1px solid #E4DCCB", borderRadius: 10 }} onClick={() => zetVervaldatum(taak.id, null)} title="Vervaldatum wissen">
+                      <X size={14} color="#8C8576" />
+                    </button>
+                  )}
+                </div>
+
+                <p style={{ fontSize: 12, color: "#8C8576", fontWeight: 600, margin: "0 0 6px" }}>Herhaling</p>
+                <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+                  {HERHALINGEN.map(([id, label]) => (
+                    <button key={id} onClick={() => zetHerhaling(taak.id, id)}
+                      style={{ ...S.pickChip, background: taak.herhaling === id ? "#2D4A3E" : "#FAF6F0", color: taak.herhaling === id ? "#FAF6F0" : "#2D2A26", fontWeight: taak.herhaling === id ? 700 : 400 }}>
+                      🔁 {label}
+                    </button>
+                  ))}
+                </div>
+                {taak.herhaling && (
+                  <p style={{ fontSize: 11, color: "#8C8576", margin: "-10px 0 16px" }}>
+                    Zodra je 'm afvinkt, schuift de vervaldatum automatisch door naar de volgende keer i.p.v. dat de taak afgevinkt blijft staan.
+                  </p>
+                )}
+
+                <p style={{ fontSize: 12, color: "#8C8576", fontWeight: 600, margin: "0 0 6px" }}>Toewijzen aan</p>
+                <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+                  {TOEWIJSBAAR.map(persoon => (
+                    <button key={persoon} onClick={() => zetToegewezenAan(taak.id, persoon)}
+                      style={{ ...S.pickChip, background: taak.assignedTo === persoon ? "#2D4A3E" : "#FAF6F0", color: taak.assignedTo === persoon ? "#FAF6F0" : "#2D2A26", fontWeight: taak.assignedTo === persoon ? 700 : 400 }}>
+                      👤 {persoon}
+                    </button>
+                  ))}
+                </div>
+
+                <p style={{ fontSize: 12, color: "#8C8576", fontWeight: 600, margin: "0 0 6px" }}>Substappen</p>
+                {(taak.substappen||[]).map(stap => (
+                  <div key={stap.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span role="checkbox" aria-checked={stap.afgevinkt} tabIndex={0}
+                      style={{ ...S.checkbox, width: 18, height: 18, ...(stap.afgevinkt ? S.checkboxOn : {}) }}
+                      onClick={() => toggleSubstap(taak.id, stap.id)}
+                      onKeyDown={e => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleSubstap(taak.id, stap.id))}>
+                      {stap.afgevinkt && <Check size={10} color="#FAF6F0" strokeWidth={3} />}
+                    </span>
+                    <span style={{ flex: 1, fontSize: 14, color: stap.afgevinkt ? "#B8B2A8" : "#2D2A26", textDecoration: stap.afgevinkt ? "line-through" : "none" }}>
+                      {stap.tekst}
+                    </span>
+                    <button onClick={() => verwijderSubstap(taak.id, stap.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
+                      <X size={13} color="#D8D0BF" />
+                    </button>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 8, marginTop: 8, marginBottom: 16 }}>
+                  <input style={{ ...S.inp, flex: 1, fontSize: 13, padding: "8px 12px" }} placeholder="Substap toevoegen…" value={nieuweSubstap}
+                    onChange={e => setNieuweSubstap(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") { voegSubstapToe(taak.id, nieuweSubstap); setNieuweSubstap(""); } }} />
+                  <button style={{ ...S.btn(), padding: "8px 14px", fontSize: 13 }}
+                    onClick={() => { voegSubstapToe(taak.id, nieuweSubstap); setNieuweSubstap(""); }}>+</button>
+                </div>
+
+                <p style={{ fontSize: 12, color: "#8C8576", fontWeight: 600, margin: "0 0 6px" }}>Notitie</p>
+                <textarea style={{ ...S.inp, height: 60, resize: "none" }} value={taak.note || ""}
+                  onChange={e => updateItem(taak.id, { note: e.target.value })} placeholder="Extra context…" />
+
+                <button style={{ ...S.btn(), width: "100%", marginTop: 18 }} onClick={() => setTaakDetailId(null)}>Klaar</button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Vorige lijst overlay */}
         {showVorigeLijst && (activeList.archief?.length > 0) && (
@@ -1191,6 +1431,12 @@ export default function LijstenApp() {
                 <CheckCheck size={16} color={gefilterd.every(i => i.checked) ? "#2D4A3E" : "#8C8576"} />
               </button>
             )}
+            {isTodo && (
+              <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
+                onClick={resetTodoLijst} title="Lijst resetten (alles weer op niet-gedaan)">
+                <RotateCcw size={16} color="#8C8576" />
+              </button>
+            )}
             <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
               onClick={() => setMode("instellingen")} title="Categorieën beheren">
               <Settings size={16} color="#8C8576" />
@@ -1203,6 +1449,17 @@ export default function LijstenApp() {
           <div style={{ padding: "0 20px 12px" }}>
             <input autoFocus style={{ ...S.inp, fontSize: 15 }} placeholder="🔍 Zoek in lijst…"
               value={zoekterm} onChange={e => setZoekterm(e.target.value)} />
+          </div>
+        )}
+
+        {isTodo && (
+          <div style={{ padding: "0 20px 12px", display: "flex", gap: 6 }}>
+            {[["handmatig","Handmatig"],["vervaldatum","Vervaldatum"],["alfabetisch","A-Z"]].map(([id,label]) => (
+              <button key={id} onClick={() => setTodoSortering(id)}
+                style={{ border: todoSortering === id ? "1.5px solid #2D4A3E" : "1px solid #E4DCCB", background: todoSortering === id ? "#2D4A3E" : "#FFFFFF", color: todoSortering === id ? "#FAF6F0" : "#8C8576", borderRadius: 20, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                {label}
+              </button>
+            ))}
           </div>
         )}
 
@@ -1334,6 +1591,28 @@ export default function LijstenApp() {
                           <input style={{ ...S.unitSelect, width: 70, fontSize: 11 }} placeholder="Budget €"
                             value={item.budget || ""} onChange={e => updateItem(item.id, { budget: e.target.value })} />
                         </div>
+                      ) : isTodo ? (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 2 }}>
+                          {item.belangrijk && <Star size={13} color="#C97D0C" fill="#C97D0C" />}
+                          {item.dueDate && (
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 8, background: isVerlopen(item.dueDate) && !item.checked ? "#C0392B18" : "#EFE9DC", color: isVerlopen(item.dueDate) && !item.checked ? "#C0392B" : "#8C8576" }}>
+                              📅 {formatVervaldatum(item.dueDate)}
+                            </span>
+                          )}
+                          {item.herhaling && (
+                            <span style={{ fontSize: 11, color: "#8C8576" }} title={`Herhaalt ${item.herhaling}`}>🔁</span>
+                          )}
+                          {item.assignedTo && (
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 8, background: "#2D4A3E14", color: "#2D4A3E" }}>
+                              👤 {item.assignedTo}
+                            </span>
+                          )}
+                          {(item.substappen||[]).length > 0 && (
+                            <span style={{ fontSize: 11, color: "#8C8576" }}>
+                              ☑️ {item.substappen.filter(s=>s.afgevinkt).length}/{item.substappen.length}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <div style={S.amountRow}>
                           <button style={S.amountBtn} onClick={() => changeAmount(item.id, -1)}>−</button>
@@ -1364,7 +1643,12 @@ export default function LijstenApp() {
                       <button style={S.iconBtn} onClick={() => { setEditNoteId(item.id); setEditNoteText(item.note || ""); }}>
                         <Pencil size={13} color={item.note ? "#C86E4A" : "#D8D0BF"} />
                       </button>
-                      {!isCadeau && (
+                      {isTodo && (
+                        <button style={S.iconBtn} title="Taakdetails" onClick={() => setTaakDetailId(item.id)}>
+                          <MoreHorizontal size={14} color="#8C8576" />
+                        </button>
+                      )}
+                      {!isCadeau && !isTodo && (
                         <>
                           <button style={S.iconBtn} onClick={() => toggleFavorite(item.name, item.category)}>
                             <Star size={13}
@@ -1551,6 +1835,43 @@ export default function LijstenApp() {
       </header>
 
       <main style={S.main}>
+        {(() => {
+          // "Mijn dag": alles wat vandaag of eerder moet (verlopen) of als
+          // belangrijk gemarkeerd is, over alle to-do-lijsten heen — puur
+          // ter info, echte bewerking gebeurt nog steeds in de lijst zelf.
+          const mijnDagItems = lists
+            .filter(l => l.type === "todo")
+            .flatMap(l => l.items
+              .filter(i => !i.checked && ((i.dueDate && i.dueDate <= vandaagStr()) || i.belangrijk))
+              .map(i => ({ ...i, lijstId: l.id, lijstNaam: l.name, lijstIcoon: l.icon })));
+          if (mijnDagItems.length === 0) return null;
+          mijnDagItems.sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
+          return (
+            <div style={{ ...S.card, border: "1px solid #C97D0C33", background: "#C97D0C0A", marginBottom: 20 }}>
+              <p style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 700, color: "#C97D0C" }}>☀️ Mijn dag</p>
+              {mijnDagItems.map(item => (
+                <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderTop: "1px solid #C97D0C22" }}>
+                  <span role="checkbox" aria-checked={false} tabIndex={0}
+                    style={{ ...S.checkbox, width: 20, height: 20, flexShrink: 0 }}
+                    onClick={() => toggleCheckInList(item.lijstId, item.id)}
+                    onKeyDown={e => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleCheckInList(item.lijstId, item.id))} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {item.belangrijk && <Star size={12} color="#C97D0C" fill="#C97D0C" />}
+                      <span style={{ fontSize: 14, color: "#2D2A26" }}>{item.name}</span>
+                    </div>
+                    <p style={{ margin: "1px 0 0", fontSize: 11, color: "#8C8576" }}>
+                      {item.lijstIcoon} {item.lijstNaam}
+                      {item.dueDate && isVerlopen(item.dueDate) && <span style={{ color: "#C0392B", fontWeight: 700 }}> · Verlopen</span>}
+                      {item.dueDate && !isVerlopen(item.dueDate) && <span> · {formatVervaldatum(item.dueDate)}</span>}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, marginBottom: 20 }}>
           {lists.map((list, idx) => {
             const aantalItems = list.items.length;
@@ -1576,6 +1897,7 @@ export default function LijstenApp() {
                 <p style={{ margin: 0, fontSize: 12, color: "#B8B2A8" }}>
                   {aantalItems === 0 ? "Leeg"
                     : isCadeauLijst ? `${gekocht}/${aantalItems} gekocht`
+                    : list.type === "todo" ? `${aangevinkt}/${aantalItems} gedaan`
                     : `${aangevinkt}/${aantalItems} aangevinkt`}
                 </p>
                 <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 4 }} onClick={e => e.stopPropagation()}>
@@ -1631,6 +1953,19 @@ export default function LijstenApp() {
                   {s.icon} {s.naam}
                 </button>
               ))}
+            </div>
+            <p style={{ fontSize: 12, color: "#8C8576", margin: "0 0 8px" }}>Type lijst</p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <button onClick={() => setNieuwType("standaard")}
+                style={{ flex: 1, textAlign: "left", border: nieuwType === "standaard" ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: nieuwType === "standaard" ? "#2D4A3E11" : "#FAF6F0", borderRadius: 12, padding: "10px 12px", cursor: "pointer" }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#2D2A26" }}>✅ Voeg toe/afvink</p>
+                <p style={{ margin: "2px 0 0", fontSize: 11, color: "#8C8576" }}>Items toevoegen, afvinken zodra klaar/gekocht</p>
+              </button>
+              <button onClick={() => setNieuwType("todo")}
+                style={{ flex: 1, textAlign: "left", border: nieuwType === "todo" ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: nieuwType === "todo" ? "#2D4A3E11" : "#FAF6F0", borderRadius: 12, padding: "10px 12px", cursor: "pointer" }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#2D2A26" }}>📋 To-do</p>
+                <p style={{ margin: "2px 0 0", fontSize: 11, color: "#8C8576" }}>Terugkerende taken, later in één keer resetten</p>
+              </button>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1 }} onClick={() => setShowNieuw(false)}>Annuleer</button>
