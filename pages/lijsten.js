@@ -458,6 +458,7 @@ export default function LijstenApp() {
   const [zoekterm, setZoekterm] = useState("");
   const [showZoek, setShowZoek] = useState(false);
   const [ingeklapteCategorieen, setIngeklapteCategorieen] = useState({}); // catId -> bool
+  const [voltooidIngeklapt, setVoltooidIngeklapt] = useState(true); // standaard dicht, net als in Microsoft To Do
   const [ingeklaptePakkenCats, setIngeklaptePakkenCats] = useState({}); // catId -> bool, apart voor pakken-modus
 
   // Pakken-modus keuze
@@ -569,6 +570,12 @@ export default function LijstenApp() {
     setNieuwNaam(""); setNieuwIcoon("📋"); setNieuwSjabloon(null); setNieuwType("standaard");
     setShowNieuw(false); setActiveListId(newList.id);
     showToast(`✅ Lijst "${newList.name}" aangemaakt`);
+  }
+
+  function wijzigLijstType(nieuweType) {
+    if (activeList.type === nieuweType) return;
+    updateList(activeListId, l => ({ ...l, type: nieuweType === "standaard" ? null : nieuweType }));
+    showToast(nieuweType === "todo" ? "📋 Omgezet naar to-do-lijst" : "✅ Omgezet naar voeg toe/afvink-lijst");
   }
 
   function verwijderLijst(id) {
@@ -1082,6 +1089,27 @@ export default function LijstenApp() {
           <div style={{ width: 32 }} />
         </header>
         <main style={S.main}>
+          {activeList.type !== "cadeau" && (
+            <div style={{ ...S.card, marginBottom: 16 }}>
+              <p style={{ fontSize: 12, color: "#8C8576", margin: "0 0 8px", fontWeight: 700 }}>Type lijst</p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => wijzigLijstType("standaard")}
+                  style={{ flex: 1, textAlign: "left", border: (activeList.type||"standaard") === "standaard" ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: (activeList.type||"standaard") === "standaard" ? "#2D4A3E11" : "#FAF6F0", borderRadius: 12, padding: "10px 12px", cursor: "pointer" }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#2D2A26" }}>✅ Voeg toe/afvink</p>
+                  <p style={{ margin: "2px 0 0", fontSize: 11, color: "#8C8576" }}>Items toevoegen, afvinken zodra klaar/gekocht</p>
+                </button>
+                <button onClick={() => wijzigLijstType("todo")}
+                  style={{ flex: 1, textAlign: "left", border: activeList.type === "todo" ? "2px solid #2D4A3E" : "1px solid #E4DCCB", background: activeList.type === "todo" ? "#2D4A3E11" : "#FAF6F0", borderRadius: 12, padding: "10px 12px", cursor: "pointer" }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#2D2A26" }}>📋 To-do</p>
+                  <p style={{ margin: "2px 0 0", fontSize: 11, color: "#8C8576" }}>Terugkerende taken, later in één keer resetten</p>
+                </button>
+              </div>
+              <p style={{ fontSize: 11, color: "#8C8576", margin: "8px 0 0" }}>
+                De inhoud van de lijst blijft gewoon staan — dit wijzigt alleen hoe items eruitzien en welke opties je erbij hebt (vervaldatum, toewijzen, etc. bij To-do).
+              </p>
+            </div>
+          )}
+
           <ul style={{ ...S.itemList, marginBottom: 16 }}>
             {activeList.categories.map(cat => (
               <li key={cat.id} style={{ ...S.itemRow, alignItems: editCatId === cat.id ? "flex-start" : "center", flexDirection: editCatId === cat.id ? "column" : "row", gap: editCatId === cat.id ? 10 : 8 }}>
@@ -1191,14 +1219,24 @@ export default function LijstenApp() {
       : sorteerAlfabetisch;
     const toepassenSortering = arr => sorteerFn ? [...arr].sort(sorteerFn) : arr;
 
+    // Bij to-do-lijsten verhuizen voltooide taken naar een aparte sectie
+    // onderaan (net als "Completed" in Microsoft To Do) i.p.v. tussen de
+    // actieve taken te blijven staan. Bij andere lijsttypes blijft het
+    // bestaande gedrag (inline, evt. verborgen via het oog-icoon) gewoon
+    // ongewijzigd — dat is hoe een boodschappenlijst juist wél moet werken.
+    const teGroeperen = isTodo ? gefilterd.filter(i => !i.checked) : gefilterd;
+    const voltooideItems = isTodo
+      ? gefilterd.filter(i => i.checked).sort((a,b) => (b.lastActionAt||0) - (a.lastActionAt||0))
+      : [];
+
     const grouped = activeList.categories
       .map(cat => ({
         cat,
-        items: toepassenSortering(gefilterd.filter(i => i.category === cat.id)),
+        items: toepassenSortering(teGroeperen.filter(i => i.category === cat.id)),
       }))
       .filter(g => g.items.length > 0);
 
-    const uncategorized = toepassenSortering(gefilterd.filter(i => !activeList.categories.find(c => c.id === i.category)));
+    const uncategorized = toepassenSortering(teGroeperen.filter(i => !activeList.categories.find(c => c.id === i.category)));
 
     return (
       <div style={S.appBg}>
@@ -1420,10 +1458,12 @@ export default function LijstenApp() {
                 <History size={16} color="#8C8576" />
               </button>
             )}
-            <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
-              onClick={() => setVerbergAfgevinkt(v => !v)} title={verbergAfgevinkt ? "Toon afgevinkt" : "Verberg afgevinkt"}>
-              {verbergAfgevinkt ? <Eye size={16} color="#2D4A3E" /> : <EyeOff size={16} color="#8C8576" />}
-            </button>
+            {!isTodo && (
+              <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
+                onClick={() => setVerbergAfgevinkt(v => !v)} title={verbergAfgevinkt ? "Toon afgevinkt" : "Verberg afgevinkt"}>
+                {verbergAfgevinkt ? <Eye size={16} color="#2D4A3E" /> : <EyeOff size={16} color="#8C8576" />}
+              </button>
+            )}
             {gefilterd.length > 0 && (
               <button style={{ ...S.iconBtn, background: "#FFFFFF", border: "1px solid #EFE9DC", borderRadius: 10, padding: "6px 8px" }}
                 onClick={() => toggleAlles(gefilterd.map(i => i.id))}
@@ -1465,7 +1505,7 @@ export default function LijstenApp() {
 
         <main style={S.main}>
           {/* Suggesties */}
-          {(suggestions.length > 0 || andereListFavs.length > 0) && !showAdd && !zoekActief && (
+          {!isTodo && (suggestions.length > 0 || andereListFavs.length > 0) && !showAdd && !zoekActief && (
             <section style={{ marginBottom: 22 }}>
               {suggestions.length > 0 && (
                 <>
@@ -1696,6 +1736,43 @@ export default function LijstenApp() {
               </ul>
             </section>
           )}
+
+          {/* Voltooid — alleen bij to-do-lijsten, ingeklapt net als in
+              Microsoft To Do. Simpelere rij dan actieve taken: geen
+              vervaldatum/toewijzen-bewerking meer nodig voor iets dat al
+              klaar is, alleen uitvinken of verwijderen. */}
+          {isTodo && voltooideItems.length > 0 && (
+            <section style={{ marginBottom: 24 }}>
+              <div style={S.catHeading} onClick={() => setVoltooidIngeklapt(v => !v)}>
+                <span>✅ Voltooid</span>
+                <span style={{ fontSize: 11, color: "#B8B2A8", fontWeight: 400, marginLeft: "auto" }}>{voltooideItems.length}</span>
+                <span style={{ fontSize: 14, color: "#B8B2A8", marginLeft: 4 }}>{voltooidIngeklapt ? "▸" : "▾"}</span>
+              </div>
+              {!voltooidIngeklapt && (
+                <ul style={S.itemList}>
+                  {voltooideItems.map(item => (
+                    <li key={item.id} style={S.itemRow}>
+                      <span role="checkbox" aria-checked={true} tabIndex={0}
+                        style={{ ...S.checkbox, ...S.checkboxOn }}
+                        onClick={() => toggleCheck(item.id)}
+                        onKeyDown={e => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleCheck(item.id))}>
+                        <Check size={12} color="#FAF6F0" strokeWidth={3} />
+                      </span>
+                      <div style={S.itemMain}>
+                        <span style={{ ...S.itemName, ...S.itemNameChecked, display: "inline-flex", alignItems: "center" }}>
+                          {item.name}
+                          <WieBadge persoon={item.lastActionBy} tijdstip={item.lastActionAt} />
+                        </span>
+                      </div>
+                      <button style={S.iconBtn} onClick={() => removeItem(item.id)}>
+                        <X size={13} color="#D8D0BF" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
         </main>
 
         {/* Toevoegen paneel */}
@@ -1711,7 +1788,7 @@ export default function LijstenApp() {
               </button>
             </div>
             <div style={S.addTabs}>
-              {["typen", "favorieten"].map(t => (
+              {(isTodo ? ["typen"] : ["typen", "favorieten"]).map(t => (
                 <button key={t} style={S.addTabBtn(addTab === t)} onClick={() => setAddTab(t)}>
                   {t === "typen" ? "Typen" : "⭐ Favorieten"}
                 </button>
@@ -1733,7 +1810,7 @@ export default function LijstenApp() {
                     <input style={{ ...S.inp, flex: 1, fontSize: 13 }} placeholder="Budget €"
                       value={newBudget} onChange={e => setNewBudget(e.target.value)} />
                   </div>
-                ) : (
+                ) : isTodo ? null : (
                   <div style={{ ...S.amountRow, marginBottom: 12 }}>
                     <button style={S.amountBtn} onClick={() => setNewAmount(a => {
                       const stap = newUnit === "g" ? 100 : ["kg","l","ml"].includes(newUnit) ? 0.5 : 1;
@@ -1801,7 +1878,7 @@ export default function LijstenApp() {
           <button style={S.fab} onClick={() => { setShowAdd(true); setAddTab("typen"); }}>
             <Plus size={22} color="#FAF6F0" strokeWidth={2.4} />
           </button>
-          {!isCadeau && (
+          {!isCadeau && !isTodo && (
             <button
               style={{ ...S.btn(checkedCount === 0 ? "#E4DCCB" : "#C86E4A", checkedCount === 0 ? "#B8B2A8" : "#FAF6F0"), flex: 1, borderRadius: 16, boxShadow: checkedCount > 0 ? "0 6px 16px rgba(200,110,74,0.28)" : "none" }}
               disabled={checkedCount === 0}

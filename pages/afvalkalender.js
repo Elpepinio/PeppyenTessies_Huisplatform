@@ -18,6 +18,45 @@ function afvalInfo(naam) {
   const sleutel = (naam || "").toLowerCase().replace(/\s/g, "");
   return AFVAL_TYPES[sleutel] || { label: naam || "Onbekend", icon: "📥", kleur: "#8A9089" };
 }
+// Voor een samengevoegd kliko-kaartje (bv. Restafval + GFT) gebruiken we de
+// override-velden i.p.v. terug te vallen op het (niet-bestaande) .name-veld.
+function weergaveInfo(ophaling) {
+  if (ophaling.naamOverride) return { label: ophaling.naamOverride, icon: ophaling.iconOverride, kleur: ophaling.kleurOverride };
+  return afvalInfo(ophaling.name);
+}
+
+// Sommige afvaltypen delen fysiek dezelfde kliko en worden dus ook altijd op
+// dezelfde dag opgehaald — die tonen we als één kaartje i.p.v. twee losse.
+const KLIKO_GROEPEN = [
+  { typen: ["restafval", "gft"], label: "Restafval + GFT", icon: "🗑️🍂", kleur: "#6B6B6B" },
+  { typen: ["papier", "pbd"],    label: "Papier + Plastic", icon: "📦♻️", kleur: "#2C6E8C" },
+];
+// Groepeert ophalingen: vallen twee gekoppelde typen op dezelfde datum, dan
+// worden ze samengevoegd tot één regel. Losse/niet-gekoppelde typen, of
+// gekoppelde typen die toevallig op verschillende datums vallen, blijven
+// gewoon apart staan.
+function groepeerKlikos(ophalingen) {
+  const gebruikt = new Set();
+  const resultaat = [];
+  for (const groep of KLIKO_GROEPEN) {
+    const perDatum = {};
+    ophalingen.forEach(o => {
+      const sleutel = (o.name || "").toLowerCase().replace(/\s/g, "");
+      if (groep.typen.includes(sleutel)) {
+        if (!perDatum[o.date]) perDatum[o.date] = [];
+        perDatum[o.date].push(o);
+      }
+    });
+    Object.entries(perDatum).forEach(([datum, items]) => {
+      if (items.length >= 2) {
+        items.forEach(i => gebruikt.add(i));
+        resultaat.push({ date: datum, daysTillDate: items[0].daysTillDate, naamOverride: groep.label, iconOverride: groep.icon, kleurOverride: groep.kleur });
+      }
+    });
+  }
+  ophalingen.forEach(o => { if (!gebruikt.has(o)) resultaat.push(o); });
+  return resultaat;
+}
 
 function formatDatumLang(isoDatum) {
   const d = new Date(isoDatum);
@@ -127,7 +166,7 @@ export default function AfvalkalenderApp() {
   );
 
   const heeftAdres = config && config.locatie && config.postcode && config.huisnummer;
-  const zichtbareOphalingen = (ophalingen || [])
+  const zichtbareOphalingen = groepeerKlikos(ophalingen || [])
     .map(o => ({ ...o, dagen: o.daysTillDate }))
     .filter(o => o.dagen >= 0)
     .sort((a,b) => a.dagen - b.dagen);
@@ -176,9 +215,9 @@ export default function AfvalkalenderApp() {
         )}
 
         {heeftAdres && !fout && volgende && (
-          <div style={{ ...S.card, background: `${afvalInfo(volgende.name).kleur}12`, border: `1px solid ${afvalInfo(volgende.name).kleur}44`, textAlign: "center", padding: 24 }}>
-            <div style={{ fontSize: 40, marginBottom: 6 }}>{afvalInfo(volgende.name).icon}</div>
-            <p style={{ margin: "0 0 2px", fontSize: 19, fontWeight: 700, color: C.accentDark }}>{afvalInfo(volgende.name).label}</p>
+          <div style={{ ...S.card, background: `${weergaveInfo(volgende).kleur}12`, border: `1px solid ${weergaveInfo(volgende).kleur}44`, textAlign: "center", padding: 24 }}>
+            <div style={{ fontSize: 40, marginBottom: 6 }}>{weergaveInfo(volgende).icon}</div>
+            <p style={{ margin: "0 0 2px", fontSize: 19, fontWeight: 700, color: C.accentDark }}>{weergaveInfo(volgende).label}</p>
             <p style={{ margin: 0, fontSize: 14, color: C.muted }}>
               {dagenTekst(volgende.dagen)} · {formatDatumLang(volgende.date)}
             </p>
@@ -193,7 +232,7 @@ export default function AfvalkalenderApp() {
           <>
             <p style={{ fontSize: 12, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.04em", margin: "18px 0 8px" }}>Daarna</p>
             {zichtbareOphalingen.slice(1).map((o, idx) => {
-              const info = afvalInfo(o.name);
+              const info = weergaveInfo(o);
               return (
                 <div key={idx} style={{ ...S.card, display: "flex", alignItems: "center", gap: 12, padding: 12, marginBottom: 8 }}>
                   <span style={{ fontSize: 22 }}>{info.icon}</span>
