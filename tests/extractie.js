@@ -9,6 +9,35 @@ function extraheerBlok(bestandspad, startPatroon) {
   const startIdx = inhoud.search(startPatroon);
   if (startIdx === -1) throw new Error(`Patroon niet gevonden in ${bestandspad}: ${startPatroon}`);
 
+  const isFunctieDeclaratie = /function\s/.test(inhoud.slice(startIdx, startIdx + 40));
+
+  if (isFunctieDeclaratie) {
+    // Parameterlijsten kunnen zelf haakjes/accolades bevatten die niks met
+    // de functie-body te maken hebben — een array-standaardwaarde (bv.
+    // `vensters = [[1,2]]`) of gedestructureerde parameters (bv.
+    // `function f({ a, b })`). Daarom: eerst de ronde haakjes van de
+    // parameterlijst volledig doorlopen op haakjes-diepte, en pas ná die
+    // sluitende ")" zoeken naar de accolade die de echte functie-body opent.
+    const eersteHaakje = inhoud.indexOf("(", startIdx);
+    if (eersteHaakje === -1) throw new Error(`Geen parameterlijst gevonden voor functie in ${bestandspad}`);
+    let haakjesDiepte = 0, naParams = -1;
+    for (let i = eersteHaakje; i < inhoud.length; i++) {
+      if (inhoud[i] === "(") haakjesDiepte++;
+      else if (inhoud[i] === ")") { haakjesDiepte--; if (haakjesDiepte === 0) { naParams = i + 1; break; } }
+    }
+    if (naParams === -1) throw new Error(`Kon einde van parameterlijst niet vinden in ${bestandspad}`);
+    const bodyStart = inhoud.indexOf("{", naParams);
+    if (bodyStart === -1) throw new Error(`Geen functie-body gevonden in ${bestandspad}`);
+
+    let diepte = 0, eindIdx = -1;
+    for (let i = bodyStart; i < inhoud.length; i++) {
+      if (inhoud[i] === "{") diepte++;
+      else if (inhoud[i] === "}") { diepte--; if (diepte === 0) { eindIdx = i + 1; break; } }
+    }
+    if (eindIdx === -1) throw new Error(`Kon einde van functie-body niet vinden in ${bestandspad}`);
+    return inhoud.slice(startIdx, eindIdx);
+  }
+
   const eersteAccolade = inhoud.indexOf("{", startIdx);
   const eersteBlokhaak = inhoud.indexOf("[", startIdx);
   const eersteKommapunt = inhoud.indexOf(";", startIdx);
