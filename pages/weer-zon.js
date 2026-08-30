@@ -41,6 +41,23 @@ export default function WeerZonApp() {
   const [nu, setNu] = useState(new Date());
   const [heading, setHeading] = useState(null);
   const [headingBeschikbaar, setHeadingBeschikbaar] = useState(null); // null=onbekend, true/false
+  // Handmatige correctie bovenop de ruwe kompaslezing — nodig omdat
+  // magnetische afwijking en niet-gekalibreerde sensoren per toestel kunnen
+  // verschillen. Bewaard per toestel (localStorage), niet in de cloud, want
+  // dit is puur een lokale hardware-correctie.
+  const [kalibratieOffset, setKalibratieOffset] = useState(0);
+  const [toonKalibratie, setToonKalibratie] = useState(false);
+  useEffect(() => {
+    try {
+      const opgeslagen = window.localStorage.getItem("huisplatform_weer_kompas_offset");
+      if (opgeslagen) setKalibratieOffset(+opgeslagen);
+    } catch {}
+  }, []);
+  function wijzigKalibratie(nieuweOffset) {
+    setKalibratieOffset(nieuweOffset);
+    try { window.localStorage.setItem("huisplatform_weer_kompas_offset", String(nieuweOffset)); } catch {}
+  }
+  const gecorrigeerdeHeading = heading != null ? (heading + kalibratieOffset + 360) % 360 : null;
   const [cameraStream, setCameraStream] = useState(null);
   const [cameraFout, setCameraFout] = useState(null);
   const videoRef = useRef(null);
@@ -139,7 +156,7 @@ export default function WeerZonApp() {
   // Hoek van de zon t.o.v. waar de telefoon nu naartoe wijst — negatief =
   // zon staat links, positief = rechts. Buiten beeld (>35°) tonen we alleen
   // een pijl die kant op i.p.v. te proberen 'm precies te positioneren.
-  const relatieveHoek = zonPositie && heading != null ? hoekVerschil(zonPositie.azimut, heading) : null;
+  const relatieveHoek = zonPositie && gecorrigeerdeHeading != null ? hoekVerschil(zonPositie.azimut, gecorrigeerdeHeading) : null;
   const CAMERA_FOV = 34; // halve gezichtsveld-hoek in graden, ruwe aanname voor een telefooncamera
   const zonInBeeld = relatieveHoek != null && Math.abs(relatieveHoek) <= CAMERA_FOV;
 
@@ -183,7 +200,27 @@ export default function WeerZonApp() {
       )}
 
       {modus === "kompas" && positie && zonPositie && (
-        <KompasWeergave zonPositie={zonPositie} heading={heading} positie={positie} nu={nu} />
+        <>
+          {headingBeschikbaar === true && (
+            <div style={{ margin: "0 20px 12px", textAlign: "center" }}>
+              <button onClick={() => setToonKalibratie(v => !v)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>
+                Klopt de richting niet helemaal? Kalibreer hier
+              </button>
+              {toonKalibratie && (
+                <div style={{ marginTop: 10, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14 }}>
+                  <p style={{ margin: "0 0 8px", fontSize: 12 }}>
+                    Sleep tot de zon op de kaart klopt met waar je 'm daadwerkelijk ziet staan.
+                  </p>
+                  <input type="range" min={-30} max={30} step={1} value={kalibratieOffset}
+                    onChange={e => wijzigKalibratie(+e.target.value)}
+                    style={{ width: "100%", accentColor: C.accent }} />
+                  <p style={{ margin: "6px 0 0", fontSize: 12, fontWeight: 700 }}>{kalibratieOffset > 0 ? "+" : ""}{kalibratieOffset}°</p>
+                </div>
+              )}
+            </div>
+          )}
+          <KompasWeergave zonPositie={zonPositie} heading={gecorrigeerdeHeading} positie={positie} nu={nu} />
+        </>
       )}
 
       {modus === "camera" && (
@@ -191,6 +228,7 @@ export default function WeerZonApp() {
           videoRef={videoRef} cameraStream={cameraStream} cameraFout={cameraFout}
           zonPositie={zonPositie} relatieveHoek={relatieveHoek} zonInBeeld={zonInBeeld}
           headingBeschikbaar={headingBeschikbaar} onOpnieuw={startCamera}
+          kalibratieOffset={kalibratieOffset} wijzigKalibratie={wijzigKalibratie}
         />
       )}
     </div>
@@ -254,7 +292,7 @@ function berekenZonPositieVoorPad(lat, lon, datum) {
   return berekenZonPositie(lat, lon, datum);
 }
 
-function CameraWeergave({ videoRef, cameraStream, cameraFout, zonPositie, relatieveHoek, zonInBeeld, headingBeschikbaar, onOpnieuw }) {
+function CameraWeergave({ videoRef, cameraStream, cameraFout, zonPositie, relatieveHoek, zonInBeeld, headingBeschikbaar, onOpnieuw, kalibratieOffset, wijzigKalibratie }) {
   if (cameraFout) {
     return (
       <div style={{ padding: 20, textAlign: "center" }}>
@@ -286,10 +324,23 @@ function CameraWeergave({ videoRef, cameraStream, cameraFout, zonPositie, relati
         }}>{relatieveHoek < 0 ? "◀" : "▶"}</div>
       )}
       <div style={{ position: "absolute", bottom: 24, left: 0, right: 0, textAlign: "center" }}>
-        <p style={{ display: "inline-block", margin: 0, background: "rgba(0,0,0,0.55)", color: "#FFF", padding: "8px 16px", borderRadius: 20, fontSize: 12.5 }}>
+        <p style={{ display: "inline-block", margin: "0 0 8px", background: "rgba(0,0,0,0.55)", color: "#FFF", padding: "8px 16px", borderRadius: 20, fontSize: 12.5 }}>
           {zonPositie && `☀️ Elevatie ${Math.round(zonPositie.elevatie)}°`}
           {headingBeschikbaar === false && " · geen kompas beschikbaar op dit toestel"}
         </p>
+        {/* Direct hier kalibreren, terwijl je zowel het camerabeeld als de
+            berekende zonpositie voor je ziet — dat werkt intuïtiever dan
+            los in de kompas-weergave kalibreren. */}
+        {headingBeschikbaar === true && (
+          <div style={{ padding: "0 40px" }}>
+            <input type="range" min={-30} max={30} step={1} value={kalibratieOffset}
+              onChange={e => wijzigKalibratie(+e.target.value)}
+              style={{ width: "100%", accentColor: C.accentDark }} />
+            <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "rgba(255,255,255,0.7)" }}>
+              Klopt niet? Sleep tot de zon op de juiste plek staat ({kalibratieOffset > 0 ? "+" : ""}{kalibratieOffset}°)
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

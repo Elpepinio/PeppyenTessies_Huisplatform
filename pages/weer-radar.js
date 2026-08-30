@@ -1,8 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
-import { ChevronLeft, Play, Pause } from "lucide-react";
+import { ChevronLeft, Play, Pause, BarChart3, Map as MapIcon } from "lucide-react";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from "recharts";
 
 const C = { bg: "#0F1B2D", accent: "#5B9BD5", accentDark: "#F2A93B", text: "#F2F4F8", muted: "#8FA0BD" };
+
+// Standaard meteorologische neerslag-intensiteitsgrenzen (mm/uur) — zelfde
+// soort "Licht/Matig/Zwaar"-referentielijnen als Buienalarm laat zien.
+const NEERSLAG_GRENZEN = { licht: 2.5, matig: 7.6 };
 
 // Radar-tegelformaat: 512px op scherpe (retina) schermen, anders 256px —
 // zelfde aanpak als RainViewer's eigen voorbeeldcode.
@@ -14,6 +19,9 @@ export default function WeerRadarApp() {
   const [frameIdx, setFrameIdx] = useState(0);
   const [afspelen, setAfspelen] = useState(false);
   const [laden, setLaden] = useState(true);
+  const [modus, setModus] = useState("kaart"); // "kaart" | "grafiek"
+  const [grafiekData, setGrafiekData] = useState(null);
+  const [grafiekFout, setGrafiekFout] = useState(null);
   const [fout, setFout] = useState(null);
 
   const mapRef = useRef(null);
@@ -27,6 +35,26 @@ export default function WeerRadarApp() {
       () => setPositie({ lat: 52.1, lon: 5.3 }) // val terug op midden-Nederland i.p.v. vastlopen
     );
   }, []);
+
+  // ── Neerslag-grafiekdata ophalen — Open-Meteo's 15-minuten-resolutie is
+  //    een betrouwbaardere bron voor "hoeveel regen komt eraan" dan
+  //    RainViewer's nowcast, die in de praktijk vaak leeg blijkt te zijn. ──
+  useEffect(() => {
+    if (!positie) return;
+    let actief = true;
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${positie.lat}&longitude=${positie.lon}&minutely_15=precipitation&forecast_minutely_15=32&timezone=auto`)
+      .then(r => r.json())
+      .then(data => {
+        if (!actief) return;
+        if (!data.minutely_15?.time) { setGrafiekFout("Geen neerslagvoorspelling beschikbaar voor deze locatie."); return; }
+        setGrafiekData(data.minutely_15.time.map((t, i) => ({
+          tijd: new Date(t),
+          neerslag: data.minutely_15.precipitation[i] ?? 0,
+        })));
+      })
+      .catch(() => { if (actief) setGrafiekFout("Kon de neerslagvoorspelling niet ophalen."); });
+    return () => { actief = false; };
+  }, [positie]);
 
   // ── RainViewer-tijdlijn ophalen ───────────────────────────────
   useEffect(() => {
@@ -92,7 +120,15 @@ export default function WeerRadarApp() {
     if (radarLayerRef.current) map.removeLayer(radarLayerRef.current);
     const laag = window.L.tileLayer(
       `${apiData.host}${huidigFrame.path}/${TILE_SIZE}/{z}/{x}/{y}/2/1_1.png`,
-      { opacity: 0.75, zIndex: 5 }
+      {
+        opacity: 0.75, zIndex: 5,
+        // RainViewer's radartegels bestaan niet voorbij zoomniveau 7 — vraag
+        // je verder in te zoomen, dan geeft hun server een afbeelding terug
+        // met de tekst "Zoom Level Not Supported" erop. maxNativeZoom zorgt
+        // dat Leaflet vanaf dat punt de tegel van niveau 7 gewoon uitvergroot
+        // i.p.v. zo'n niet-bestaande tegel op te vragen.
+        maxNativeZoom: 7,
+      }
     );
     laag.addTo(map);
     radarLayerRef.current = laag;
@@ -121,6 +157,21 @@ export default function WeerRadarApp() {
         <div style={{ width: 50 }} />
       </header>
 
+      <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.06)", borderRadius: 11, padding: 3, margin: "0 20px 12px" }}>
+        <button onClick={() => setModus("grafiek")} style={{ flex: 1, border: "none", borderRadius: 8, padding: "8px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: modus==="grafiek"?C.accent:"transparent", color: modus==="grafiek"?"#0F1B2D":C.muted }}>
+          <BarChart3 size={13} style={{ verticalAlign: "middle", marginRight: 4 }} />Grafiek
+        </button>
+        <button onClick={() => setModus("kaart")} style={{ flex: 1, border: "none", borderRadius: 8, padding: "8px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: modus==="kaart"?C.accent:"transparent", color: modus==="kaart"?"#0F1B2D":C.muted }}>
+          <MapIcon size={13} style={{ verticalAlign: "middle", marginRight: 4 }} />Radar
+        </button>
+      </div>
+
+      {modus === "grafiek" && (
+        <NeerslagGrafiek data={grafiekData} fout={grafiekFout} />
+      )}
+
+      {modus === "kaart" && (
+        <>
       {fout && <p style={{ textAlign: "center", color: "#E0684F", fontSize: 13, padding: "0 20px" }}>{fout}</p>}
       {laden && <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 20 }}>Radar laden…</p>}
 
@@ -158,6 +209,8 @@ export default function WeerRadarApp() {
         <a href="https://www.rainviewer.com" target="_blank" rel="noreferrer" style={{ color: C.accent }}>RainViewer</a>
         {" "}· kaart via OpenStreetMap
       </p>
+      </>
+      )}
     </div>
   );
 }
@@ -165,6 +218,51 @@ export default function WeerRadarApp() {
 // Horizontaal doorswipebare tijdlijn-strip — elk tikje is één radarframe
 // (elke 10 minuten), met de tijd erbij. Scrollt automatisch mee zodat het
 // geselecteerde frame (bv. tijdens het afspelen) altijd zichtbaar blijft.
+// Staafdiagram van de neerslag voor de komende ~8 uur (15-minuten-blokjes),
+// met dezelfde "Licht/Matig/Zwaar"-referentielijnen als Buienalarm's
+// grafiekweergave. Gebruikt Open-Meteo i.p.v. RainViewer's nowcast, want die
+// laatste bleek in de praktijk voor deze locatie leeg te zijn.
+function NeerslagGrafiek({ data, fout }) {
+  if (fout) return <p style={{ textAlign: "center", color: "#E0684F", fontSize: 13, padding: 20 }}>{fout}</p>;
+  if (!data) return <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 20 }}>Grafiek laden…</p>;
+
+  const chartData = data.map(d => ({
+    label: d.tijd.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" }),
+    neerslag: Math.round(d.neerslag * 10) / 10,
+  }));
+  const totaalNeerslag = data.reduce((s, d) => s + d.neerslag, 0);
+  const maxNeerslag = Math.max(...data.map(d => d.neerslag), NEERSLAG_GRENZEN.matig + 1);
+
+  return (
+    <div style={{ padding: "4px 20px 24px" }}>
+      <p style={{ margin: "0 0 4px", fontSize: 13, color: C.muted }}>
+        {totaalNeerslag < 0.1 ? "Geen neerslag verwacht de komende uren" : `Totaal ${totaalNeerslag.toFixed(1)} mm verwacht de komende uren`}
+      </p>
+      <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "14px 8px 6px" }}>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={chartData} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" vertical={false} />
+            <XAxis dataKey="label" tick={{ fill: C.muted, fontSize: 9 }} interval={3} axisLine={false} tickLine={false} />
+            <YAxis domain={[0, maxNeerslag]} tick={{ fill: C.muted, fontSize: 10 }} axisLine={false} tickLine={false} width={30} />
+            <Tooltip contentStyle={{ background: "#1B2B45", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, fontSize: 12 }}
+              formatter={v => [`${v} mm/u`, "Neerslag"]} />
+            <ReferenceLine y={NEERSLAG_GRENZEN.licht} stroke="#4C9A2A" strokeDasharray="4 4" label={{ value: "Licht", position: "right", fill: "#4C9A2A", fontSize: 10 }} />
+            <ReferenceLine y={NEERSLAG_GRENZEN.matig} stroke="#C97D0C" strokeDasharray="4 4" label={{ value: "Matig", position: "right", fill: "#C97D0C", fontSize: 10 }} />
+            <Bar dataKey="neerslag" radius={[3,3,0,0]}>
+              {chartData.map((d, idx) => (
+                <Cell key={idx} fill={d.neerslag >= NEERSLAG_GRENZEN.matig ? "#E0684F" : d.neerslag >= NEERSLAG_GRENZEN.licht ? "#F2A93B" : C.accent} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <p style={{ fontSize: 10.5, color: C.muted, textAlign: "center", marginTop: 10 }}>
+        Neerslagvoorspelling in blokjes van 15 minuten, via Open-Meteo.
+      </p>
+    </div>
+  );
+}
+
 function TijdlijnStrip({ alleFrames, frameIdx, aantalPastFrames, onKies, formatFrameTijd }) {
   const stripRef = useRef(null);
   const tikRefs = useRef({});
