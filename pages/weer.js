@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { ChevronLeft, MapPin, Plus, X, RefreshCw, Compass } from "lucide-react";
+import { ChevronLeft, MapPin, Plus, X, RefreshCw, Compass, CloudRain } from "lucide-react";
 
 // ── Weer-iconen op basis van Open-Meteo's WMO weathercode ───────────────
 const WEERCODE_INFO = {
@@ -233,6 +233,8 @@ export default function WeerApp() {
   }
 
   // ── GPS-locatie ophalen ─────────────────────────────────────
+  const [huidigePlaatsnaam, setHuidigePlaatsnaam] = useState(null);
+
   const haalGpsOp = useCallback(() => {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
@@ -243,9 +245,27 @@ export default function WeerApp() {
   }, []);
   useEffect(() => { haalGpsOp(); }, [haalGpsOp]);
 
+  // Plaatsnaam bij de GPS-coördinaten opzoeken (reverse geocoding), zodat je
+  // kunt controleren of "huidige locatie" ook echt klopt — precies waar je
+  // om vroeg. Nominatim/OpenStreetMap: gratis, geen sleutel nodig, dezelfde
+  // kaartenbron die de app al gebruikt (Places-tool).
+  useEffect(() => {
+    if (!huidigePositie) return;
+    let actief = true;
+    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${huidigePositie.lat}&lon=${huidigePositie.lon}&zoom=14`)
+      .then(r => r.json())
+      .then(data => {
+        if (!actief) return;
+        const a = data.address || {};
+        setHuidigePlaatsnaam(a.city || a.town || a.village || a.municipality || data.display_name?.split(",")[0] || null);
+      })
+      .catch(() => {});
+    return () => { actief = false; };
+  }, [huidigePositie]);
+
   // ── Actieve locatie bepalen ──────────────────────────────────
   const actieveLocatie = actieveLocatieId === "huidige"
-    ? (huidigePositie ? { naam: "Huidige locatie", lat: huidigePositie.lat, lon: huidigePositie.lon } : null)
+    ? (huidigePositie ? { naam: huidigePlaatsnaam ? `Huidige locatie (${huidigePlaatsnaam})` : "Huidige locatie", lat: huidigePositie.lat, lon: huidigePositie.lon } : null)
     : locaties.find(l => l.id === actieveLocatieId);
 
   // ── Weer ophalen voor de actieve locatie ─────────────────────
@@ -338,6 +358,9 @@ export default function WeerApp() {
           <h1 style={{ margin: "4px 0 0", fontSize: 24, fontWeight: 700 }}>🌤️ Weer</h1>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <Link href="/weer-radar" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}>
+            <CloudRain size={17} color={C.accent} />
+          </Link>
           <Link href="/weer-zon" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}>
             <Compass size={17} color={C.accentDark} />
           </Link>
@@ -353,7 +376,7 @@ export default function WeerApp() {
         {/* Locatie-kiezer */}
         <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }}>
           <button style={S.chip(actieveLocatieId === "huidige")} onClick={() => setActieveLocatieId("huidige")}>
-            <MapPin size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />Huidige locatie
+            <MapPin size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />{huidigePlaatsnaam || "Huidige locatie"}
           </button>
           {locaties.map(l => (
             <button key={l.id} style={S.chip(actieveLocatieId === l.id)} onClick={() => setActieveLocatieId(l.id)}>

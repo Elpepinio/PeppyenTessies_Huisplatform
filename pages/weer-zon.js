@@ -61,15 +61,12 @@ export default function WeerZonApp() {
   const zonPositie = positie ? berekenZonPositie(positie.lat, positie.lon, nu) : null;
 
   // ── Kompas-richting (device-oriëntatie) ────────────────────────────────
-  const startKompas = useCallback(async () => {
-    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
-      // iOS 13+ vereist expliciete toestemming, alleen aan te vragen vanuit
-      // een directe gebruikersactie (tik op een knop) — vandaar deze functie.
-      try {
-        const result = await DeviceOrientationEvent.requestPermission();
-        if (result !== "granted") { setHeadingBeschikbaar(false); return; }
-      } catch { setHeadingBeschikbaar(false); return; }
-    }
+  // Op iOS (13+) MOET DeviceOrientationEvent.requestPermission() rechtstreeks
+  // vanuit een tik-actie aangeroepen worden — doe je dat automatisch bij het
+  // laden van de pagina (bv. in een useEffect), dan weigert Safari 'm
+  // stilzwijgend. Vandaar de aparte "needsPermission"-status: die toont een
+  // knop die de gebruiker zelf moet indrukken.
+  const zetOrientatieListener = useCallback(() => {
     const handler = e => {
       // iOS geeft een kant-en-klare kompasrichting; andere browsers moeten
       // het (minder betrouwbaar) uit alpha afleiden.
@@ -92,19 +89,49 @@ export default function WeerZonApp() {
     };
   }, []);
 
-  useEffect(() => { startKompas(); }, [startKompas]);
+  useEffect(() => {
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      // iOS 13+: wacht op de tik van de gebruiker (zie vraagKompasToestemming).
+      setHeadingBeschikbaar("needsPermission");
+      return;
+    }
+    // Andere browsers/besturingssystemen vereisen geen expliciete
+    // toestemmingsvraag — daar kan meteen geluisterd worden.
+    return zetOrientatieListener();
+  }, [zetOrientatieListener]);
+
+  // Wordt UITSLUITEND aangeroepen vanuit de onClick van een knop — dat is
+  // wat iOS vereist om de systeem-toestemmingsvraag te mogen tonen.
+  async function vraagKompasToestemming() {
+    try {
+      const result = await DeviceOrientationEvent.requestPermission();
+      if (result === "granted") zetOrientatieListener();
+      else setHeadingBeschikbaar(false);
+    } catch {
+      setHeadingBeschikbaar(false);
+    }
+  }
 
   async function startCamera() {
     setCameraFout(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       setCameraStream(stream);
-      if (videoRef.current) videoRef.current.srcObject = stream;
       setModus("camera");
     } catch {
       setCameraFout("Kon geen toegang krijgen tot de camera — check de locatietoestemmingen van de browser in je instellingen.");
     }
   }
+  // De <video>-element bestaat pas zodra modus === "camera" gerenderd is —
+  // dat gebeurt ná setModus("camera") hierboven, dus videoRef.current is op
+  // dat moment nog null. Vandaar deze aparte effect: die draait pas nadat
+  // React de <video> daadwerkelijk aan de pagina heeft toegevoegd, en koppelt
+  // de stream dan alsnog (dit loste een zwart camerabeeld op).
+  useEffect(() => {
+    if (modus === "camera" && cameraStream && videoRef.current) {
+      videoRef.current.srcObject = cameraStream;
+    }
+  }, [modus, cameraStream]);
   useEffect(() => {
     return () => { cameraStream?.getTracks().forEach(t => t.stop()); };
   }, [cameraStream]);
@@ -134,6 +161,17 @@ export default function WeerZonApp() {
 
       {!positie && (
         <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 20 }}>Locatie wordt bepaald…</p>
+      )}
+
+      {headingBeschikbaar === "needsPermission" && (
+        <div style={{ margin: "0 20px 16px", background: "rgba(91,155,213,0.12)", border: "1px solid rgba(91,155,213,0.4)", borderRadius: 12, padding: 14, textAlign: "center" }}>
+          <p style={{ margin: "0 0 10px", fontSize: 12.5 }}>
+            Voor de kompasrichting van je telefoon heeft dit toestel expliciet toestemming nodig.
+          </p>
+          <button onClick={vraagKompasToestemming} style={{ background: C.accent, color: "#0F1B2D", border: "none", borderRadius: 12, padding: "10px 20px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+            🧭 Geef kompastoegang
+          </button>
+        </div>
       )}
 
       {headingBeschikbaar === false && (
