@@ -1,30 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { ChevronLeft, Camera as CameraIcon, Compass as CompassIcon } from "lucide-react";
+import SunCalc from "suncalc";
 
-// Zelfde, al geverifieerde zonpositie-berekening als in pages/weer.js.
+// Zonpositie via suncalc (mourner/suncalc op GitHub — 3,4k sterren, BSD-
+// licentie, geschreven door de maker van Leaflet zelf, dat deze app al
+// gebruikt). Vervangt een eerdere handgeschreven NOAA-benadering; beide
+// kwamen bij het testen tot op fracties van een graad overeen, maar een
+// gevestigde, veelgebruikte library is betrouwbaarder dan zelf uitgevonden
+// wiskunde. SunCalc's azimut-conventie wijkt af van de gangbare kompasrichting
+// (0°=zuid i.p.v. 0°=noord, radialen i.p.v. graden) — die omrekening zit in
+// deze adapter, zodat de rest van het bestand ongewijzigd kan blijven.
 function berekenZonPositie(lat, lon, datum = new Date()) {
-  const rad = Math.PI / 180;
-  const dagVanJaar = Math.floor((datum - new Date(datum.getFullYear(), 0, 0)) / 86400000);
-  const uurUTC = datum.getUTCHours() + datum.getUTCMinutes() / 60 + datum.getUTCSeconds() / 3600;
-  const gamma = (2 * Math.PI / 365) * (dagVanJaar - 1 + (uurUTC - 12) / 24);
-  const eqTime = 229.18 * (0.000075 + 0.001868*Math.cos(gamma) - 0.032077*Math.sin(gamma)
-    - 0.014615*Math.cos(2*gamma) - 0.040849*Math.sin(2*gamma));
-  const decl = 0.006918 - 0.399912*Math.cos(gamma) + 0.070257*Math.sin(gamma)
-    - 0.006758*Math.cos(2*gamma) + 0.000907*Math.sin(2*gamma)
-    - 0.002697*Math.cos(3*gamma) + 0.00148*Math.sin(3*gamma);
-  const tijdOffset = eqTime + 4 * lon;
-  const ware_zonnetijd = (uurUTC * 60 + tijdOffset) % 1440;
-  const uurhoek = (ware_zonnetijd / 4 - 180) * rad;
-  const latRad = lat * rad;
-  const zenithCos = Math.sin(latRad)*Math.sin(decl) + Math.cos(latRad)*Math.cos(decl)*Math.cos(uurhoek);
-  const zenith = Math.acos(Math.max(-1, Math.min(1, zenithCos)));
-  const elevatie = 90 - zenith / rad;
-  let azimutCos = -(Math.sin(latRad)*Math.cos(zenith) - Math.sin(decl)) / (Math.cos(latRad)*Math.sin(zenith));
-  azimutCos = Math.max(-1, Math.min(1, azimutCos));
-  let azimut = Math.acos(azimutCos) / rad;
-  if (uurhoek > 0) azimut = 360 - azimut;
-  return { azimut, elevatie };
+  const pos = SunCalc.getPosition(datum, lat, lon);
+  const azimutGraden = pos.azimuth * 180 / Math.PI;
+  const kompasAzimut = (azimutGraden + 180 + 360) % 360;
+  const elevatie = pos.altitude * 180 / Math.PI;
+  return { azimut: kompasAzimut, elevatie };
 }
 
 // Hoekverschil tussen twee kompasrichtingen, resultaat tussen -180 en 180.

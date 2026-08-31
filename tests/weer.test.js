@@ -1,17 +1,21 @@
 const { laadFuncties } = require("./extractie.js");
 const { sectie, test, samenvatting } = require("./testhulp.js");
+const SunCalc = require("suncalc");
 
-sectie("Weer-tool — geëxtraheerd uit de echte broncode van weer.js");
+sectie("Weer-tool — geëxtraheerd uit de echte broncode van weer.js/weer-zon.js");
 
-const { berekenZonPositie, berekenMaanfase, kledingAdvies, fietsWaarschuwing } = laadFuncties("../pages/weer.js", [
+// Zonpositie staat sinds de suncalc-migratie alleen nog in weer-zon.js
+// (in weer.js was het ongebruikte dode code, die daarom is opgeruimd).
+const { berekenZonPositie } = laadFuncties("../pages/weer-zon.js", [
   /function berekenZonPositie\(lat, lon, datum = new Date\(\)\)/,
-  /const MAAN_REFERENTIE = /,
-  /const SYNODISCHE_MAAND = /,
+], { SunCalc });
+
+const { berekenMaanfase, kledingAdvies, fietsWaarschuwing } = laadFuncties("../pages/weer.js", [
   /const MAANFASEN = /,
   /function berekenMaanfase\(datum = new Date\(\)\)/,
   /function kledingAdvies\(/,
   /function fietsWaarschuwing\(/,
-]);
+], { SunCalc });
 
 // ── Zonpositie — getest tegen bekende astronomische referentiepunten
 //    (Tilburg, lat 51.56 lon 5.09) ──────────────────────────────────────

@@ -13,9 +13,43 @@ const NEERSLAG_GRENZEN = { licht: 2.5, matig: 7.6 };
 // zelfde aanpak als RainViewer's eigen voorbeeldcode.
 const TILE_SIZE = typeof window !== "undefined" && window.devicePixelRatio >= 2 ? 512 : 256;
 
+// Ruwe schatting van waar een neerslagpatroon over N minuten zal staan,
+// puur op basis van de huidige windrichting/-snelheid — geen echte
+// nowcasting (die houdt rekening met groei/afname van buien, veranderende
+// wind met de hoogte, etc.). Dit is een lineaire verschuiving van het
+// laatste echte radarbeeld, dus behandel het als een grove indicatie van
+// bewegingsrichting, niet als een voorspelling.
+function windVerschuiving(lat, windSnelheidKmh, windRichtingGraden, offsetMinuten) {
+  // windRichtingGraden = waar de wind vandaan komt (meteorologische
+  // conventie) — neerslag beweegt de andere kant op.
+  const bewegingsrichting = (windRichtingGraden + 180) % 360;
+  const afstandKm = windSnelheidKmh * (offsetMinuten / 60);
+  const rad = bewegingsrichting * Math.PI / 180;
+  const deltaLat = (afstandKm / 111) * Math.cos(rad);
+  const deltaLon = (afstandKm / (111 * Math.cos(lat * Math.PI / 180))) * Math.sin(rad);
+  return { deltaLat, deltaLon };
+}
+
+// ── KNMI's eigen pySTEPS-nowcast — een échte 2-uurs neerslagvoorspelling,
+//    per 5 minuten, via een gratis/sleutelloze WMS-dienst (opgezocht op
+//    dataplatform.knmi.nl). Dit vervangt de windschatting hierboven, die
+//    nu alleen nog als allerlaatste terugval dient als KNMI's dienst zelf
+//    niet bereikbaar is. ────────────────────────────────────────────────
+const KNMI_WMS_URL = "https://anonymous.api.dataplatform.knmi.nl/wms/adaguc-server";
+// Rondt een datum af naar de vorige hele 5-minuten-markering — KNMI's
+// WMS-tijddimensie werkt in stappen van precies 5 minuten (PT5M) en
+// verwacht een exacte match, geen automatische afronding.
+function rondAfNaarVijfMinuten(datum) {
+  const afgerond = new Date(datum);
+  afgerond.setSeconds(0, 0);
+  afgerond.setMinutes(Math.floor(afgerond.getMinutes() / 5) * 5);
+  return afgerond;
+}
+
 export default function WeerRadarApp() {
   const [positie, setPositie] = useState(null);
   const [apiData, setApiData] = useState(null); // ruwe RainViewer-respons
+  const [wind, setWind] = useState(null); // { snelheid, richting } via Open-Meteo
   const [frameIdx, setFrameIdx] = useState(0);
   const [afspelen, setAfspelen] = useState(false);
   const [laden, setLaden] = useState(true);
@@ -23,6 +57,7 @@ export default function WeerRadarApp() {
   const [grafiekData, setGrafiekData] = useState(null);
   const [grafiekFout, setGrafiekFout] = useState(null);
   const [fout, setFout] = useState(null);
+  const [knmiFout, setKnmiFout] = useState(false);
 
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -42,10 +77,11 @@ export default function WeerRadarApp() {
   useEffect(() => {
     if (!positie) return;
     let actief = true;
-    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${positie.lat}&longitude=${positie.lon}&minutely_15=precipitation&forecast_minutely_15=32&timezone=auto`)
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${positie.lat}&longitude=${positie.lon}&current=wind_speed_10m,wind_direction_10m&minutely_15=precipitation&forecast_minutely_15=32&timezone=auto`)
       .then(r => r.json())
       .then(data => {
         if (!actief) return;
+        if (data.current) setWind({ snelheid: data.current.wind_speed_10m, richting: data.current.wind_direction_10m });
         if (!data.minutely_15?.time) { setGrafiekFout("Geen neerslagvoorspelling beschikbaar voor deze locatie."); return; }
         setGrafiekData(data.minutely_15.time.map((t, i) => ({
           tijd: new Date(t),
@@ -71,7 +107,17 @@ export default function WeerRadarApp() {
       .catch(() => { setFout("Kon de radardata niet ophalen bij RainViewer."); setLaden(false); });
   }, []);
 
-  const alleFrames = apiData ? [...(apiData.radar?.past || []), ...(apiData.radar?.nowcast || [])] : [];
+  // Echte RainViewer-frames (verleden + evt. nowcast), aangevuld met échte
+  // KNMI-nowcast-frames voor de toekomst — pySTEPS-gebaseerd, 25 stappen
+  // van 5 minuten, dus tot 2 uur vooruit.
+  const echteFrames = apiData ? [...(apiData.radar?.past || []), ...(apiData.radar?.nowcast || [])] : [];
+  const laatsteEchteFrame = echteFrames[echteFrames.length - 1];
+  const nu5min = rondAfNaarVijfMinuten(new Date());
+  const knmiFrames = Array.from({ length: 24 }, (_, i) => {
+    const tijd = new Date(nu5min.getTime() + (i + 1) * 5 * 60 * 1000); // +5 t/m +120 min
+    return { time: Math.floor(tijd.getTime() / 1000), knmiNowcast: true, isoTijd: tijd.toISOString().split(".")[0] + "Z" };
+  });
+  const alleFrames = [...echteFrames, ...knmiFrames];
   const huidigFrame = alleFrames[frameIdx];
   const aantalPastFrames = apiData?.radar?.past?.length || 0;
 
@@ -116,8 +162,53 @@ export default function WeerRadarApp() {
   // ── Radar-laag bijwerken zodra het geselecteerde frame verandert ───────
   useEffect(() => {
     const map = mapInstanceRef.current;
-    if (!map || !apiData || !huidigFrame || !window.L) return;
+    if (!map || !huidigFrame || !window.L) return;
     if (radarLayerRef.current) map.removeLayer(radarLayerRef.current);
+
+    // Een KNMI-nowcast-frame is een échte WMS-kaartlaag, geen tegel-URL —
+    // tenzij KNMI's dienst zelf hapert, dan valt dit terug op de
+    // windschatting als allerlaatste redmiddel.
+    if (huidigFrame.knmiNowcast && !knmiFout) {
+      const wmsLaag = window.L.tileLayer.wms(KNMI_WMS_URL, {
+        DATASET: "radar_forecast_2.0",
+        layers: "precipitation_nowcast",
+        styles: "rainrate-blue-to-purple/shaded",
+        format: "image/png",
+        transparent: true,
+        version: "1.3.0",
+        time: huidigFrame.isoTijd,
+        opacity: 0.75, zIndex: 5,
+      });
+      wmsLaag.on("tileerror", () => setKnmiFout(true));
+      wmsLaag.addTo(map);
+      radarLayerRef.current = wmsLaag;
+      return;
+    }
+
+    if (huidigFrame.knmiNowcast && knmiFout) {
+      // KNMI's dienst hapert — terugval op het laatste échte radarbeeld,
+      // verschoven op basis van windrichting/-snelheid. Duidelijk minder
+      // betrouwbaar, maar beter dan niets tonen.
+      if (!apiData || !laatsteEchteFrame || !wind) return;
+      const bronLaag = window.L.tileLayer(
+        `${apiData.host}${laatsteEchteFrame.path}/${TILE_SIZE}/{z}/{x}/{y}/2/1_1.png`,
+        { opacity: 0.55, zIndex: 5, maxNativeZoom: 7 }
+      );
+      const offsetMinuten = Math.round((huidigFrame.time - laatsteEchteFrame.time) / 60);
+      const { deltaLat, deltaLon } = windVerschuiving(positie.lat, wind.snelheid, wind.richting, offsetMinuten);
+      const zoom = map.getZoom();
+      const centerPx = map.project(map.getCenter(), zoom);
+      const verschovenPx = map.project(window.L.latLng(map.getCenter().lat + deltaLat, map.getCenter().lng + deltaLon), zoom);
+      const tegelDx = Math.round((verschovenPx.x - centerPx.x) / 256);
+      const tegelDy = Math.round((verschovenPx.y - centerPx.y) / 256);
+      const originaleGetTileUrl = bronLaag.getTileUrl.bind(bronLaag);
+      bronLaag.getTileUrl = coords => originaleGetTileUrl({ x: coords.x - tegelDx, y: coords.y - tegelDy, z: coords.z });
+      bronLaag.addTo(map);
+      radarLayerRef.current = bronLaag;
+      return;
+    }
+
+    if (!apiData) return;
     const laag = window.L.tileLayer(
       `${apiData.host}${huidigFrame.path}/${TILE_SIZE}/{z}/{x}/{y}/2/1_1.png`,
       {
@@ -132,7 +223,7 @@ export default function WeerRadarApp() {
     );
     laag.addTo(map);
     radarLayerRef.current = laag;
-  }, [apiData, huidigFrame]);
+  }, [apiData, huidigFrame, knmiFout, wind, positie, laatsteEchteFrame]);
 
   // ── Animatie (automatisch doorlopen van de frames) ─────────────────────
   useEffect(() => {
@@ -200,13 +291,28 @@ export default function WeerRadarApp() {
             <div style={{ width: 40 }} />
 
           </div>
+
+          {huidigFrame?.knmiNowcast && !knmiFout && (
+            <div style={{ marginTop: 12, background: "rgba(91,155,213,0.10)", border: "1px solid rgba(91,155,213,0.3)", borderRadius: 12, padding: 12 }}>
+              <p style={{ margin: 0, fontSize: 11.5, color: C.text }}>
+                🔬 Echte voorspelling van <strong>KNMI</strong> (pySTEPS-nowcast, per 5 minuten bijgewerkt). Zoals bij elke buienvoorspelling geldt: hoe verder vooruit, hoe onzekerder — buien kunnen sneller groeien, afzwakken of van richting veranderen dan voorspeld.
+              </p>
+            </div>
+          )}
+          {huidigFrame?.knmiNowcast && knmiFout && (
+            <div style={{ marginTop: 12, background: "rgba(242,169,59,0.12)", border: "1px solid rgba(242,169,59,0.35)", borderRadius: 12, padding: 12 }}>
+              <p style={{ margin: 0, fontSize: 11.5, color: C.text }}>
+                ⚠️ KNMI's voorspellingsdienst is momenteel niet bereikbaar — dit is nu een <strong>ruwe schatting</strong>: het laatste radarbeeld verschoven op basis van windrichting ({Math.round(wind?.richting ?? 0)}°) en -snelheid ({Math.round(wind?.snelheid ?? 0)} km/u). Minder betrouwbaar dan normaal.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Verplichte naamsvermelding onder de gratis voorwaarden van RainViewer. */}
+      {/* Verplichte naamsvermelding onder de gratis voorwaarden van RainViewer en KNMI (CC-BY-4.0). */}
       <p style={{ textAlign: "center", fontSize: 10.5, color: C.muted, padding: "8px 20px 24px" }}>
-        Weerdata door{" "}
-        <a href="https://www.rainviewer.com" target="_blank" rel="noreferrer" style={{ color: C.accent }}>RainViewer</a>
+        Verleden: <a href="https://www.rainviewer.com" target="_blank" rel="noreferrer" style={{ color: C.accent }}>RainViewer</a>
+        {" "}· Toekomst: <a href="https://www.knmi.nl" target="_blank" rel="noreferrer" style={{ color: C.accent }}>KNMI</a>
         {" "}· kaart via OpenStreetMap
       </p>
       </>
@@ -293,6 +399,7 @@ function TijdlijnStrip({ alleFrames, frameIdx, aantalPastFrames, onKies, formatF
             }}>
             <p style={{ margin: 0, fontSize: 12, fontWeight: actief ? 700 : 400 }}>{formatFrameTijd(frame.time)}</p>
             {isNu && <p style={{ margin: "2px 0 0", fontSize: 9, color: C.accent, fontWeight: 700 }}>NU</p>}
+            {frame.knmiNowcast && <p style={{ margin: "2px 0 0", fontSize: 9, color: C.accentDark, fontWeight: 700 }}>KNMI</p>}
           </button>
         );
       })}

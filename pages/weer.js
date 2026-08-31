@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { ChevronLeft, MapPin, Plus, X, RefreshCw, Compass, CloudRain } from "lucide-react";
+import SunCalc from "suncalc";
 
 // ── Weer-iconen op basis van Open-Meteo's WMO weathercode ───────────────
 const WEERCODE_INFO = {
-  0:  { label: "Helder",              icon: "☀️" },
-  1:  { label: "Overwegend helder",   icon: "🌤️" },
-  2:  { label: "Half bewolkt",        icon: "⛅" },
+  0:  { label: "Helder",              icon: "☀️", nachtIcon: "🌙" },
+  1:  { label: "Overwegend helder",   icon: "🌤️", nachtIcon: "🌙" },
+  2:  { label: "Half bewolkt",        icon: "⛅", nachtIcon: "☁️" },
   3:  { label: "Bewolkt",             icon: "☁️" },
   45: { label: "Mist",                icon: "🌫️" },
   48: { label: "Mist met rijp",       icon: "🌫️" },
@@ -31,8 +32,16 @@ const WEERCODE_INFO = {
   96: { label: "Onweer met hagel",    icon: "⛈️" },
   99: { label: "Zwaar onweer met hagel", icon: "⛈️" },
 };
-function weerInfo(code) {
-  return WEERCODE_INFO[code] || { label: "Onbekend", icon: "❓" };
+// Open-Meteo gebruikt dezelfde weercode voor dag én nacht (bv. code 0
+// "Helder" 's nachts net zo goed als overdag) — zonder het losse is_day-veld
+// erbij te betrekken laat je 's nachts dus een zonnetje zien, wat natuurlijk
+// niet kan. Voor codes waar dat visueel uitmaakt (helder/overwegend
+// helder/half bewolkt) tonen we 's nachts een maan i.p.v. een zon; voor de
+// rest (bewolkt, regen, sneeuw, onweer, mist) maakt dag/nacht niets uit.
+function weerInfo(code, isDay = 1) {
+  const info = WEERCODE_INFO[code] || { label: "Onbekend", icon: "❓" };
+  if (!isDay && info.nachtIcon) return { ...info, icon: info.nachtIcon };
+  return info;
 }
 
 const POLLEN_TYPES = [
@@ -76,10 +85,12 @@ function vandaagStr() {
   return `${nu.getFullYear()}-${String(nu.getMonth()+1).padStart(2,"0")}-${String(nu.getDate()).padStart(2,"0")}`;
 }
 
-// ── Maanfase — zelfde, al eerder geverifieerde berekening als in de
-//    Gezondheid-tool (tegen 2 onafhankelijk bevestigde volle-maan-data). ──
-const MAAN_REFERENTIE = Date.UTC(2000, 0, 6, 18, 14);
-const SYNODISCHE_MAAND = 29.53058868;
+// ── Maanfase — via suncalc (mourner/suncalc, 3,4k sterren op GitHub, BSD-
+//    licentie, geschreven door Leaflet's maker) i.p.v. een eigen formule.
+//    Beide kwamen bij het testen exact overeen tegen de 2 onafhankelijk
+//    bevestigde volle-maan-referentiedata die eerder al werden gebruikt in
+//    de Gezondheid-tool, maar een gevestigde library is betrouwbaarder dan
+//    zelf uitgevonden wiskunde. ────────────────────────────────────────
 const MAANFASEN = [
   { max: 0.033, label: "Nieuwe maan",      emoji: "🌑" },
   { max: 0.216, label: "Wassende sikkel",  emoji: "🌒" },
@@ -92,46 +103,9 @@ const MAANFASEN = [
   { max: 1,     label: "Nieuwe maan",      emoji: "🌑" },
 ];
 function berekenMaanfase(datum = new Date()) {
-  const dagenSindsReferentie = (datum.getTime() - MAAN_REFERENTIE) / (1000 * 60 * 60 * 24);
-  let fractie = (dagenSindsReferentie % SYNODISCHE_MAAND) / SYNODISCHE_MAAND;
-  if (fractie < 0) fractie += 1;
-  const fase = MAANFASEN.find(f => fractie <= f.max) || MAANFASEN[MAANFASEN.length - 1];
-  const illuminatie = Math.round((1 - Math.cos(fractie * 2 * Math.PI)) / 2 * 100);
-  return { label: fase.label, emoji: fase.emoji, illuminatie };
-}
-
-// ── Zonpositie — vereenvoudigd NOAA-algoritme voor azimut (kompasrichting,
-//    0°=noord, 90°=oost, 180°=zuid, 270°=west) en elevatie (hoogte boven
-//    horizon; negatief = onder de horizon). Nauwkeurig genoeg voor een
-//    visuele zon-indicator, geen navigatie-instrument. ──────────────────
-function berekenZonPositie(lat, lon, datum = new Date()) {
-  const rad = Math.PI / 180;
-  const dagVanJaar = Math.floor((datum - new Date(datum.getFullYear(), 0, 0)) / 86400000);
-  const uurUTC = datum.getUTCHours() + datum.getUTCMinutes() / 60 + datum.getUTCSeconds() / 3600;
-
-  const gamma = (2 * Math.PI / 365) * (dagVanJaar - 1 + (uurUTC - 12) / 24);
-
-  const eqTime = 229.18 * (0.000075 + 0.001868*Math.cos(gamma) - 0.032077*Math.sin(gamma)
-    - 0.014615*Math.cos(2*gamma) - 0.040849*Math.sin(2*gamma));
-  const decl = 0.006918 - 0.399912*Math.cos(gamma) + 0.070257*Math.sin(gamma)
-    - 0.006758*Math.cos(2*gamma) + 0.000907*Math.sin(2*gamma)
-    - 0.002697*Math.cos(3*gamma) + 0.00148*Math.sin(3*gamma);
-
-  const tijdOffset = eqTime + 4 * lon;
-  const ware_zonnetijd = (uurUTC * 60 + tijdOffset) % 1440;
-  const uurhoek = (ware_zonnetijd / 4 - 180) * rad;
-
-  const latRad = lat * rad;
-  const zenithCos = Math.sin(latRad)*Math.sin(decl) + Math.cos(latRad)*Math.cos(decl)*Math.cos(uurhoek);
-  const zenith = Math.acos(Math.max(-1, Math.min(1, zenithCos)));
-  const elevatie = 90 - zenith / rad;
-
-  let azimutCos = -(Math.sin(latRad)*Math.cos(zenith) - Math.sin(decl)) / (Math.cos(latRad)*Math.sin(zenith));
-  azimutCos = Math.max(-1, Math.min(1, azimutCos));
-  let azimut = Math.acos(azimutCos) / rad;
-  if (uurhoek > 0) azimut = 360 - azimut;
-
-  return { azimut, elevatie };
+  const { fraction, phase } = SunCalc.getMoonIllumination(datum);
+  const fase = MAANFASEN.find(f => phase <= f.max) || MAANFASEN[MAANFASEN.length - 1];
+  return { label: fase.label, emoji: fase.emoji, illuminatie: Math.round(fraction * 100) };
 }
 
 // ── Kledingadvies + fiets-regenwaarschuwing ──────────────────────────────
@@ -276,7 +250,7 @@ export default function WeerApp() {
     try {
       const { lat, lon } = actieveLocatie;
       const [weerRes, luchtRes] = await Promise.all([
-        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,weather_code&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,uv_index&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,precipitation_sum&timezone=auto&forecast_days=7`),
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,weather_code,is_day&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,uv_index,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max,precipitation_sum&timezone=auto&forecast_days=7`),
         fetch(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=${POLLEN_TYPES.map(p=>p.id).join(",")},european_aqi,pm2_5,pm10&timezone=auto`),
       ]);
       if (!weerRes.ok) throw new Error("Weerdienst gaf een fout");
@@ -343,7 +317,7 @@ export default function WeerApp() {
   const uurStartIdx = hourly?.time?.findIndex(t => new Date(t) >= nu) ?? 0;
   const uurStrip = hourly?.time?.slice(uurStartIdx, uurStartIdx + 12).map((t, i) => ({
     tijd: new Date(t), temp: hourly.temperature_2m[uurStartIdx+i], code: hourly.weather_code[uurStartIdx+i],
-    regenkans: hourly.precipitation_probability[uurStartIdx+i],
+    regenkans: hourly.precipitation_probability[uurStartIdx+i], isDag: hourly.is_day[uurStartIdx+i],
   })) || [];
 
   const lkn = weerData?.lucht?.european_aqi != null ? luchtkwaliteitNiveau(weerData.lucht.european_aqi) : null;
@@ -420,9 +394,9 @@ export default function WeerApp() {
         {huidig && (
           <div style={{ ...S.card, textAlign: "center", padding: "28px 16px" }}>
             <p style={{ margin: "0 0 2px", fontSize: 14, color: C.muted }}>{actieveLocatie?.naam}</p>
-            <div style={{ fontSize: 56, margin: "4px 0" }}>{weerInfo(huidig.weather_code).icon}</div>
+            <div style={{ fontSize: 56, margin: "4px 0" }}>{weerInfo(huidig.weather_code, huidig.is_day).icon}</div>
             <p style={{ margin: 0, fontSize: 44, fontWeight: 700 }}>{Math.round(huidig.temperature_2m)}°</p>
-            <p style={{ margin: "2px 0 0", fontSize: 15, color: C.muted }}>{weerInfo(huidig.weather_code).label}</p>
+            <p style={{ margin: "2px 0 0", fontSize: 15, color: C.muted }}>{weerInfo(huidig.weather_code, huidig.is_day).label}</p>
             {daily && (
               <p style={{ margin: "8px 0 0", fontSize: 13, color: C.muted }}>
                 ↑{Math.round(daily.temperature_2m_max?.[vandaagIdx])}° ↓{Math.round(daily.temperature_2m_min?.[vandaagIdx])}°
@@ -438,7 +412,7 @@ export default function WeerApp() {
               {uurStrip.map((u, idx) => (
                 <div key={idx} style={{ textAlign: "center", flexShrink: 0 }}>
                   <p style={{ margin: "0 0 6px", fontSize: 11, color: C.muted }}>{idx === 0 ? "Nu" : u.tijd.getHours() + "u"}</p>
-                  <div style={{ fontSize: 20 }}>{weerInfo(u.code).icon}</div>
+                  <div style={{ fontSize: 20 }}>{weerInfo(u.code, u.isDag).icon}</div>
                   <p style={{ margin: "6px 0 0", fontSize: 13, fontWeight: 700 }}>{Math.round(u.temp)}°</p>
                   {u.regenkans > 20 && <p style={{ margin: "2px 0 0", fontSize: 10, color: C.accent }}>{u.regenkans}%</p>}
                 </div>

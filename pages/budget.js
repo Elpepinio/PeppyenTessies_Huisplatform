@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
+import Papa from "papaparse";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, BarChart, Bar, Cell, ReferenceLine, PieChart, Pie,
@@ -33,12 +34,24 @@ const NOW_YEAR   = _now.getFullYear();
 const NOW_Q      = Math.ceil((_now.getMonth() + 1) / 3);
 
 // ── Rabobank CSV parser ───────────────────────────────────────────────────────
+// Robuuste CSV-tokenisatie via PapaParse (RFC4180-conform) i.p.v. een
+// handgeschreven aanhalingsteken-lus. Die laatste had twee bekende zwakke
+// plekken: een ontsnapt aanhalingsteken ("") midden in een veld werd
+// stilletjes weggelaten i.p.v. omgezet naar een letterlijk aanhalingsteken,
+// en een veld met een regeleinde erin brak de rij verkeerd op (omdat eerst
+// op regels werd gesplitst, pas daarna op aanhalingstekens gelet). PapaParse
+// lost beide correct op, en blijft ook prima werken op normale, simpele CSV.
+function tokenizeCsv(text, sep) {
+  const resultaat = Papa.parse(text.trim(), { delimiter: sep, skipEmptyLines: true, transform: v => v.trim() });
+  return resultaat.data; // array van rijen, elke rij zelf een array van kolommen
+}
+
 function parseRabobankCSV(text, rekeningMap, categorieMap, bekendeIbans) {
   const firstLine = text.trim().split("\n")[0];
   const sep = firstLine.split(";").length > firstLine.split(",").length ? ";" : ",";
 
-  const rows = text.trim().split("\n");
-  const header = rows[0].split(sep).map(c => c.replace(/^"|"$/g,"").replace(/\r$/,"").trim().toLowerCase());
+  const rows = tokenizeCsv(text, sep);
+  const header = (rows[0] || []).map(c => (c ?? "").replace(/^"|"$/g,"").replace(/\r$/,"").trim().toLowerCase());
 
   // Rabobank heeft meerdere CSV-exportvarianten: de "oude", Nederlandstalige
   // (Datum/Bedrag/Naam tegenpartij/Omschrijving-1) en de nieuwere, Engelstalige
@@ -63,18 +76,8 @@ function parseRabobankCSV(text, rekeningMap, categorieMap, bekendeIbans) {
   const iOmsch1  = omschCols[0] ?? 9;
   const iOmsch2  = omschCols[1] ?? 19;
 
-  return rows.slice(1).flatMap(line => {
-    if (!line.trim()) return [];
-
-    const cols = [];
-    let cur = "", inQ = false;
-    for (const ch of line + sep) {
-      if (ch === '"') { inQ = !inQ; }
-      else if (ch === sep && !inQ) { cols.push(cur.trim()); cur = ""; }
-      else cur += ch;
-    }
-
-    if (cols.length < 7) return [];
+  return rows.slice(1).flatMap(cols => {
+    if (!cols || cols.length < 7) return [];
 
     const rawAmount = (cols[iBedrag] || "").replace(/\./g,"").replace(",",".");
     const amount    = parseFloat(rawAmount);
@@ -147,8 +150,8 @@ function parseRabobankCSV(text, rekeningMap, categorieMap, bekendeIbans) {
 function parseCreditCardCSV(text, categorieMap) {
   const firstLine = text.trim().split("\n")[0];
   const sep = firstLine.split(";").length > firstLine.split(",").length ? ";" : ",";
-  const rows = text.trim().split("\n");
-  const header = rows[0].split(sep).map(c => c.replace(/^"|"$/g,"").replace(/\r$/,"").trim().toLowerCase());
+  const rows = tokenizeCsv(text, sep);
+  const header = (rows[0] || []).map(c => (c ?? "").replace(/^"|"$/g,"").replace(/\r$/,"").trim().toLowerCase());
 
   const ci = (...names) => {
     for (const name of names) {
@@ -163,16 +166,8 @@ function parseCreditCardCSV(text, categorieMap) {
 
   if (iDatum < 0 || iBedrag < 0) return []; // kon geen bruikbare kolommen vinden
 
-  return rows.slice(1).flatMap(line => {
-    if (!line.trim()) return [];
-    const cols = [];
-    let cur = "", inQ = false;
-    for (const ch of line + sep) {
-      if (ch === '"') inQ = !inQ;
-      else if (ch === sep && !inQ) { cols.push(cur.trim()); cur = ""; }
-      else cur += ch;
-    }
-    if (cols.length < 2) return [];
+  return rows.slice(1).flatMap(cols => {
+    if (!cols || cols.length < 2) return [];
 
     const ruwDatum = (cols[iDatum] || "").replace(/^"|"$/g, "").trim();
     const ruwBedrag = (cols[iBedrag] || "").replace(/^"|"$/g, "").trim();
