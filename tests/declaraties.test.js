@@ -3,15 +3,63 @@ const { sectie, test, samenvatting } = require("./testhulp.js");
 
 sectie("Declaraties — geëxtraheerd uit de echte broncode van declaraties.js");
 
-const { kwartaalVan, bedragVoorItem, berekenPeriodeBereik, vandaagStr, persoonKleur } = laadFuncties("../pages/declaraties.js", [
+const { kwartaalVan, bedragVoorItem, kmVoorItem, berekenPeriodeBereik, vandaagStr, persoonKleur, berekenLocatieFavorieten, berekenOvOmschrijvingFavorieten } = laadFuncties("../pages/declaraties.js", [
   /const KM_TARIEF = /,
   /const PERSONEN = /,
   /function persoonKleur\(naam\)/,
   /function vandaagStr\(\)/,
   /function kwartaalVan\(datumStr\)/,
   /function bedragVoorItem\(item\)/,
+  /function kmVoorItem\(item\)/,
+  /function berekenLocatieFavorieten\(items, type, veld, max = 6\)/,
+  /function berekenOvOmschrijvingFavorieten\(items, max = 6\)/,
   /function berekenPeriodeBereik\(preset, jaar\)/,
 ]);
+
+sectie("OV — meerdere trajectdelen per declaratie (trein heen, OV-fiets, trein terug, bus terug)");
+const ovMetVierDelen = {
+  type: "ov",
+  ritten: [
+    { vervoermiddel: "trein",   omschrijving: "Tilburg-Utrecht", bedrag: 8.40 },
+    { vervoermiddel: "ovfiets", omschrijving: "",                bedrag: 4.55 },
+    { vervoermiddel: "trein",   omschrijving: "Utrecht-Tilburg", bedrag: 8.40 },
+    { vervoermiddel: "bus",     omschrijving: "",                bedrag: 2.10 },
+  ],
+};
+test("het totaalbedrag is de som van alle trajectdelen", bedragVoorItem(ovMetVierDelen) === 23.45);
+test("een OV-declaratie met één trajectdeel telt ook gewoon correct op",
+  bedragVoorItem({ type: "ov", ritten: [{ vervoermiddel: "bus", bedrag: 3.20 }] }) === 3.2);
+test("oudere OV-declaraties zonder ritten (vóór deze functie) vallen terug op het oude, losse bedrag-veld",
+  bedragVoorItem({ type: "ov", bedrag: 12.50 }) === 12.5);
+test("een lege trajectdelen-lijst geeft 0, geen crash", bedragVoorItem({ type: "ov", ritten: [] }) === 0);
+
+sectie("Favoriete locaties — meest gebruikt eerst");
+const testItems = [
+  { type: "kilometer", van: "Huis", naar: "Kantoor A", toegevoegdOp: 1000 },
+  { type: "kilometer", van: "Huis", naar: "Kantoor A", toegevoegdOp: 2000 },
+  { type: "kilometer", van: "Huis", naar: "Kantoor B", toegevoegdOp: 3000 },
+  { type: "parkeren", locatie: "Garage Centrum", toegevoegdOp: 1500 },
+];
+test("'Huis' is de vaakst gebruikte 'van'-locatie voor kilometerdeclaraties",
+  berekenLocatieFavorieten(testItems, "kilometer", "van")[0] === "Huis");
+test("favorieten van een ander declaratietype (parkeren) blijven gescheiden van kilometer-favorieten",
+  berekenLocatieFavorieten(testItems, "parkeren", "locatie").includes("Garage Centrum") &&
+  !berekenLocatieFavorieten(testItems, "kilometer", "van").includes("Garage Centrum"));
+
+sectie("Favoriete OV-trajectomschrijvingen — genest in ritten[]");
+const ovItems = [
+  { type: "ov", toegevoegdOp: 1000, ritten: [{ vervoermiddel: "trein", omschrijving: "Tilburg-Utrecht", bedrag: 8.4 }] },
+  { type: "ov", toegevoegdOp: 2000, ritten: [{ vervoermiddel: "trein", omschrijving: "Tilburg-Utrecht", bedrag: 8.4 }] },
+];
+test("een vaak gebruikte trajectomschrijving wordt herkend als favoriet", berekenOvOmschrijvingFavorieten(ovItems)[0] === "Tilburg-Utrecht");
+
+sectie("Enkele reis vs. retour");
+test("20 km enkele reis à €0,23 = €4,60", bedragVoorItem({ type:"kilometer", km:20, tarief:0.23, retour:false }) === 4.6);
+test("20 km retour = exact het dubbele bedrag (€9,20)", bedragVoorItem({ type:"kilometer", km:20, tarief:0.23, retour:true }) === 9.2);
+test("kmVoorItem verdubbelt bij retour", kmVoorItem({ km:20, retour:true }) === 40);
+test("kmVoorItem laat enkele reis ongewijzigd", kmVoorItem({ km:20, retour:false }) === 20);
+test("oudere registraties zonder het retour-veld (undefined) blijven een enkele reis, geen crash",
+  kmVoorItem({ km:15 }) === 15 && bedragVoorItem({ type:"kilometer", km:15, tarief:0.23 }) === Math.round(15*0.23*100)/100);
 
 sectie("Persoon-koppeling");
 test("Pepijn en Tessa krijgen elk hun eigen, verschillende kleur", persoonKleur("Pepijn") !== persoonKleur("Tessa"));

@@ -27,6 +27,23 @@ function persoonKleur(naam) {
   return PERSONEN.find(p => p.id === naam)?.kleur || "#8C8576";
 }
 
+// Eén OV-declaratie bestaat vaak uit meerdere trajectdelen op één dag (trein
+// heen, OV-fiets/bus heen, trein terug, bus/OV-fiets terug) — elk met een
+// eigen vervoermiddel en bedrag, want prijzen per rit lopen uiteen (bv.
+// spits-/daltarief), dus simpelweg verdubbelen zoals bij kilometers zou hier
+// niet kloppen.
+const VERVOERMIDDELEN = [
+  { id: "trein",   label: "Trein",    icon: "🚆" },
+  { id: "bus",     label: "Bus",      icon: "🚌" },
+  { id: "tram",    label: "Tram",     icon: "🚋" },
+  { id: "metro",   label: "Metro",    icon: "🚇" },
+  { id: "ovfiets", label: "OV-fiets", icon: "🚲" },
+  { id: "overig",  label: "Overig",   icon: "🎫" },
+];
+function vervoermiddelInfo(id) {
+  return VERVOERMIDDELEN.find(v => v.id === id) || VERVOERMIDDELEN[5];
+}
+
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 // ── Datum-/geldhelpers — nooit toISOString(), die schuift rond middernacht ──
@@ -47,8 +64,21 @@ function kwartaalVan(datumStr) {
   return Math.ceil(maand / 3);
 }
 function bedragVoorItem(item) {
-  if (item.type === "kilometer") return Math.round((item.km || 0) * (item.tarief ?? KM_TARIEF) * 100) / 100;
+  if (item.type === "kilometer") {
+    const afstandsfactor = item.retour ? 2 : 1;
+    return Math.round((item.km || 0) * afstandsfactor * (item.tarief ?? KM_TARIEF) * 100) / 100;
+  }
+  if (item.type === "ov" && item.ritten) {
+    return Math.round(item.ritten.reduce((s, r) => s + (r.bedrag || 0), 0) * 100) / 100;
+  }
   return item.bedrag || 0;
+}
+
+// Totale, daadwerkelijk gedeclareerde kilometers voor een item — dus de
+// enkele-reis-afstand verdubbeld bij een retourtje. Los van bedragVoorItem
+// omdat de kilometerlijst-weergave dit los van het bedrag wil tonen.
+function kmVoorItem(item) {
+  return (item.km || 0) * (item.retour ? 2 : 1);
 }
 
 // ── Periode-filter — ondersteunt de vaste presets (deze/vorige maand,
@@ -87,14 +117,59 @@ function berekenPeriodeBereik(preset, jaar) {
 //    demo-server) i.p.v. de gebruiker de afstand zelf te laten opzoeken.
 //    Handmatige invoer blijft altijd mogelijk als terugval — de demo-server
 //    geeft geen enkele uptime-garantie. ─────────────────────────────────
-async function berekenAfstandKm(vanAdres, naarAdres) {
+// Meest gebruikte locaties/adressen voor een bepaald veld (van/naar/locatie)
+// binnen een bepaald declaratietype — zodat veelgebruikte trajecten als
+// snelkeuze aangeboden kunnen worden i.p.v. steeds het volledige adres
+// opnieuw te moeten intypen. Gesorteerd op frequentie, dan op meest recent.
+function berekenLocatieFavorieten(items, type, veld, max = 6) {
+  const telling = {};
+  items.forEach(i => {
+    if (i.type !== type) return;
+    const waarde = i[veld];
+    if (!waarde) return;
+    if (!telling[waarde]) telling[waarde] = { aantal: 0, laatst: 0 };
+    telling[waarde].aantal++;
+    telling[waarde].laatst = Math.max(telling[waarde].laatst, i.toegevoegdOp || 0);
+  });
+  return Object.entries(telling)
+    .sort((a, b) => b[1].aantal - a[1].aantal || b[1].laatst - a[1].laatst)
+    .slice(0, max)
+    .map(([naam]) => naam);
+}
+
+// Zelfde idee, maar dan voor OV-trajectdelen — die zitten genest in
+// item.ritten[], niet als los veld op het item zelf.
+function berekenOvOmschrijvingFavorieten(items, max = 6) {
+  const telling = {};
+  items.forEach(i => {
+    if (i.type !== "ov" || !i.ritten) return;
+    i.ritten.forEach(r => {
+      if (!r.omschrijving) return;
+      if (!telling[r.omschrijving]) telling[r.omschrijving] = { aantal: 0, laatst: 0 };
+      telling[r.omschrijving].aantal++;
+      telling[r.omschrijving].laatst = Math.max(telling[r.omschrijving].laatst, i.toegevoegdOp || 0);
+    });
+  });
+  return Object.entries(telling)
+    .sort((a, b) => b[1].aantal - a[1].aantal || b[1].laatst - a[1].laatst)
+    .slice(0, max)
+    .map(([naam]) => naam);
+}
+
+async function berekenAfstandKm(vanAdres, naarAdres, vanCoords = null, naarCoords = null) {
   const geocode = async (adres) => {
     const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(adres)}`);
     const data = await res.json();
     if (!data[0]) throw new Error(`Kon "${adres}" niet vinden`);
     return { lat: +data[0].lat, lon: +data[0].lon };
   };
-  const [van, naar] = await Promise.all([geocode(vanAdres), geocode(naarAdres)]);
+  // Als de gebruiker het adres via een autocomplete-suggestie heeft gekozen,
+  // zijn de coördinaten al bekend — dan hoeft er niet opnieuw geocodeerd te
+  // worden (sneller, en scheelt een aanvraag bij Nominatim).
+  const [van, naar] = await Promise.all([
+    vanCoords || geocode(vanAdres),
+    naarCoords || geocode(naarAdres),
+  ]);
   const routeRes = await fetch(`https://router.project-osrm.org/route/v1/driving/${van.lon},${van.lat};${naar.lon},${naar.lat}?overview=false`);
   const routeData = await routeRes.json();
   if (!routeData.routes?.[0]) throw new Error("Kon geen route vinden tussen deze adressen");
@@ -123,9 +198,159 @@ const S = {
 function LEEG_FORM(type, persoon = "Pepijn") {
   return {
     type, persoon, datum: vandaagStr(), project: "",
-    van: "", naar: "", km: "", tarief: KM_TARIEF,
-    locatie: "", omschrijving: "", bedrag: "",
+    van: "", naar: "", vanCoords: null, naarCoords: null, km: "", tarief: KM_TARIEF, retour: false,
+    locatie: "", omschrijving: "", bedrag: "", ritten: [],
   };
+}
+
+// Adresveld met live-autocomplete (zoals Google Maps — suggesties al terwijl
+// je typt, niet pas na het volledige adres) plus favorieten-snelkeuze op
+// basis van eerder gebruikte locaties. Bewaart bij een gekozen suggestie
+// meteen ook de coördinaten, zodat een latere afstandsberekening die niet
+// opnieuw hoeft op te zoeken.
+function AdresInvoer({ waarde, onWijzig, placeholder, favorieten }) {
+  const [suggesties, setSuggesties] = useState([]);
+  const [toonSuggesties, setToonSuggesties] = useState(false);
+  const [zoekBezig, setZoekBezig] = useState(false);
+  const debounceRef = useRef(null);
+  const blurTimeoutRef = useRef(null);
+
+  function handleInput(tekst) {
+    onWijzig(tekst, null);
+    clearTimeout(debounceRef.current);
+    if (tekst.trim().length < 3) { setSuggesties([]); return; }
+    setZoekBezig(true);
+    // Debounce: pas na 400ms rust een aanvraag doen, anders vuurt Nominatim
+    // (gratis, geen sleutel) op elke toetsaanslag — en die vraagt om
+    // redelijk gebruik.
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(tekst)}`);
+        const data = await res.json();
+        setSuggesties(data);
+      } catch { setSuggesties([]); }
+      setZoekBezig(false);
+    }, 400);
+  }
+
+  function kiesSuggestie(s) {
+    onWijzig(s.display_name.split(",").slice(0, 3).join(",").trim(), { lat: +s.lat, lon: +s.lon });
+    setSuggesties([]);
+    setToonSuggesties(false);
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        style={S.inp} placeholder={placeholder} value={waarde}
+        onChange={e => handleInput(e.target.value)}
+        onFocus={() => setToonSuggesties(true)}
+        onBlur={() => { blurTimeoutRef.current = setTimeout(() => setToonSuggesties(false), 150); }}
+      />
+      {toonSuggesties && favorieten.length > 0 && suggesties.length === 0 && !waarde && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+          {favorieten.map(f => (
+            <button key={f} type="button" onMouseDown={() => { onWijzig(f, null); setToonSuggesties(false); }}
+              style={{ ...S.chip(false), fontSize: 12, padding: "5px 10px" }}>
+              ⭐ {f}
+            </button>
+          ))}
+        </div>
+      )}
+      {toonSuggesties && suggesties.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#FFFFFF", border: `1px solid ${C.border}`, borderRadius: 12, marginTop: 4, zIndex: 20, boxShadow: "0 6px 16px rgba(0,0,0,0.12)", overflow: "hidden" }}>
+          {suggesties.map((s, idx) => (
+            <button key={idx} type="button" onMouseDown={() => kiesSuggestie(s)}
+              style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: idx < suggesties.length-1 ? `1px solid ${C.border}` : "none", padding: "10px 12px", fontSize: 13, cursor: "pointer", color: C.text }}>
+              📍 {s.display_name}
+            </button>
+          ))}
+        </div>
+      )}
+      {zoekBezig && <p style={{ fontSize: 10.5, color: C.muted, margin: "4px 0 0" }}>Zoeken…</p>}
+    </div>
+  );
+}
+
+// OV-declaratie als optelsom van losse trajectdelen (bv. trein heen,
+// OV-fiets heen, trein terug, bus terug) — elk met een eigen vervoermiddel
+// en bedrag, want de kosten per rit lopen uiteen.
+function OvTrajectInvoer({ form, setForm, favorieten }) {
+  const [nieuwVervoermiddel, setNieuwVervoermiddel] = useState("trein");
+  const [nieuwOmschrijving, setNieuwOmschrijving] = useState("");
+  const [nieuwBedrag, setNieuwBedrag] = useState("");
+
+  function voegTrajectdeelToe() {
+    if (!nieuwBedrag || +nieuwBedrag <= 0) return;
+    setForm(f => ({
+      ...f,
+      ritten: [...(f.ritten||[]), { id: uid(), vervoermiddel: nieuwVervoermiddel, omschrijving: nieuwOmschrijving.trim(), bedrag: +nieuwBedrag }],
+    }));
+    setNieuwOmschrijving("");
+    setNieuwBedrag("");
+  }
+  function verwijderTrajectdeel(id) {
+    setForm(f => ({ ...f, ritten: (f.ritten||[]).filter(r => r.id !== id) }));
+  }
+
+  const totaal = (form.ritten||[]).reduce((s,r) => s + (r.bedrag||0), 0);
+
+  return (
+    <div>
+      <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Trajectdelen</label>
+      <p style={{ fontSize: 11, color: C.muted, margin: "0 0 10px" }}>
+        Eén dag kan uit meerdere ritten bestaan — voeg elke rit apart toe (bv. trein heen, OV-fiets heen, trein terug, bus terug).
+      </p>
+
+      {(form.ritten||[]).length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          {form.ritten.map(r => (
+            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: C.card, borderRadius: 10, marginBottom: 6 }}>
+              <span style={{ fontSize: 16 }}>{vervoermiddelInfo(r.vervoermiddel).icon}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: 12.5, fontWeight: 600 }}>{vervoermiddelInfo(r.vervoermiddel).label}{r.omschrijving ? ` · ${r.omschrijving}` : ""}</p>
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>{formatBedrag(r.bedrag)}</span>
+              <button type="button" onClick={() => verwijderTrajectdeel(r.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
+                <X size={13} color={C.muted} />
+              </button>
+            </div>
+          ))}
+          <p style={{ textAlign: "right", fontSize: 13, fontWeight: 700, margin: "6px 4px 0" }}>Totaal: {formatBedrag(totaal)}</p>
+        </div>
+      )}
+
+      <div style={{ background: "#FFFFFF", border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {VERVOERMIDDELEN.map(v => (
+            <button key={v.id} type="button" onClick={() => setNieuwVervoermiddel(v.id)}
+              style={{ ...S.chip(nieuwVervoermiddel === v.id), fontSize: 12, padding: "5px 10px" }}>
+              {v.icon} {v.label}
+            </button>
+          ))}
+        </div>
+        <input style={{ ...S.inp, marginBottom: 8, fontSize: 13 }} placeholder="Omschrijving (optioneel, bv. Tilburg → Utrecht)" value={nieuwOmschrijving}
+          onChange={e => setNieuwOmschrijving(e.target.value)} />
+        {favorieten.length > 0 && !nieuwOmschrijving && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            {favorieten.map(f => (
+              <button key={f} type="button" onClick={() => setNieuwOmschrijving(f)} style={{ ...S.chip(false), fontSize: 11, padding: "4px 9px" }}>
+                ⭐ {f}
+              </button>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          <input type="number" step="0.01" style={{ ...S.inp, fontSize: 13 }} placeholder="€ 0,00" value={nieuwBedrag}
+            onChange={e => setNieuwBedrag(e.target.value)} />
+          <button type="button" onClick={voegTrajectdeelToe}
+            style={{ ...S.btn(C.accent, "#FFF"), whiteSpace: "nowrap", fontSize: 12, padding: "10px 16px" }}>
+            + Toevoegen
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function DeclaratiesApp() {
@@ -207,8 +432,11 @@ export default function DeclaratiesApp() {
     if (form.type === "kilometer" && (!form.van.trim() || !form.naar.trim() || !form.km)) {
       showToast("⚠️ Vul van, naar en het aantal kilometers in"); return;
     }
-    if (form.type !== "kilometer" && form.type !== "overig" && !form.bedrag) {
+    if (form.type === "parkeren" && !form.bedrag) {
       showToast("⚠️ Vul het bedrag in"); return;
+    }
+    if (form.type === "ov" && (!form.ritten || form.ritten.length === 0)) {
+      showToast("⚠️ Voeg minimaal één trajectdeel toe"); return;
     }
     if (form.type === "overig" && (!form.omschrijving.trim() || !form.bedrag)) {
       showToast("⚠️ Vul een omschrijving en bedrag in"); return;
@@ -220,9 +448,11 @@ export default function DeclaratiesApp() {
     };
     let item;
     if (form.type === "kilometer") {
-      item = { ...basis, van: form.van.trim(), naar: form.naar.trim(), km: +form.km, tarief: KM_TARIEF };
+      item = { ...basis, van: form.van.trim(), naar: form.naar.trim(), km: +form.km, tarief: KM_TARIEF, retour: !!form.retour };
     } else if (form.type === "overig") {
       item = { ...basis, omschrijving: form.omschrijving.trim(), bedrag: +form.bedrag };
+    } else if (form.type === "ov") {
+      item = { ...basis, ritten: form.ritten };
     } else {
       item = { ...basis, locatie: form.locatie.trim(), bedrag: +form.bedrag };
     }
@@ -246,7 +476,7 @@ export default function DeclaratiesApp() {
     setAfstandLaden(true);
     setAfstandFout(null);
     try {
-      const km = await berekenAfstandKm(form.van, form.naar);
+      const km = await berekenAfstandKm(form.van, form.naar, form.vanCoords, form.naarCoords);
       setForm(f => ({ ...f, km: String(km) }));
     } catch (e) {
       setAfstandFout(e.message || "Kon de afstand niet berekenen — vul 'm handmatig in.");
@@ -282,8 +512,8 @@ export default function DeclaratiesApp() {
     bron.slice().sort((a,b)=>(a.datum||"").localeCompare(b.datum||"")).forEach(i => {
       regels.push([
         veld(i.datum), veld(typeInfo(i.type).label), veld(i.project),
-        veld(i.van||""), veld(i.naar||""), veld(i.type==="kilometer"?i.km:""),
-        veld(i.locatie || i.omschrijving || ""),
+        veld(i.van||""), veld(i.naar||""), veld(i.type==="kilometer"?`${kmVoorItem(i)}${i.retour?" (retour)":""}`:""),
+        veld(i.type === "ov" && i.ritten ? i.ritten.map(r => `${vervoermiddelInfo(r.vervoermiddel).label}${r.omschrijving?` (${r.omschrijving})`:""}: €${r.bedrag.toFixed(2)}`).join(" + ") : (i.locatie || i.omschrijving || "")),
         veld(bedragVoorItem(i).toFixed(2)), veld(i.ingediend ? "Ja" : "Nee"),
       ].join(";"));
     });
@@ -418,7 +648,9 @@ export default function DeclaratiesApp() {
                         {item.project}
                       </p>
                       <p style={{ margin: "1px 0 0", fontSize: 11, color: C.muted }}>
-                        {item.persoon} · {formatDatumKort(item.datum)}{item.type==="kilometer" ? ` · ${item.van} → ${item.naar}` : ""}
+                        {item.persoon} · {formatDatumKort(item.datum)}
+                        {item.type==="kilometer" ? ` · ${item.van} → ${item.naar}${item.retour ? " (retour)" : ""}` : ""}
+                        {item.type==="ov" && item.ritten ? ` · ${item.ritten.map(r => vervoermiddelInfo(r.vervoermiddel).icon).join("")}` : ""}
                       </p>
                     </div>
                     <span style={{ fontSize: 13, fontWeight: 700 }}>{formatBedrag(bedragVoorItem(item))}</span>
@@ -473,8 +705,9 @@ export default function DeclaratiesApp() {
                       </div>
                       <p style={{ margin: "2px 0 0", fontSize: 12, color: C.muted }}>
                         {item.persoon} · {formatDatumKort(item.datum)} · Q{kwartaalVan(item.datum)}
-                        {item.type === "kilometer" && ` · ${item.van} → ${item.naar} (${item.km} km × €${(item.tarief??KM_TARIEF).toFixed(2)})`}
-                        {(item.type === "parkeren" || item.type === "ov") && item.locatie && ` · ${item.locatie}`}
+                        {item.type === "kilometer" && ` · ${item.van} → ${item.naar}${item.retour ? " (retour)" : ""} · ${kmVoorItem(item)} km × €${(item.tarief??KM_TARIEF).toFixed(2)}`}
+                        {item.type === "parkeren" && item.locatie && ` · ${item.locatie}`}
+                        {item.type === "ov" && item.ritten && ` · ${item.ritten.map(r => vervoermiddelInfo(r.vervoermiddel).icon).join("")} (${item.ritten.length} traject${item.ritten.length===1?"":"delen"})`}
                         {item.type === "overig" && item.omschrijving && ` · ${item.omschrijving}`}
                       </p>
                       {item.ingediend && (
@@ -558,15 +791,21 @@ export default function DeclaratiesApp() {
             {form.type === "kilometer" && (
               <>
                 <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Van</label>
-                <input style={{ ...S.inp, marginBottom: 12 }} placeholder="Vertrekadres of plaats" value={form.van}
-                  onChange={e => setForm(f => ({ ...f, van: e.target.value }))} />
+                <div style={{ marginBottom: 12 }}>
+                  <AdresInvoer waarde={form.van} placeholder="Vertrekadres of plaats"
+                    favorieten={berekenLocatieFavorieten(items, "kilometer", "van")}
+                    onWijzig={(tekst, coords) => setForm(f => ({ ...f, van: tekst, vanCoords: coords }))} />
+                </div>
 
                 <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Naar</label>
-                <input style={{ ...S.inp, marginBottom: 12 }} placeholder="Bestemmingsadres of plaats" value={form.naar}
-                  onChange={e => setForm(f => ({ ...f, naar: e.target.value }))} />
+                <div style={{ marginBottom: 12 }}>
+                  <AdresInvoer waarde={form.naar} placeholder="Bestemmingsadres of plaats"
+                    favorieten={berekenLocatieFavorieten(items, "kilometer", "naar")}
+                    onWijzig={(tekst, coords) => setForm(f => ({ ...f, naar: tekst, naarCoords: coords }))} />
+                </div>
 
-                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Aantal kilometers</label>
-                <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Aantal kilometers (enkele reis)</label>
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                   <input type="number" style={S.inp} placeholder="bv. 42.5" value={form.km}
                     onChange={e => setForm(f => ({ ...f, km: e.target.value }))} />
                   <button type="button" onClick={berekenAfstandVoorForm} disabled={afstandLaden}
@@ -575,24 +814,43 @@ export default function DeclaratiesApp() {
                   </button>
                 </div>
                 {afstandFout && <p style={{ fontSize: 11, color: C.red, margin: "0 0 8px" }}>{afstandFout}</p>}
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Reistype</label>
+                <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                  <button type="button" style={{ flex: 1, ...S.chip(!form.retour), textAlign: "center", padding: "10px 0" }}
+                    onClick={() => setForm(f => ({ ...f, retour: false }))}>
+                    Enkele reis
+                  </button>
+                  <button type="button" style={{ flex: 1, ...S.chip(!!form.retour), textAlign: "center", padding: "10px 0" }}
+                    onClick={() => setForm(f => ({ ...f, retour: true }))}>
+                    Retour (×2)
+                  </button>
+                </div>
                 {form.km && (
-                  <p style={{ fontSize: 12, color: C.muted, margin: "0 0 12px" }}>
-                    {form.km} km × €{KM_TARIEF.toFixed(2)} = <strong>{formatBedrag((+form.km||0) * KM_TARIEF)}</strong>
+                  <p style={{ fontSize: 12, color: C.muted, margin: "8px 0 12px" }}>
+                    {form.retour ? `${form.km} km × 2 (retour)` : `${form.km} km`} × €{KM_TARIEF.toFixed(2)} = <strong>{formatBedrag((+form.km||0) * (form.retour?2:1) * KM_TARIEF)}</strong>
                   </p>
                 )}
               </>
             )}
 
-            {(form.type === "parkeren" || form.type === "ov") && (
+            {form.type === "parkeren" && (
               <>
                 <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Waar</label>
-                <input style={{ ...S.inp, marginBottom: 12 }} placeholder={form.type === "parkeren" ? "bv. Parkeergarage Centrum" : "bv. NS Tilburg → Utrecht"} value={form.locatie}
-                  onChange={e => setForm(f => ({ ...f, locatie: e.target.value }))} />
+                <div style={{ marginBottom: 12 }}>
+                  <AdresInvoer waarde={form.locatie} placeholder="bv. Parkeergarage Centrum"
+                    favorieten={berekenLocatieFavorieten(items, "parkeren", "locatie")}
+                    onWijzig={tekst => setForm(f => ({ ...f, locatie: tekst }))} />
+                </div>
 
                 <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Bedrag</label>
                 <input type="number" step="0.01" style={{ ...S.inp, marginBottom: 12 }} placeholder="€ 0,00" value={form.bedrag}
                   onChange={e => setForm(f => ({ ...f, bedrag: e.target.value }))} />
               </>
+            )}
+
+            {form.type === "ov" && (
+              <OvTrajectInvoer form={form} setForm={setForm} favorieten={berekenOvOmschrijvingFavorieten(items)} />
             )}
 
             {form.type === "overig" && (
