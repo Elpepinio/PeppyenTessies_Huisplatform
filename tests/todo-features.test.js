@@ -37,9 +37,10 @@ test("een verdere datum geeft een normale datumtekst (geen crash, iets van tekst
 sectie("Sortering op vervaldatum — items zonder datum altijd achteraan");
 function sorteerAlfabetisch(a, b) { return a.name.localeCompare(b.name, "nl", { sensitivity: "base" }); }
 function sorteerOpVervaldatum(a, b) { return (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || sorteerAlfabetisch(a, b); }
+const overTienDagen = datumNaarStr(new Date(Date.now() + 10 * 86400000));
 const taken = [
   { name: "Zonder datum A", dueDate: null },
-  { name: "Later", dueDate: "2026-09-01" },
+  { name: "Later", dueDate: overTienDagen },
   { name: "Vandaag", dueDate: vandaag },
   { name: "Zonder datum B", dueDate: null },
 ];

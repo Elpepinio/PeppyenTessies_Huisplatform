@@ -142,6 +142,13 @@ const TOOLS = [
     color: "#5B9BD5",
   },
   {
+    href: "/declaraties",
+    label: "Declaraties",
+    description: "Kilometers, parkeren, OV en overige kosten bijhouden",
+    emoji: "🧾",
+    color: "#8A6FB0",
+  },
+  {
     href: "/bonnetjes",
     label: "Bonnetjes",
     description: "Aankoopbonnetjes scannen, garantie bijhouden en terugvinden",

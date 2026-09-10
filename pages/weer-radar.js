@@ -73,22 +73,42 @@ export default function WeerRadarApp() {
 
   // ── Neerslag-grafiekdata ophalen — Open-Meteo's 15-minuten-resolutie is
   //    een betrouwbaardere bron voor "hoeveel regen komt eraan" dan
-  //    RainViewer's nowcast, die in de praktijk vaak leeg blijkt te zijn. ──
+  //    RainViewer's nowcast, die in de praktijk vaak leeg blijkt te zijn.
+  //    Als de 15-minuten-data om wat voor reden dan ook niet beschikbaar is
+  //    (bv. tijdelijk een probleem bij de bron), valt dit terug op de
+  //    gewone uurlijkse voorspelling — die is vrijwel altijd beschikbaar,
+  //    zodat de grafiek niet als geheel uitvalt. ─────────────────────────
   useEffect(() => {
     if (!positie) return;
     let actief = true;
-    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${positie.lat}&longitude=${positie.lon}&current=wind_speed_10m,wind_direction_10m&minutely_15=precipitation&forecast_minutely_15=32&timezone=auto`)
-      .then(r => r.json())
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${positie.lat}&longitude=${positie.lon}&current=wind_speed_10m,wind_direction_10m&minutely_15=precipitation&hourly=precipitation&forecast_minutely_15=32&forecast_hours=8&timezone=auto`)
+      .then(async r => {
+        const data = await r.json();
+        if (!r.ok || data.error) throw new Error(data.reason || `Open-Meteo gaf een fout (status ${r.status})`);
+        return data;
+      })
       .then(data => {
         if (!actief) return;
         if (data.current) setWind({ snelheid: data.current.wind_speed_10m, richting: data.current.wind_direction_10m });
-        if (!data.minutely_15?.time) { setGrafiekFout("Geen neerslagvoorspelling beschikbaar voor deze locatie."); return; }
-        setGrafiekData(data.minutely_15.time.map((t, i) => ({
-          tijd: new Date(t),
-          neerslag: data.minutely_15.precipitation[i] ?? 0,
-        })));
+
+        if (data.minutely_15?.time?.length > 0) {
+          setGrafiekData(data.minutely_15.time.map((t, i) => ({
+            tijd: new Date(t),
+            neerslag: data.minutely_15.precipitation[i] ?? 0,
+          })));
+        } else if (data.hourly?.time?.length > 0) {
+          // Terugval: uurlijkse data, minder fijnmazig maar wel bijna altijd
+          // beschikbaar — beter dan helemaal niets tonen.
+          setGrafiekData(data.hourly.time.map((t, i) => ({
+            tijd: new Date(t),
+            neerslag: data.hourly.precipitation[i] ?? 0,
+          })));
+          setGrafiekFout("Alleen uurlijkse data beschikbaar voor deze locatie (geen 15-minuten-resolutie).");
+        } else {
+          setGrafiekFout("Geen neerslagvoorspelling beschikbaar voor deze locatie.");
+        }
       })
-      .catch(() => { if (actief) setGrafiekFout("Kon de neerslagvoorspelling niet ophalen."); });
+      .catch(e => { if (actief) setGrafiekFout(`Kon de neerslagvoorspelling niet ophalen: ${e.message}`); });
     return () => { actief = false; };
   }, [positie]);
 
@@ -329,7 +349,7 @@ export default function WeerRadarApp() {
 // grafiekweergave. Gebruikt Open-Meteo i.p.v. RainViewer's nowcast, want die
 // laatste bleek in de praktijk voor deze locatie leeg te zijn.
 function NeerslagGrafiek({ data, fout }) {
-  if (fout) return <p style={{ textAlign: "center", color: "#E0684F", fontSize: 13, padding: 20 }}>{fout}</p>;
+  if (fout && !data) return <p style={{ textAlign: "center", color: "#E0684F", fontSize: 13, padding: 20 }}>{fout}</p>;
   if (!data) return <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 20 }}>Grafiek laden…</p>;
 
   const chartData = data.map(d => ({
@@ -341,6 +361,11 @@ function NeerslagGrafiek({ data, fout }) {
 
   return (
     <div style={{ padding: "4px 20px 24px" }}>
+      {fout && (
+        <p style={{ margin: "0 0 10px", fontSize: 11.5, color: "#F2A93B", background: "rgba(242,169,59,0.12)", border: "1px solid rgba(242,169,59,0.3)", borderRadius: 10, padding: "8px 12px" }}>
+          ⚠️ {fout}
+        </p>
+      )}
       <p style={{ margin: "0 0 4px", fontSize: 13, color: C.muted }}>
         {totaalNeerslag < 0.1 ? "Geen neerslag verwacht de komende uren" : `Totaal ${totaalNeerslag.toFixed(1)} mm verwacht de komende uren`}
       </p>
