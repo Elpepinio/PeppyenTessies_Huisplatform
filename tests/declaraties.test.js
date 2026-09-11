@@ -3,10 +3,13 @@ const { sectie, test, samenvatting } = require("./testhulp.js");
 
 sectie("Declaraties — geëxtraheerd uit de echte broncode van declaraties.js");
 
-const { kwartaalVan, bedragVoorItem, kmVoorItem, berekenPeriodeBereik, vandaagStr, persoonKleur, berekenLocatieFavorieten, berekenOvOmschrijvingFavorieten } = laadFuncties("../pages/declaraties.js", [
+const { kwartaalVan, bedragVoorItem, kmVoorItem, berekenPeriodeBereik, vandaagStr, persoonKleur, berekenLocatieFavorieten, berekenOvOmschrijvingFavorieten, naamVoorFavoriet } = laadFuncties("../pages/declaraties.js", [
   /const KM_TARIEF = /,
   /const PERSONEN = /,
+  /const VERVOERMIDDELEN = /,
+  /function vervoermiddelInfo\(id\)/,
   /function persoonKleur\(naam\)/,
+  /function naamVoorFavoriet\(item\)/,
   /function vandaagStr\(\)/,
   /function kwartaalVan\(datumStr\)/,
   /function bedragVoorItem\(item\)/,
@@ -15,6 +18,17 @@ const { kwartaalVan, bedragVoorItem, kmVoorItem, berekenPeriodeBereik, vandaagSt
   /function berekenOvOmschrijvingFavorieten\(items, max = 6\)/,
   /function berekenPeriodeBereik\(preset, jaar\)/,
 ]);
+
+sectie("Favorieten — leesbare naam per declaratietype");
+test("kilometer-favoriet toont van → naar, met (retour) indien van toepassing",
+  naamVoorFavoriet({ type:"kilometer", van:"Huis", naar:"Klant X", retour:true }) === "Huis → Klant X (retour)");
+test("kilometer-favoriet zonder retour laat dat achterwege",
+  naamVoorFavoriet({ type:"kilometer", van:"Huis", naar:"Klant X", retour:false }) === "Huis → Klant X");
+test("parkeren-favoriet toont de locatie", naamVoorFavoriet({ type:"parkeren", locatie:"Garage Centrum" }) === "Garage Centrum");
+test("OV-favoriet toont de vervoermiddel-iconen van alle trajectdelen op een rij",
+  naamVoorFavoriet({ type:"ov", ritten:[{vervoermiddel:"trein"},{vervoermiddel:"ovfiets"},{vervoermiddel:"trein"}], project:"Project Y" }) === "🚆🚲🚆 · Project Y");
+test("overig-favoriet valt terug op de omschrijving", naamVoorFavoriet({ type:"overig", omschrijving:"Zakelijk etentje" }) === "Zakelijk etentje");
+test("een favoriet zonder enige herkenbare tekst crasht niet, geeft een nette terugval", typeof naamVoorFavoriet({ type:"overig" }) === "string");
 
 sectie("OV — meerdere trajectdelen per declaratie (trein heen, OV-fiets, trein terug, bus terug)");
 const ovMetVierDelen = {

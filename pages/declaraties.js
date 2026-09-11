@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { ChevronLeft, Plus, X, Car, ParkingSquare, Bus, Receipt, Trash2, Pencil, Check, Download, Calculator } from "lucide-react";
+import { ChevronLeft, Plus, X, Car, ParkingSquare, Bus, Receipt, Trash2, Pencil, Check, Download, Calculator, Star } from "lucide-react";
 
 // ── Constanten ────────────────────────────────────────────
 // Belastingdienst-vrijstelling voor zakelijke kilometers met eigen vervoer.
@@ -121,6 +121,18 @@ function berekenPeriodeBereik(preset, jaar) {
 // binnen een bepaald declaratietype — zodat veelgebruikte trajecten als
 // snelkeuze aangeboden kunnen worden i.p.v. steeds het volledige adres
 // opnieuw te moeten intypen. Gesorteerd op frequentie, dan op meest recent.
+// Genereert een leesbare, herkenbare naam voor een favoriet op basis van
+// het type declaratie — zodat je in de lijst meteen ziet welk sjabloon
+// welke rit voorstelt, zonder dat je zelf een naam hoeft te verzinnen.
+function naamVoorFavoriet(item) {
+  if (item.type === "kilometer") return `${item.van} → ${item.naar}${item.retour ? " (retour)" : ""}`;
+  if (item.type === "parkeren") return item.locatie || "Parkeren";
+  if (item.type === "ov" && item.ritten?.length) {
+    return item.ritten.map(r => vervoermiddelInfo(r.vervoermiddel).icon).join("") + (item.project ? ` · ${item.project}` : "");
+  }
+  return item.omschrijving || item.project || "Declaratie";
+}
+
 function berekenLocatieFavorieten(items, type, veld, max = 6) {
   const telling = {};
   items.forEach(i => {
@@ -225,9 +237,18 @@ function AdresInvoer({ waarde, onWijzig, placeholder, favorieten }) {
     // redelijk gebruik.
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(tekst)}`);
-        const data = await res.json();
-        setSuggesties(data);
+        // Twee aanvragen tegelijk: Nederland als voorrangsresultaten, plus
+        // wereldwijd voor het geval een adres/bedrijf niet in NL ligt (de
+        // meeste ritten zijn binnenlands, maar niet allemaal). Nederlandse
+        // treffers komen eerst, aangevuld met de rest, zonder dubbelingen.
+        const [nlRes, wereldRes] = await Promise.all([
+          fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=nl&q=${encodeURIComponent(tekst)}`),
+          fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(tekst)}`),
+        ]);
+        const [nlData, wereldData] = await Promise.all([nlRes.json(), wereldRes.json()]);
+        const nlIds = new Set(nlData.map(r => r.place_id));
+        const aanvulling = wereldData.filter(r => !nlIds.has(r.place_id));
+        setSuggesties([...nlData, ...aanvulling].slice(0, 6));
       } catch { setSuggesties([]); }
       setZoekBezig(false);
     }, 400);
@@ -355,6 +376,7 @@ function OvTrajectInvoer({ form, setForm, favorieten }) {
 
 export default function DeclaratiesApp() {
   const [items, setItems] = useState([]);
+  const [favorieten, setFavorieten] = useState([]);
   const [laden, setLaden] = useState(true);
   const [jaar, setJaar] = useState(new Date().getFullYear());
   const [persoonFilter, setPersoonFilter] = useState(null); // null = iedereen
@@ -380,6 +402,7 @@ export default function DeclaratiesApp() {
     fetch("/api/declaraties").then(r => r.json()).then(data => {
       if (!actief) return;
       setItems(data.items || []);
+      setFavorieten(data.favorieten || []);
       setLaden(false);
     }).catch(() => setLaden(false));
 
@@ -390,24 +413,53 @@ export default function DeclaratiesApp() {
         const res = await fetch("/api/declaraties");
         const data = await res.json();
         if (lastWriteRef.current > aanvraagGestart) return;
-        if (actief) setItems(data.items || []);
+        if (actief) { setItems(data.items || []); setFavorieten(data.favorieten || []); }
       } catch {}
     }, 8000);
     return () => { actief = false; clearInterval(interval); };
   }, []);
 
-  function persist(nextItems) {
+  // Slaat items én favorieten altijd sámen op — de API overschrijft het
+  // hele record, dus los opslaan zou het andere veld per ongeluk leegmaken.
+  function persist(nextItems, nextFavorieten) {
     lastWriteRef.current = Date.now();
-    setItems(nextItems);
+    const items2 = nextItems !== undefined ? nextItems : items;
+    const favorieten2 = nextFavorieten !== undefined ? nextFavorieten : favorieten;
+    setItems(items2);
+    setFavorieten(favorieten2);
     fetch("/api/declaraties", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: nextItems }),
+      body: JSON.stringify({ items: items2, favorieten: favorieten2 }),
     }).catch(() => {});
   }
 
   function kiesType(type) {
     setForm(LEEG_FORM(type, laatstGebruiktePersoon));
+    setEditId(null);
+    setAfstandFout(null);
+    setShowTypeKiezer(false);
+    setShowForm(true);
+  }
+
+  // Een favoriet is een volledig sjabloon van een declaratie — alles behalve
+  // de datum en de ingediend-status, want dat is precies wat er verandert
+  // als je "voor veel dezelfde ritten" steeds opnieuw hetzelfde invoert.
+  function maakFavorietVanItem(item) {
+    const { id, datum, ingediend, ingediendOp, toegevoegdOp, ...sjabloon } = item;
+    const nieuweFavoriet = { ...sjabloon, id: uid(), naam: naamVoorFavoriet(item) };
+    persist(undefined, [...favorieten, nieuweFavoriet]);
+    showToast("⭐ Bewaard als favoriet");
+  }
+
+  function verwijderFavoriet(id) {
+    if (!window.confirm("Deze favoriet verwijderen?")) return;
+    persist(undefined, favorieten.filter(f => f.id !== id));
+  }
+
+  function gebruikFavoriet(favoriet) {
+    const { id, naam, ...sjabloon } = favoriet;
+    setForm({ ...LEEG_FORM(favoriet.type, favoriet.persoon || laatstGebruiktePersoon), ...sjabloon, datum: vandaagStr() });
     setEditId(null);
     setAfstandFout(null);
     setShowTypeKiezer(false);
@@ -718,6 +770,9 @@ export default function DeclaratiesApp() {
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                    <button style={{ ...S.btn(C.card, "#C97D0C"), border: `1px solid ${C.border}`, fontSize: 11, padding: "6px 10px" }} onClick={() => maakFavorietVanItem(item)} title="Bewaar als favoriet">
+                      <Star size={11} />
+                    </button>
                     <button style={{ ...S.btn(C.card, C.text), border: `1px solid ${C.border}`, fontSize: 11, padding: "6px 10px" }} onClick={() => bewerkItem(item)}>
                       <Pencil size={11} style={{ verticalAlign: "middle", marginRight: 3 }} />Bewerk
                     </button>
@@ -743,6 +798,26 @@ export default function DeclaratiesApp() {
                 <X size={20} color={C.muted} />
               </button>
             </div>
+
+            {favorieten.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700, color: "#C97D0C", textTransform: "uppercase", letterSpacing: "0.03em" }}>⭐ Favorieten</p>
+                {favorieten.map(f => (
+                  <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 12px", marginBottom: 6 }}>
+                    <span style={{ fontSize: 18 }}>{typeInfo(f.type).icon}</span>
+                    <button onClick={() => gebruikFavoriet(f)} style={{ flex: 1, minWidth: 0, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.naam}</p>
+                      <p style={{ margin: "1px 0 0", fontSize: 11, color: C.muted }}>{f.project}{f.persoon ? ` · ${f.persoon}` : ""}</p>
+                    </button>
+                    <button onClick={() => verwijderFavoriet(f.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                      <X size={14} color={C.muted} />
+                    </button>
+                  </div>
+                ))}
+                <p style={{ margin: "8px 0 0", fontSize: 12, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>Of nieuw type</p>
+              </div>
+            )}
+
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               {DECLARATIE_TYPES.map(t => (
                 <button key={t.id} onClick={() => kiesType(t.id)}
