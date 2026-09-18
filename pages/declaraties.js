@@ -389,10 +389,16 @@ export default function DeclaratiesApp() {
   const [afstandFout, setAfstandFout] = useState(null);
   const [selectieModus, setSelectieModus] = useState(false);
   const [selectiePreset, setSelectiePreset] = useState("dit-kwartaal");
+  const [selectieToonModus, setSelectieToonModus] = useState("openstaand"); // "openstaand" | "ingediend"
   const [aangepastVan, setAangepastVan] = useState("");
   const [aangepastTot, setAangepastTot] = useState("");
   const [uitgeslotenIds, setUitgeslotenIds] = useState(new Set());
   const [toast, setToast] = useState(null);
+  const [sjablonen, setSjablonen] = useState({});
+  const [showSjabloonBeheer, setShowSjabloonBeheer] = useState(false);
+  const [volledigeNaamInvoer, setVolledigeNaamInvoer] = useState("");
+  const [sjabloonUploadBezig, setSjabloonUploadBezig] = useState(false);
+  const [xlsxBezig, setXlsxBezig] = useState(false);
   const lastWriteRef = useRef(0);
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2600); }
@@ -405,6 +411,7 @@ export default function DeclaratiesApp() {
       setFavorieten(data.favorieten || []);
       setLaden(false);
     }).catch(() => setLaden(false));
+    fetch("/api/declaraties-sjabloon").then(r => r.json()).then(data => { if (actief) setSjablonen(data || {}); }).catch(() => {});
 
     const interval = setInterval(async () => {
       if (Date.now() - lastWriteRef.current < 5000) return;
@@ -542,8 +549,18 @@ export default function DeclaratiesApp() {
     : berekenPeriodeBereik(selectiePreset, jaar);
 
   const nogNietIngediendDitJaar = items.filter(i => !i.ingediend && i.datum?.startsWith(String(jaar)) && (!persoonFilter || i.persoon === persoonFilter));
+  // De selectie kan zowel over nog-openstaande als over al-ingediende
+  // declaraties gaan — dat laatste is nodig om een declaratieformulier
+  // achteraf nog eens te kunnen genereren (bv. kwijtgeraakt, of een
+  // correctie). Losstaand van nogNietIngediendDitJaar hierboven, want die
+  // voedt elders (het jaaroverzicht) altijd het échte openstaande bedrag,
+  // ongeacht welke modus hier gekozen is.
+  const selectieBronItems = items.filter(i =>
+    (selectieToonModus === "openstaand" ? !i.ingediend : i.ingediend) &&
+    i.datum?.startsWith(String(jaar)) && (!persoonFilter || i.persoon === persoonFilter)
+  );
   const selectieItems = periodeBereik
-    ? nogNietIngediendDitJaar.filter(i => i.datum >= periodeBereik.van && i.datum <= periodeBereik.tot && !uitgeslotenIds.has(i.id))
+    ? selectieBronItems.filter(i => i.datum >= periodeBereik.van && i.datum <= periodeBereik.tot && !uitgeslotenIds.has(i.id))
     : [];
   const selectieTotaal = selectieItems.reduce((s,i) => s + bedragVoorItem(i), 0);
 
@@ -554,6 +571,66 @@ export default function DeclaratiesApp() {
     persist(items.map(i => idsInSelectie.has(i.id) ? { ...i, ingediend: true, ingediendOp: nu } : i));
     setUitgeslotenIds(new Set());
     showToast(`✅ ${selectieItems.length} declaratie${selectieItems.length===1?"":"s"} gemarkeerd als ingediend`);
+  }
+
+  // ── Declaratieformulier-sjabloon (.xlsx) ────────────────────────────────
+  async function uploadSjabloon(persoon, bestand, volledigeNaam) {
+    setSjabloonUploadBezig(true);
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(",")[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(bestand);
+      });
+      const res = await fetch("/api/declaraties-sjabloon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ persoon, bestandsnaam: bestand.name, volledigeNaam, base64 }),
+      });
+      if (!res.ok) throw new Error();
+      setSjablonen(s => ({ ...s, [persoon]: { bestandsnaam: bestand.name, volledigeNaam } }));
+      showToast(`✅ Sjabloon opgeslagen voor ${persoon}`);
+    } catch {
+      showToast("⚠️ Uploaden van het sjabloon is mislukt");
+    }
+    setSjabloonUploadBezig(false);
+  }
+
+  function verwijderSjabloon(persoon) {
+    if (!window.confirm(`Sjabloon voor ${persoon} verwijderen?`)) return;
+    fetch("/api/declaraties-sjabloon", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ persoon }),
+    }).catch(() => {});
+    setSjablonen(s => { const kopie = { ...s }; delete kopie[persoon]; return kopie; });
+  }
+
+  // Vult het opgeslagen sjabloon van de gekozen persoon met de huidige
+  // selectie, en biedt het resultaat direct als download aan.
+  async function genereerXlsx(persoon, teExporterenItems) {
+    setXlsxBezig(true);
+    try {
+      const res = await fetch("/api/declaraties-xlsx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ persoon, items: teExporterenItems }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Onbekende fout");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `declaratieformulier-${persoon}-${vandaagStr()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showToast(`⚠️ ${e.message}`);
+    }
+    setXlsxBezig(false);
   }
 
   function exporteerSelectieCsv() {
@@ -603,6 +680,11 @@ export default function DeclaratiesApp() {
           <Link href="/" style={S.switchBtn}><ChevronLeft size={13} style={{ verticalAlign: "middle" }} /> Terug</Link>
           <h1 style={S.title}>🧾 Declaraties</h1>
         </div>
+        <button onClick={() => setShowSjabloonBeheer(true)}
+          style={{ background: C.surf, border: `1px solid ${C.border}`, borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+          title="Declaratieformulier-sjabloon beheren">
+          <span style={{ fontSize: 16 }}>📄</span>
+        </button>
       </header>
 
       <main style={S.main}>
@@ -668,12 +750,27 @@ export default function DeclaratiesApp() {
 
         {/* Selectie-voor-indienen knop */}
         <button style={{ ...S.btn(selectieModus ? C.card : C.accent, selectieModus ? C.text : "#FFF"), width: "100%", marginBottom: 14, border: selectieModus ? `1px solid ${C.border}` : "none" }}
-          onClick={() => { setSelectieModus(v => !v); setUitgeslotenIds(new Set()); }}>
-          {selectieModus ? "✕ Selectie sluiten" : "📋 Selectie maken voor indienen"}
+          onClick={() => { setSelectieModus(v => !v); setUitgeslotenIds(new Set()); setSelectieToonModus("openstaand"); }}>          {selectieModus ? "✕ Selectie sluiten" : "📋 Selectie maken voor indienen"}
         </button>
 
         {selectieModus && (
           <div style={{ ...S.card, background: "#2D4A3E08" }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+              <button style={{ flex: 1, ...S.chip(selectieToonModus === "openstaand"), textAlign: "center", padding: "9px 0" }}
+                onClick={() => { setSelectieToonModus("openstaand"); setUitgeslotenIds(new Set()); }}>
+                Nog in te dienen
+              </button>
+              <button style={{ flex: 1, ...S.chip(selectieToonModus === "ingediend"), textAlign: "center", padding: "9px 0" }}
+                onClick={() => { setSelectieToonModus("ingediend"); setUitgeslotenIds(new Set()); }}>
+                Al ingediend
+              </button>
+            </div>
+            {selectieToonModus === "ingediend" && (
+              <p style={{ fontSize: 11, color: C.muted, margin: "-4px 0 10px" }}>
+                Handig om een declaratieformulier achteraf nog eens te downloaden — deze declaraties tellen niet meer mee bij "Markeer als ingediend".
+              </p>
+            )}
+
             <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700, color: C.accentDark }}>Periode</p>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
               {[["deze-maand","Deze maand"],["vorige-maand","Vorige maand"],["dit-kwartaal","Dit kwartaal"],["vorig-kwartaal","Vorig kwartaal"],["aangepast","Aangepast"]].map(([id,label]) => (
@@ -688,7 +785,7 @@ export default function DeclaratiesApp() {
             )}
 
             {selectieItems.length === 0 ? (
-              <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>Geen openstaande declaraties in deze periode.</p>
+              <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>{selectieToonModus === "openstaand" ? "Geen openstaande declaraties in deze periode." : "Geen ingediende declaraties in deze periode."}</p>
             ) : (
               <>
                 {selectieItems.map(item => (
@@ -718,10 +815,28 @@ export default function DeclaratiesApp() {
                   <button style={{ ...S.btn(C.card, C.text), flex: 1, border: `1px solid ${C.border}`, fontSize: 12, padding: "10px 0" }} onClick={exporteerSelectieCsv}>
                     <Download size={13} style={{ verticalAlign: "middle", marginRight: 4 }} />CSV
                   </button>
-                  <button style={{ ...S.btn(), flex: 2, fontSize: 13 }} onClick={markeerAlsIngediend}>
-                    <Check size={14} style={{ verticalAlign: "middle", marginRight: 4 }} />Markeer als ingediend
-                  </button>
+                  {selectieToonModus === "openstaand" && (
+                    <button style={{ ...S.btn(), flex: 2, fontSize: 13 }} onClick={markeerAlsIngediend}>
+                      <Check size={14} style={{ verticalAlign: "middle", marginRight: 4 }} />Markeer als ingediend
+                    </button>
+                  )}
                 </div>
+                {(() => {
+                  const persoonInSelectie = [...new Set(selectieItems.map(i => i.persoon))];
+                  if (persoonInSelectie.length !== 1) {
+                    return <p style={{ fontSize: 11, color: C.muted, margin: "8px 0 0" }}>Filter op één persoon om een ingevuld declaratieformulier (.xlsx) te downloaden.</p>;
+                  }
+                  const enigePersoon = persoonInSelectie[0];
+                  if (!sjablonen[enigePersoon]) {
+                    return <p style={{ fontSize: 11, color: C.muted, margin: "8px 0 0" }}>Nog geen sjabloon geüpload voor {enigePersoon} — tik op 📄 rechtsboven om er één in te stellen.</p>;
+                  }
+                  return (
+                    <button style={{ ...S.btn(C.card, C.accentDark), width: "100%", border: `1px solid ${C.border}`, fontSize: 12, padding: "9px 0", marginTop: 8 }}
+                      onClick={() => genereerXlsx(enigePersoon, selectieItems)} disabled={xlsxBezig}>
+                      📄 {xlsxBezig ? "Bezig…" : `Declaratieformulier (.xlsx) voor ${enigePersoon}`}
+                    </button>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -786,6 +901,73 @@ export default function DeclaratiesApp() {
           </>
         )}
       </main>
+
+      {showSjabloonBeheer && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", zIndex: 100 }}
+          onClick={() => setShowSjabloonBeheer(false)}>
+          <div style={{ background: C.surf, borderRadius: "20px 20px 0 0", padding: "20px 20px 32px", width: "100%", maxHeight: "88vh", overflowY: "auto" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: C.accentDark }}>📄 Declaratieformulier-sjabloon</h2>
+              <button onClick={() => setShowSjabloonBeheer(false)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                <X size={20} color={C.muted} />
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: C.muted, margin: "0 0 16px" }}>
+              Upload het lege declaratieformulier (.xlsx) van je werkgever — bij het indienen vult de app 'm automatisch met je geselecteerde declaraties en biedt 'm als download aan.
+            </p>
+
+            {PERSONEN.map(p => (
+              <div key={p.id} style={{ ...S.card, marginBottom: 12 }}>
+                <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 700, color: p.kleur }}>{p.id}</p>
+
+                {sjablonen[p.id] ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                    <span style={{ fontSize: 13, color: C.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      ✅ {sjablonen[p.id].bestandsnaam}
+                    </span>
+                    <button onClick={() => verwijderSjabloon(p.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                      <Trash2 size={14} color={C.red} />
+                    </button>
+                  </div>
+                ) : (
+                  <p style={{ fontSize: 12, color: C.muted, margin: "0 0 10px" }}>Nog geen sjabloon geüpload.</p>
+                )}
+
+                <label style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                  Volledige naam (moet exact overeenkomen met de naam in het formulier zelf)
+                </label>
+                <input style={{ ...S.inp, marginBottom: 8, fontSize: 13 }} placeholder={`bv. ${p.id} Achternaam`}
+                  defaultValue={sjablonen[p.id]?.volledigeNaam || ""}
+                  onBlur={e => {
+                    const naam = e.target.value.trim();
+                    if (naam && naam !== sjablonen[p.id]?.volledigeNaam) {
+                      setSjablonen(s => ({ ...s, [p.id]: { ...(s[p.id]||{}), volledigeNaam: naam } }));
+                      fetch("/api/declaraties-sjabloon", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ persoon: p.id, volledigeNaam: naam }),
+                      }).catch(() => {});
+                    }
+                  }} />
+
+                <label style={{ ...S.btn(C.card, C.accentDark), border: `1px solid ${C.border}`, display: "inline-block", fontSize: 12, padding: "8px 14px", cursor: sjabloonUploadBezig ? "default" : "pointer" }}>
+                  {sjabloonUploadBezig ? "Bezig…" : (sjablonen[p.id] ? "Ander bestand uploaden" : "Bestand uploaden (.xlsx)")}
+                  <input type="file" accept=".xlsx" style={{ display: "none" }} disabled={sjabloonUploadBezig}
+                    onChange={e => {
+                      const bestand = e.target.files?.[0];
+                      if (bestand) uploadSjabloon(p.id, bestand, sjablonen[p.id]?.volledigeNaam || "");
+                      e.target.value = "";
+                    }} />
+                </label>
+              </div>
+            ))}
+
+            <p style={{ fontSize: 11, color: C.muted, margin: "8px 0 0" }}>
+              De app schrijft het type, de maand, een omschrijving en het bedrag (kilometers als formule, dus zichtbaar en controleerbaar) in de rijen vanaf regel 12 van het tabblad "Declaratieformulier". Er is ruimte voor maximaal 24 regels per download.
+            </p>
+          </div>
+        </div>
+      )}
 
       {showTypeKiezer && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", zIndex: 100 }}
