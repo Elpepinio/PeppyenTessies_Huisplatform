@@ -149,6 +149,13 @@ const TOOLS = [
     color: "#8A6FB0",
   },
   {
+    href: "/schetsboek",
+    label: "Schetsboek",
+    description: "Gedeeld schetsboek voor creatieve ideeën — tekeningen, tekst, spraak, foto's en video's",
+    emoji: "🎨",
+    color: "#3D7A5C",
+  },
+  {
     href: "/bonnetjes",
     label: "Bonnetjes",
     description: "Aankoopbonnetjes scannen, garantie bijhouden en terugvinden",
