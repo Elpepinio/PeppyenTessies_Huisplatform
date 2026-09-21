@@ -3,7 +3,7 @@ const { sectie, test, samenvatting } = require("./testhulp.js");
 
 sectie("Schetsboek — geëxtraheerd uit de echte broncode van schetsboek.js");
 
-const { formatDuur, schetsTypeInfo, persoonKleur, formatDatumKort, schetsMatcht } = laadFuncties("../pages/schetsboek.js", [
+const { formatDuur, schetsTypeInfo, persoonKleur, formatDatumKort, schetsMatcht, kortTekstIn } = laadFuncties("../pages/schetsboek.js", [
   /const PERSONEN = /,
   /function persoonKleur\(naam\)/,
   /const SCHETS_TYPES = /,
@@ -11,6 +11,7 @@ const { formatDuur, schetsTypeInfo, persoonKleur, formatDatumKort, schetsMatcht 
   /function formatDatumKort\(datumStr\)/,
   /function formatDuur\(sec\)/,
   /function schetsMatcht\(schets, term\)/,
+  /function kortTekstIn\(tekst, max = 90\)/,
 ]);
 
 sectie("Duur-formattering (spraakberichten/video's)");
@@ -41,5 +42,13 @@ test("matcht op de tekst-inhoud", schetsMatcht({ titel: "", tekst: "Er was eens 
 test("ongevoelig voor hoofdletters", schetsMatcht({ titel: "DRAAK", tekst: "" }, "draak") === true);
 test("geen match als de term nergens in voorkomt", schetsMatcht({ titel: "Draak", tekst: "vuur" }, "prinses") === false);
 test("ontbrekende titel/tekst crasht niet", schetsMatcht({}, "iets") === false);
+
+sectie("Tekst-schetsen inkorten — voorkomt dat lange tekst buiten een kaart loopt");
+test("een lang kinderboekverhaal wordt ingekort tot maximaal 91 tekens (90 + '…')",
+  kortTekstIn("Pagina 1 Krok ligt in zijn bad, met schuim op zijn neus. De nacht is stil en hij is helemaal alleen. Pagina 2 Alleen slapen vindt Krok eng.").length === 91);
+test("korte tekst blijft volledig ongewijzigd", kortTekstIn("Kort ideetje") === "Kort ideetje");
+test("lege of ontbrekende tekst crasht niet, geeft een lege string", kortTekstIn(undefined) === "" && kortTekstIn("") === "");
+test("exact op de grens blijft ongewijzigd (geen onnodige '…')", kortTekstIn("a".repeat(90)).length === 90 && !kortTekstIn("a".repeat(90)).endsWith("…"));
+test("net over de grens wordt wél ingekort, met '…' erachter", kortTekstIn("a".repeat(91)).endsWith("…"));
 
 samenvatting();

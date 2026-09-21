@@ -55,6 +55,15 @@ function schetsMatcht(schets, term) {
   return (schets.titel || "").toLowerCase().includes(zoek) || (schets.tekst || "").toLowerCase().includes(zoek);
 }
 
+// Kort tekst in JavaScript zelf in i.p.v. te vertrouwen op CSS-trucjes zoals
+// -webkit-line-clamp — die bleek in de praktijk niet altijd te werken,
+// waardoor lange tekst-schetsen ongehinderd buiten hun kaart konden lopen.
+// Een afgekapte string in de DOM kan per definitie nooit overlopen.
+function kortTekstIn(tekst, max = 90) {
+  if (!tekst) return "";
+  return tekst.length > max ? tekst.slice(0, max).trimEnd() + "…" : tekst;
+}
+
 // Comprimeert een foto naar een kleine JPEG (dataURL) — zelfde aanpak als
 // elders in de app (Moodboard/Gezondheid), zodat de opslag beheersbaar
 // blijft en niet tegen Vercel's payload-limiet aanloopt.
@@ -978,7 +987,7 @@ export default function SchetsboekApp() {
                     {schets.thumbnail ? (
                       <img src={schets.thumbnail} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                     ) : schets.type === "tekst" ? (
-                      <p style={{ fontSize: 12, color: C.text, padding: 10, margin: 0, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical" }}>{schets.tekst}</p>
+                      <p style={{ fontSize: 12, color: C.text, padding: 10, margin: 0, overflow: "hidden", wordBreak: "break-word" }}>{kortTekstIn(schets.tekst)}</p>
                     ) : (
                       <span style={{ fontSize: 32 }}>{schetsTypeInfo(schets.type).icon}</span>
                     )}
