@@ -422,14 +422,41 @@ function periodLabel(p, maand = NOW_MONTH) {
   return `${mYear}`;
 }
 
+// Projecteert het te verwachten eindbedrag van een MAANDbudget op basis van
+// het huidige dagtempo — alleen zinvol voor de lopende maand (voor
+// afgesloten maanden is er niets meer te voorspellen, en kwartaal-/
+// jaarbudgetten hebben een andere ritmiek). Dit vangt vroeg op wat een kale
+// percentage-balk mist: bij 50% van het budget op dag 10 van een
+// 30-dagenmaand ben je op koers voor een overschrijding, ook al lijkt de
+// balk nog rustig.
+function projecteerEindeMaand(budget, spent, selectedMonth, nowMonth = NOW_MONTH, nu = _now) {
+  if (budget.period !== "maand" || selectedMonth !== nowMonth) return null;
+  const dagenInMaand = new Date(nu.getFullYear(), nu.getMonth()+1, 0).getDate();
+  const dagVanMaand = nu.getDate();
+  if (dagVanMaand === 0 || spent === 0) return null;
+  const projectie = (spent / dagVanMaand) * dagenInMaand;
+  return { projectie, dagenInMaand, dagVanMaand, overschrijding: projectie - budget.amount };
+}
+
 function buildAlerts(expenses, budgets, savingsGoals, incomes, maand = NOW_MONTH, incomeHistory = [], extraInkomsten = []) {
   const alerts = [];
   const totalIncome = totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, maand);
   budgets.forEach(b => {
     const spent = computeSpent(b, expenses, maand);
     const pct = b.amount > 0 ? spent/b.amount : 0;
-    if (spent > b.amount) alerts.push({id:`over-${b.id}`,level:"rood",icon:"🚨",title:`Budget overschreden: ${b.category}`,body:`${euro(spent-b.amount)} meer dan budget van ${euro(b.amount)}.`,tab:"budgetten"});
-    else if (pct > 0.8) alerts.push({id:`warn-${b.id}`,level:"oranje",icon:"⚠️",title:`${b.category} ${Math.round(pct*100)}% vol`,body:`Nog ${euro(b.amount-spent)} resterend.`,tab:"budgetten"});
+    if (spent > b.amount) {
+      alerts.push({id:`over-${b.id}`,level:"rood",icon:"🚨",title:`Budget overschreden: ${b.category}`,body:`${euro(spent-b.amount)} meer dan budget van ${euro(b.amount)}.`,tab:"budgetten"});
+    } else if (pct > 0.8) {
+      alerts.push({id:`warn-${b.id}`,level:"oranje",icon:"⚠️",title:`${b.category} ${Math.round(pct*100)}% vol`,body:`Nog ${euro(b.amount-spent)} resterend.`,tab:"budgetten"});
+    } else {
+      // Nog niet over budget en nog niet eens >80% vol — maar op basis van
+      // het huidige dagtempo wél al op koers voor een overschrijding. Dit
+      // vangt vroeg in de maand op wat een kale percentage-balk nog mist.
+      const projectie = projecteerEindeMaand(b, spent, maand);
+      if (projectie && projectie.overschrijding > 0) {
+        alerts.push({id:`pace-${b.id}`,level:"oranje",icon:"⏱️",title:`${b.category}: op koers voor overschrijding`,body:`Op dit tempo ${euro(projectie.projectie)} eind maand — ${euro(projectie.overschrijding)} boven budget van ${euro(b.amount)}.`,tab:"budgetten"});
+      }
+    }
   });
   // Categorie-stijging t.o.v. het 6-maands gemiddelde — stabieler dan alleen
   // "vorige maand", waar één eenmalige uitgave (bv. vakantie) al voor een
@@ -852,7 +879,10 @@ export default function BudgetApp() {
   const recurring = useMemo(() => detectRecurring(nettoExpenses), [nettoExpenses]);
 
   const budgetsWithSpent = useMemo(() =>
-    budgets.map(b => ({ ...b, spent: computeSpent(b, nettoExpenses, selectedMonth), pLabel: periodLabel(b.period, selectedMonth) })),
+    budgets.map(b => {
+      const spent = computeSpent(b, nettoExpenses, selectedMonth);
+      return { ...b, spent, pLabel: periodLabel(b.period, selectedMonth), projectie: projecteerEindeMaand(b, spent, selectedMonth) };
+    }),
   [budgets, nettoExpenses, selectedMonth]);
 
   // Terugkerende kosten: expliciet gemarkeerd (fixed/recurring) of 3+ maanden
@@ -1415,8 +1445,8 @@ export default function BudgetApp() {
             <input type="month" value={selectedMonth} max={NOW_MONTH}
               onChange={e => setSelectedMonth(e.target.value)}
               style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.text, fontSize:12, cursor:"pointer" }} />
-            {alerts.filter(a=>a.level==="rood").length > 0 && <span style={{ background:`${C.red}22`, color:C.red, border:`1px solid ${C.red}44`, padding:"3px 9px", borderRadius:20, fontSize:11, fontWeight:700, cursor:"pointer" }} onClick={()=>setTab("meldingen")}>🚨 {alerts.filter(a=>a.level==="rood").length}</span>}
-            {alerts.filter(a=>a.level==="oranje").length > 0 && <span style={{ background:`${C.yellow}22`, color:C.yellow, border:`1px solid ${C.yellow}44`, padding:"3px 9px", borderRadius:20, fontSize:11, fontWeight:700, cursor:"pointer" }} onClick={()=>setTab("meldingen")}>⚠️ {alerts.filter(a=>a.level==="oranje").length}</span>}
+            {alerts.filter(a=>a.level==="rood").length > 0 && <span style={{ background:`${C.red}22`, color:C.red, border:`1px solid ${C.red}44`, padding:"3px 9px", borderRadius:20, fontSize:11, fontWeight:700, cursor:"pointer" }} onClick={()=>setTab("dashboard")}>🚨 {alerts.filter(a=>a.level==="rood").length}</span>}
+            {alerts.filter(a=>a.level==="oranje").length > 0 && <span style={{ background:`${C.yellow}22`, color:C.yellow, border:`1px solid ${C.yellow}44`, padding:"3px 9px", borderRadius:20, fontSize:11, fontWeight:700, cursor:"pointer" }} onClick={()=>setTab("dashboard")}>⚠️ {alerts.filter(a=>a.level==="oranje").length}</span>}
             <button onClick={exporteerCSV} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:12 }}>⬇️ CSV</button>
             <button onClick={() => csvRef.current?.click()} style={{ background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"5px 10px", color:C.muted, cursor:"pointer", fontSize:12 }}>📂 Bank</button>
             <input ref={csvRef} type="file" accept=".csv" style={{ display:"none" }} onChange={e => handleCSV(e.target.files[0])}/>
@@ -1429,7 +1459,7 @@ export default function BudgetApp() {
         {/* ── Tabs ── */}
         <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:4, margin:"12px 0" }}>
           <div style={{ display:"flex", gap:2, background:C.surf, borderRadius:9, padding:3, border:`1px solid ${C.border}`, width:"max-content" }}>
-            {[["dashboard","🏠 Dashboard"],["inzichten","💡 Inzichten"],["uitgaven","💳 Uitgaven"],["bank","🏦 Bank"],[`meldingen`,`🔔${alerts.length > 0 ? " "+alerts.length : ""} Meldingen`],["budgetten","🎯 Budgetten"],["vergelijk","📊 Vergelijk"],["doelen","💰 Doelen"],["taken","✅ Taken"],["afsluiting","📅 Maand"]]
+            {[[`dashboard`,`🏠${alerts.filter(a=>a.level==="rood"||a.level==="oranje").length > 0 ? " "+alerts.filter(a=>a.level==="rood"||a.level==="oranje").length : ""} Dashboard`],["inzichten","📊 Analyse"],["uitgaven","💳 Uitgaven"],["bank","🏦 Bank"],["budgetten","🎯 Budgetten"],["vergelijk","📊 Vergelijk"],["doelen","💰 Doelen"],["taken","✅ Taken"],["afsluiting","📅 Maand"]]
               .map(([t,l]) => <button key={t} style={tabBtn(t)} onClick={() => setTab(t)}>{l}</button>)}
           </div>
         </div>
@@ -1870,84 +1900,6 @@ export default function BudgetApp() {
         )}
 
         {/* ══ MELDINGEN ══ */}
-        {tab === "meldingen" && (
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            <h2 style={{ margin:0, fontSize:15, fontWeight:800, color:C.text }}>🔔 Meldingen</h2>
-            {alerts.length === 0 && (
-              <div style={{ background:C.surf, borderRadius:12, border:`1px solid ${C.green}44`, padding:22, textAlign:"center" }}>
-                <div style={{ fontSize:28, marginBottom:6 }}>✅</div>
-                <div style={{ fontWeight:700, color:C.green }}>Alles ziet er goed uit!</div>
-                <div style={{ fontSize:12, color:C.muted, marginTop:4 }}>Geen overschrijdingen of aandachtspunten.</div>
-              </div>
-            )}
-            {alerts.map(a => {
-              const col = a.level==="rood"?C.red:a.level==="oranje"?C.yellow:a.level==="groen"?C.green:C.muted;
-              const voorstel = a.level==="rood" ? `Bekijk je ${a.title.split(":")[1]?.trim()||""} uitgaven en kijk wat je kunt verminderen.`
-                : a.level==="oranje" && a.id.startsWith("warn-") ? `Je zit op meer dan 80%. Let op de komende uitgaven.`
-                : a.level==="oranje" && a.id.startsWith("rise-") ? `Controleer of dit een eenmalige piek is of een trend.`
-                : a.level==="oranje" && a.id.startsWith("goal-") ? `Overweeg de bijdrage te verhogen of de deadline te verschuiven.`
-                : null;
-              return (
-                <div key={a.id} style={{ background:C.surf, borderRadius:12, border:`1px solid ${col}44`, padding:14 }}>
-                  <div style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
-                    <span style={{ fontSize:20, flexShrink:0 }}>{a.icon}</span>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontWeight:700, fontSize:13, color:C.text, marginBottom:2 }}>{a.title}</div>
-                      <div style={{ fontSize:12, color:C.muted, marginBottom: voorstel?8:0 }}>{a.body}</div>
-                      {voorstel && (
-                        <div style={{ background:`${col}15`, borderRadius:7, padding:"6px 10px", fontSize:12, color:col }}>
-                          💡 {voorstel}
-                        </div>
-                      )}
-                    </div>
-                    {a.tab && (
-                      <button style={{ background:`${col}22`, color:col, border:`1px solid ${col}44`,
-                        borderRadius:7, padding:"4px 9px", cursor:"pointer", fontSize:11, fontWeight:700, flexShrink:0 }}
-                        onClick={() => setTab(a.tab)}>
-                        Bekijk →
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-
-            {terugkerend.length > 0 && (
-              <div style={{ background:C.surf, borderRadius:12, border:`1px solid ${C.border}`, padding:14, marginTop:4 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
-                  <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>↻ Terugkerende uitgaven</h3>
-                  <div style={{ textAlign:"right" }}>
-                    <div style={{ fontWeight:800, fontSize:14, color:C.text }}>{euro(terugkerendTotaal)}/mnd</div>
-                    <div style={{ fontSize:10, color:C.muted }}>≈ {euro(terugkerendTotaal*12)}/jaar</div>
-                  </div>
-                </div>
-                <p style={{ margin:"0 0 10px", fontSize:11, color:C.muted }}>Vast gemarkeerd, "elke maand herhalen" of automatisch herkend (3+ maanden)</p>
-                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
-                  {[{id:"alle", label:"Alle", kleur:C.text}, ...accountOptions.map(a=>({id:a.id, label:a.label, kleur:ACC_COL[a.id]}))].map(f => {
-                    const subtotaal = f.id==="alle" ? terugkerendTotaal : terugkerend.filter(e=>e.account===f.id).reduce((s,e)=>s+e.amount,0);
-                    const actief = terugkerendAccFilter===f.id;
-                    return (
-                      <button key={f.id} onClick={()=>setTerugkerendAccFilter(f.id)}
-                        style={{ padding:"5px 10px", borderRadius:20, border:`1px solid ${actief?f.kleur:C.border}`, background:actief?`${f.kleur}22`:"transparent", color:actief?f.kleur:C.muted, fontSize:11, fontWeight:600, cursor:"pointer" }}>
-                        {f.label} · {euro(subtotaal)}
-                      </button>
-                    );
-                  })}
-                </div>
-                {terugkerend.filter(e => terugkerendAccFilter==="alle" || e.account===terugkerendAccFilter).map(e => (
-                  <div key={e.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
-                    <span style={{ fontSize:13 }}>{CAT_ICON[e.category]||"📦"}</span>
-                    <span style={{ flex:1, fontSize:12, color:C.text }}>{e.name}</span>
-                    <AccountBadge accountId={e.account} names={names} C={C} small/>
-                    {!e.fixed && !e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>patroon</span>}
-                    <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{euro(e.amount)}/mnd</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Note editor overlay */}
         {editNote && (
           <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.6)", zIndex:999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setEditNote(null)}>
@@ -1977,9 +1929,6 @@ export default function BudgetApp() {
           const spaarquote   = totalIncome > 0 ? (totalIncome - totalSpent) / totalIncome : 0;
 
           // ── Boven inkomen / uit reserves ─────────────────────────────────
-          // Gebruikt per maand het toen geldende inkomen (incl. geregistreerde
-          // salarisveranderingen via Instellingen); zonder geregistreerde
-          // wijziging valt het terug op het huidige ingestelde inkomen.
           const reserveMaanden = Array.from({length:12}, (_,i) => {
             const [ry,rm] = selectedMonth.split("-").map(Number);
             const d = new Date(ry, rm-1-11+i, 1);
@@ -2004,30 +1953,7 @@ export default function BudgetApp() {
 
           const tekortDezeMaand = totalIncome - totalSpent;
 
-          // Grootste categorieën deze maand
-          const catNow = {};
-          maandExp.forEach(e => { catNow[e.category] = (catNow[e.category]||0) + e.amount; });
-          const grootsteCats = Object.entries(catNow).sort((a,b) => b[1]-a[1]).slice(0,5);
-
-          // Stijgers & dalers t.o.v. vorige maand
-          const PREV = prevMonth(selectedMonth);
-          const catPrev = {};
-          nettoExpenses.filter(e => e.month === PREV).forEach(e => { catPrev[e.category] = (catPrev[e.category]||0) + e.amount; });
-          const alleCats = new Set([...Object.keys(catNow), ...Object.keys(catPrev)]);
-          const bewegingen = [...alleCats].map(cat => {
-            const nu = catNow[cat]||0, vorig = catPrev[cat]||0;
-            return { cat, nu, vorig, delta: nu - vorig };
-          }).filter(m => Math.abs(m.delta) >= 15 && (m.nu >= 30 || m.vorig >= 30))
-            .sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0,6);
-
-          // Terugkerende kosten: zie de gedeelde `terugkerend`/`terugkerendTotaal`
-          // memo bovenaan het component — gebruikt hier en in Meldingen.
-
-          const attentieAlerts = alerts.filter(a => a.level==="rood" || a.level==="oranje");
-
-          // ── Data voor de nieuwe visuals ──────────────────────────────────
-          // 6 maanden inclusief de geselecteerde maand, chronologisch — basis
-          // voor zowel de gestapelde maandgrafiek als de heatmap.
+          // ── Data voor de gestapelde grafiek en de heatmap ────────────────
           const maandenBereik = Array.from({length:6}, (_,i) => {
             const [y,m] = selectedMonth.split("-").map(Number);
             const d = new Date(y, m-1-i, 1);
@@ -2039,13 +1965,6 @@ export default function BudgetApp() {
           });
           const catRanking = Object.entries(somPerCatBereik).sort((a,b) => b[1]-a[1]).map(([c])=>c);
 
-          // Donut: categorieverdeling deze maand (top 6 + "Overig")
-          const donutRaw = Object.entries(catNow).sort((a,b) => b[1]-a[1]);
-          const donutData = donutRaw.slice(0,6).map(([name,value]) => ({ name, value }));
-          const donutRest = donutRaw.slice(6).reduce((s,[,v]) => s+v, 0);
-          if (donutRest > 0) donutData.push({ name:"Overig", value:donutRest });
-
-          // Gestapelde maandgrafiek: top 5 categorieën uit het 6-maands bereik + "Overig"
           const stackCats = catRanking.slice(0,5);
           const stackData = maandenBereik.map(m => {
             const maandExpM = nettoExpenses.filter(e => e.month===m);
@@ -2055,10 +1974,21 @@ export default function BudgetApp() {
             return row;
           });
 
-          // Heatmap: top 8 categorieën × 6 maanden, kleurintensiteit relatief per categorie
           const heatmapCats = catRanking.slice(0,8);
 
-          // Inkomensverdeling-balk
+          // ── 12-maanden jaaroverzicht ──────────────────────────────────────
+          const jaarMaanden = Array.from({length:12}, (_,i) => {
+            const d = new Date(_now.getFullYear(), _now.getMonth() - 11 + i, 1);
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+          });
+          const jaarData = jaarMaanden.map(m => ({
+            label: fmtM(m),
+            totaal: nettoExpenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
+          }));
+          const jaarTotaal = jaarData.reduce((s,d) => s+d.totaal, 0);
+          const gemiddeld = jaarTotaal / jaarData.length;
+
+          // ── Inkomensverdeling-balk ────────────────────────────────────────
           const overigeUitgaven = Math.max(0, totalSpent - vastTotaal);
           const overschot = totalIncome - totalSpent;
           const inkBasis = Math.max(totalIncome, totalSpent, 1);
@@ -2068,52 +1998,10 @@ export default function BudgetApp() {
             { label: overschot>=0 ? "Gespaard" : "Tekort", bedrag:Math.abs(overschot), kleur: overschot>=0 ? C.green : C.red },
           ].filter(s => s.bedrag > 0);
 
-          // ── Bespaartips ───────────────────────────────────────────────────
-          // Regelgebaseerd, afgeleid van de data die al op dit scherm staat —
-          // geen aparte AI-aanroep nodig.
-          const bespaartips = [];
-          if (tekortDezeMaand < 0) {
-            bespaartips.push({ icon:"🚨", titel:"Je geeft meer uit dan er binnenkomt",
-              tekst:`Deze maand ging er ${euro(Math.abs(tekortDezeMaand))} meer uit dan er binnenkwam. Kijk bij "Grootste categorieën" hierboven waar dat vandaan komt.` });
-          }
-          const STREAMING_NAMEN = ["netflix","hbo max","hbo","disney+","disney plus","videoland","npo plus","spotify","viaplay","amazon prime","prime video"];
-          const streamingItems = terugkerend.filter(e => STREAMING_NAMEN.some(s => e.name.toLowerCase().includes(s)));
-          if (streamingItems.length >= 3) {
-            const streamTotaal = streamingItems.reduce((s,e)=>s+e.amount,0);
-            bespaartips.push({ icon:"📺", titel:`${streamingItems.length} streamingdiensten tegelijk actief`,
-              tekst:`${streamingItems.map(e=>e.name).join(", ")} kosten samen ${euro(streamTotaal)}/mnd (${euro(streamTotaal*12)}/jaar). Overweeg ze afwisselend per maand te gebruiken in plaats van alles tegelijk aan te houden.` });
-          }
-          const duursteAbonnement = terugkerend.filter(e => e.category==="Abonnementen" && !streamingItems.includes(e)).sort((a,b)=>b.amount-a.amount)[0];
-          if (duursteAbonnement && duursteAbonnement.amount >= 15) {
-            bespaartips.push({ icon:"💳", titel:`Duurste losse abonnement: ${duursteAbonnement.name}`,
-              tekst:`${euro(duursteAbonnement.amount)}/mnd ≈ ${euro(duursteAbonnement.amount*12)}/jaar. Nog de moeite waard, of tijd om op te zeggen?` });
-          }
-          const grootsteStijger = bewegingen.filter(m=>m.delta>0)[0];
-          if (grootsteStijger) {
-            bespaartips.push({ icon:"📈", titel:`${grootsteStijger.cat} steeg het meest`,
-              tekst:`Van ${euro(grootsteStijger.vorig)} naar ${euro(grootsteStijger.nu)} t.o.v. ${fmtM(PREV)} — eenmalige piek, of een nieuwe gewoonte?` });
-          }
-          const overBudget = [...budgetsWithSpent].filter(b=>b.spent>b.amount).sort((a,b)=>(b.spent-b.amount)-(a.spent-a.amount))[0];
-          if (overBudget) {
-            bespaartips.push({ icon:"🎯", titel:`Budget overschreden: ${overBudget.category}`,
-              tekst:`${euro(overBudget.spent-overBudget.amount)} boven het ingestelde budget van ${euro(overBudget.amount)}.` });
-          }
-          if (totalIncome > 0 && vastTotaal/totalIncome > 0.5) {
-            bespaartips.push({ icon:"🏠", titel:"Vaste lasten nemen een groot deel van je inkomen in beslag",
-              tekst:`${Math.round(vastTotaal/totalIncome*100)}% van je inkomen gaat naar vaste lasten — de vuistregel is rond de 50%. Check bij Verzekering/Abonnementen of er goedkoper kan.` });
-          }
-          if (totalIncome > 0 && spaarquote < 0.1) {
-            bespaartips.push({ icon:"💰", titel:"Weinig ruimte om te sparen",
-              tekst:`Spaarquote van ${Math.round(spaarquote*100)}% deze maand. Een richtlijn van 10-20% helpt om buffer op te bouwen voor onverwachte kosten.` });
-          }
-          if (bespaartips.length === 0) {
-            bespaartips.push({ icon:"✅", titel:"Niets bijzonders te melden",
-              tekst:"Op basis van de huidige cijfers springt er niets concreets uit om op te besparen. Goed bezig!" });
-          }
-
           return (
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              <h2 style={{ margin:0, fontSize:15, fontWeight:800 }}>💡 Inzichten — {fmtM(selectedMonth)}</h2>
+              <h2 style={{ margin:0, fontSize:15, fontWeight:800 }}>📊 Analyse — {fmtM(selectedMonth)}</h2>
+              <p style={{ margin:0, fontSize:11, color:C.muted }}>Verdieping over meerdere maanden — voor het snelle, dagelijkse overzicht ga je naar 🏠 Dashboard.</p>
 
               {/* Samenvatting */}
               <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:8 }}>
@@ -2161,8 +2049,29 @@ export default function BudgetApp() {
                 </ResponsiveContainer>
                 <p style={{ margin:"8px 0 0", fontSize:10, color:C.muted, lineHeight:1.5 }}>
                   Cumulatief verschil tussen inkomen en uitgaven, laatste 12 maanden. Onder de nullijn = dat bedrag is per saldo uit spaargeld/reserves gekomen.
-                  Houdt rekening met geregistreerde salarisveranderingen (via Instellingen ⚙️) — zonder geregistreerde wijziging wordt het huidige ingestelde inkomen ({euro(totalIncome)}/mnd) aangehouden voor die maand.
                 </p>
+              </div>
+
+              {/* Jaaroverzicht: 12-maanden staafgrafiek */}
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                  <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📊 Jaaroverzicht (laatste 12 maanden)</h3>
+                  <span style={{ fontSize:11, color:C.muted }}>gem. {euro(gemiddeld)}/maand</span>
+                </div>
+                <ResponsiveContainer width="100%" height={160}>
+                  <BarChart data={jaarData} barCategoryGap="20%">
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
+                    <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false}/>
+                    <YAxis tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`€${v}`}/>
+                    <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v)=>[`€${v}`,"Uitgaven"]}/>
+                    <ReferenceLine y={gemiddeld} stroke={C.green} strokeDasharray="4 2" strokeWidth={1.5}/>
+                    <Bar dataKey="totaal" fill={C.accent} radius={[4,4,0,0]}/>
+                  </BarChart>
+                </ResponsiveContainer>
+                <div style={{ display:"flex", justifyContent:"space-between", marginTop:6, fontSize:11, color:C.muted }}>
+                  <span>Totaal 12 maanden: <strong style={{color:C.text}}>{euro(jaarTotaal)}</strong></span>
+                  <span><span style={{display:"inline-block",width:12,height:2,borderBottom:`2px dashed ${C.green}`,marginRight:5,verticalAlign:"middle"}}/>Gemiddelde</span>
+                </div>
               </div>
 
               {/* Inkomensverdeling */}
@@ -2188,91 +2097,6 @@ export default function BudgetApp() {
                     </div>
                   </>
                 )}
-              </div>
-
-              {/* Vraagt aandacht */}
-              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                <h3 style={{ margin:"0 0 9px", fontSize:13, fontWeight:700, color:C.text }}>⚠️ Vraagt aandacht</h3>
-                {attentieAlerts.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Niets dat opvalt — het staat er goed voor. 🎉</div>}
-                {attentieAlerts.map(a => {
-                  const col = a.level==="rood" ? C.red : C.yellow;
-                  return (
-                    <div key={a.id} style={{ display:"flex", alignItems:"center", gap:9, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
-                      <span style={{ fontSize:16 }}>{a.icon}</span>
-                      <div style={{ flex:1 }}>
-                        <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{a.title}</div>
-                        <div style={{ fontSize:11, color:C.muted }}>{a.body}</div>
-                      </div>
-                      {a.tab && <button style={{ background:`${col}22`, color:col, border:`1px solid ${col}44`, borderRadius:7, padding:"3px 8px", cursor:"pointer", fontSize:11, fontWeight:700 }} onClick={()=>setTab(a.tab)}>Bekijk →</button>}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Grootste categorieën */}
-              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                <h3 style={{ margin:"0 0 9px", fontSize:13, fontWeight:700, color:C.text }}>🍩 Categorieverdeling deze maand</h3>
-                {donutData.length === 0 ? (
-                  <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen uitgaven in {fmtM(selectedMonth)}</div>
-                ) : (
-                  <>
-                    <div style={{ position:"relative" }}>
-                      <ResponsiveContainer width="100%" height={190}>
-                        <PieChart>
-                          <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={52} outerRadius={82} paddingAngle={2} strokeWidth={0}>
-                            {donutData.map((d,i) => <Cell key={i} fill={CAT_COL[d.name]||C.muted}/>)}
-                          </Pie>
-                          <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v,n)=>[euro(v),n]}/>
-                        </PieChart>
-                      </ResponsiveContainer>
-                      <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)", textAlign:"center", pointerEvents:"none" }}>
-                        <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Totaal</div>
-                        <div style={{ fontWeight:800, fontSize:15, color:C.text }}>{euro(totalSpent)}</div>
-                      </div>
-                    </div>
-                    <div style={{ display:"flex", flexWrap:"wrap", gap:8, justifyContent:"center", marginTop:4 }}>
-                      {donutData.map(d => (
-                        <div key={d.name} style={{ display:"flex", alignItems:"center", gap:4, fontSize:10 }}>
-                          <span style={{ width:8, height:8, borderRadius:2, background:CAT_COL[d.name]||C.muted, display:"inline-block" }}/>
-                          <span style={{ color:C.muted }}>{d.name==="Overig"?"Overig":`${CAT_ICON[d.name]||""} ${d.name}`}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-
-                <h3 style={{ margin:"16px 0 9px", fontSize:13, fontWeight:700, color:C.text, borderTop:`1px solid ${C.border}`, paddingTop:12 }}>🏆 Grootste categorieën</h3>
-                {grootsteCats.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen uitgaven in {fmtM(selectedMonth)}</div>}
-                {grootsteCats.map(([cat,bedrag]) => {
-                  const pct = totalSpent>0 ? Math.round(bedrag/totalSpent*100) : 0;
-                  return (
-                    <div key={cat} style={{ padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:4 }}>
-                        <span>{CAT_ICON[cat]||"📦"} {cat}</span>
-                        <span style={{ fontWeight:700 }}>{euro(bedrag)} <span style={{ color:C.muted, fontWeight:400 }}>({pct}%)</span></span>
-                      </div>
-                      <div style={{ background:C.card, borderRadius:4, height:5 }}>
-                        <div style={{ height:"100%", width:`${pct}%`, background:CAT_COL[cat]||C.accent, borderRadius:4 }}/>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Stijgers & dalers */}
-              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                <h3 style={{ margin:"0 0 9px", fontSize:13, fontWeight:700, color:C.text }}>📈 Stijgers & dalers t.o.v. {fmtM(PREV)}</h3>
-                {bewegingen.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Geen opvallende verschuivingen — vrij stabiel maandje.</div>}
-                {bewegingen.map(m => (
-                  <div key={m.cat} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
-                    <span style={{ fontSize:14 }}>{m.delta>0?"📈":"📉"}</span>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontSize:12, fontWeight:600 }}>{CAT_ICON[m.cat]||"📦"} {m.cat}</div>
-                      <div style={{ fontSize:11, color:C.muted }}>{euro(m.vorig)} → {euro(m.nu)}</div>
-                    </div>
-                    <span style={{ fontWeight:700, fontSize:13, color:m.delta>0?C.red:C.green }}>{m.delta>0?"+":""}{euro(m.delta)}</span>
-                  </div>
-                ))}
               </div>
 
               {/* Gestapelde maandgrafiek: samenstelling over tijd */}
@@ -2336,63 +2160,80 @@ export default function BudgetApp() {
                   </div>
                 )}
               </div>
-
-              {/* Terugkerende kosten */}
-              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:9 }}>
-                  <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>🔁 Terugkerende kosten</h3>
-                  <div style={{ textAlign:"right" }}>
-                    <div style={{ fontWeight:800, fontSize:14, color:C.text }}>{euro(terugkerendTotaal)}/mnd</div>
-                    <div style={{ fontSize:10, color:C.muted }}>≈ {euro(terugkerendTotaal*12)}/jaar</div>
-                  </div>
-                </div>
-                <p style={{ margin:"0 0 9px", fontSize:11, color:C.muted }}>
-                  Abonnementen en vaste lasten — handig om sluimerende kosten te spotten die je niet meer actief gebruikt.
-                </p>
-                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
-                  {[{id:"alle", label:"Alle", kleur:C.text}, ...accountOptions.map(a=>({id:a.id, label:a.label, kleur:ACC_COL[a.id]}))].map(f => {
-                    const subtotaal = f.id==="alle" ? terugkerendTotaal : terugkerend.filter(e=>e.account===f.id).reduce((s,e)=>s+e.amount,0);
-                    const actief = terugkerendAccFilter===f.id;
-                    return (
-                      <button key={f.id} onClick={()=>setTerugkerendAccFilter(f.id)}
-                        style={{ padding:"5px 10px", borderRadius:20, border:`1px solid ${actief?f.kleur:C.border}`, background:actief?`${f.kleur}22`:"transparent", color:actief?f.kleur:C.muted, fontSize:11, fontWeight:600, cursor:"pointer" }}>
-                        {f.label} · {euro(subtotaal)}
-                      </button>
-                    );
-                  })}
-                </div>
-                {terugkerend.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog niets gemarkeerd als vast of herhalend.</div>}
-                {terugkerend.filter(e => terugkerendAccFilter==="alle" || e.account===terugkerendAccFilter).map(e => (
-                  <div key={e.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
-                    <span style={{ fontSize:13 }}>{CAT_ICON[e.category]||"📦"}</span>
-                    <span style={{ flex:1, fontSize:12, color:C.text }}>{e.name}</span>
-                    <AccountBadge accountId={e.account} names={names} C={C} small/>
-                    {!e.fixed && !e.recurring && <span style={{ fontSize:10, background:`${C.purple}22`, color:C.purple, padding:"1px 6px", borderRadius:8 }}>patroon</span>}
-                    <span style={{ fontSize:10, color:C.muted }}>≈{euro(e.amount*12)}/jr</span>
-                    <span style={{ fontWeight:700, fontSize:13 }}>{euro(e.amount)}</span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Bespaartips */}
-              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                <h3 style={{ margin:"0 0 9px", fontSize:13, fontWeight:700, color:C.text }}>💡 Bespaartips</h3>
-                {bespaartips.map((t,i) => (
-                  <div key={i} style={{ display:"flex", gap:9, padding:"8px 0", borderTop: i===0?"none":`1px solid ${C.border}` }}>
-                    <span style={{ fontSize:16, flexShrink:0 }}>{t.icon}</span>
-                    <div>
-                      <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{t.titel}</div>
-                      <div style={{ fontSize:11, color:C.muted, marginTop:2, lineHeight:1.5 }}>{t.tekst}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
             </div>
           );
         })()}
 
         {/* ══ DASHBOARD ══ */}
-        {tab === "dashboard" && (
+        {tab === "dashboard" && (() => {
+          const totalIncome  = totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, selectedMonth);
+          const maandExp     = nettoExpenses.filter(e => e.month === selectedMonth);
+          const totalSpent   = maandExp.reduce((s,e) => s+e.amount, 0);
+          const spaarquote   = totalIncome > 0 ? (totalIncome - totalSpent) / totalIncome : 0;
+
+          // Grootste categorieën + donut (deze maand)
+          const catNow = {};
+          maandExp.forEach(e => { catNow[e.category] = (catNow[e.category]||0) + e.amount; });
+          const grootsteCats = Object.entries(catNow).sort((a,b) => b[1]-a[1]).slice(0,5);
+          const donutRaw = Object.entries(catNow).sort((a,b) => b[1]-a[1]);
+          const donutData = donutRaw.slice(0,6).map(([name,value]) => ({ name, value }));
+          const donutRest = donutRaw.slice(6).reduce((s,[,v]) => s+v, 0);
+          if (donutRest > 0) donutData.push({ name:"Overig", value:donutRest });
+
+          // Stijgers & dalers t.o.v. vorige maand
+          const PREV = prevMonth(selectedMonth);
+          const catPrev = {};
+          nettoExpenses.filter(e => e.month === PREV).forEach(e => { catPrev[e.category] = (catPrev[e.category]||0) + e.amount; });
+          const alleCats = new Set([...Object.keys(catNow), ...Object.keys(catPrev)]);
+          const bewegingen = [...alleCats].map(cat => {
+            const nu = catNow[cat]||0, vorig = catPrev[cat]||0;
+            return { cat, nu, vorig, delta: nu - vorig };
+          }).filter(m => Math.abs(m.delta) >= 15 && (m.nu >= 30 || m.vorig >= 30))
+            .sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0,5);
+
+          // 6-maanden trend
+          const maanden6 = Array.from({length:6}, (_,i) => {
+            const d = new Date(_now.getFullYear(), _now.getMonth() - i, 1);
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+          }).reverse();
+          const trendData = maanden6.map(m => ({
+            label: fmtM(m),
+            totaal: nettoExpenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
+            inkomen: totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, m),
+          }));
+
+          // ── Bespaartips (regelgebaseerd, dezelfde logica als voorheen) ──
+          const bespaartips = [];
+          const tekortDezeMaand = totalIncome - totalSpent;
+          if (tekortDezeMaand < 0) {
+            bespaartips.push({ icon:"🚨", titel:"Je geeft meer uit dan er binnenkomt",
+              tekst:`Deze maand ging er ${euro(Math.abs(tekortDezeMaand))} meer uit dan er binnenkwam.` });
+          }
+          const STREAMING_NAMEN = ["netflix","hbo max","hbo","disney+","disney plus","videoland","npo plus","spotify","viaplay","amazon prime","prime video"];
+          const streamingItems = terugkerend.filter(e => STREAMING_NAMEN.some(s => e.name.toLowerCase().includes(s)));
+          if (streamingItems.length >= 3) {
+            const streamTotaal = streamingItems.reduce((s,e)=>s+e.amount,0);
+            bespaartips.push({ icon:"📺", titel:`${streamingItems.length} streamingdiensten tegelijk actief`,
+              tekst:`${streamingItems.map(e=>e.name).join(", ")} kosten samen ${euro(streamTotaal)}/mnd (${euro(streamTotaal*12)}/jaar). Overweeg ze afwisselend per maand aan te houden.` });
+          }
+          const duursteAbonnement = terugkerend.filter(e => e.category==="Abonnementen" && !streamingItems.includes(e)).sort((a,b)=>b.amount-a.amount)[0];
+          if (duursteAbonnement && duursteAbonnement.amount >= 15) {
+            bespaartips.push({ icon:"💳", titel:`Duurste losse abonnement: ${duursteAbonnement.name}`,
+              tekst:`${euro(duursteAbonnement.amount)}/mnd ≈ ${euro(duursteAbonnement.amount*12)}/jaar. Nog de moeite waard, of tijd om op te zeggen?` });
+          }
+          const grootsteStijger = bewegingen.filter(m=>m.delta>0)[0];
+          if (grootsteStijger) {
+            bespaartips.push({ icon:"📈", titel:`${grootsteStijger.cat} steeg het meest`,
+              tekst:`Van ${euro(grootsteStijger.vorig)} naar ${euro(grootsteStijger.nu)} t.o.v. ${fmtM(PREV)} — eenmalige piek, of een nieuwe gewoonte?` });
+          }
+          if (totalIncome > 0 && spaarquote < 0.1) {
+            bespaartips.push({ icon:"💰", titel:"Weinig ruimte om te sparen",
+              tekst:`Spaarquote van ${Math.round(spaarquote*100)}% deze maand. Een richtlijn van 10-20% helpt om buffer op te bouwen.` });
+          }
+
+          const attentieAlerts = alerts.filter(a => a.level==="rood" || a.level==="oranje");
+
+          return (
           <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
 
             {/* Bank-sync status — maakt de handmatige CSV-import voelbaar 'bijgehouden' */}
@@ -2423,79 +2264,206 @@ export default function BudgetApp() {
               );
             })()}
 
-            {/* 6-maanden trend grafiek */}
-            {(() => {
-              const maanden = Array.from({length:6}, (_,i) => {
-                const d = new Date(_now.getFullYear(), _now.getMonth() - i, 1);
-                return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-              }).reverse();
-              const trendData = maanden.map(m => ({
-                label: fmtM(m),
-                totaal: nettoExpenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
-                inkomen: totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, m),
-              }));
-              const maxVal = Math.max(...trendData.map(d => Math.max(d.totaal, d.inkomen)), 1);
-              return (
-                <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                    <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📈 Uitgaven afgelopen 6 maanden</h3>
-                    <span style={{ fontSize:11, color:C.muted }}>— inkomen</span>
+            {/* ── 1. Kernkaart: maandelijkse kosten in één oogopslag ────────── */}
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:8 }}>
+              <div style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 14px" }}>
+                <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Uitgegeven {fmtM(selectedMonth)}</div>
+                <div style={{ fontWeight:800, fontSize:19, color:C.text, marginTop:2 }}>{euro(totalSpent)}</div>
+              </div>
+              <div style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 14px" }}>
+                <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Inkomen</div>
+                <div style={{ fontWeight:800, fontSize:19, color:C.text, marginTop:2 }}>{euro(totalIncome)}</div>
+              </div>
+              <div style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 14px" }}>
+                <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Spaarquote</div>
+                <div style={{ fontWeight:800, fontSize:19, color:spaarquote>=0.2?C.green:spaarquote>=0?C.yellow:C.red, marginTop:2 }}>{Math.round(spaarquote*100)}%</div>
+              </div>
+            </div>
+
+            {/* ── 2. Uit de bocht — alles wat aandacht vraagt, volledig ──────── */}
+            <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${attentieAlerts.some(a=>a.level==="rood")?C.red+"66":C.border}`, padding:14 }}>
+              <h3 style={{ margin:"0 0 9px", fontSize:14, fontWeight:800, color:C.text }}>🚨 Uit de bocht — vraagt aandacht</h3>
+              {attentieAlerts.length === 0 && (
+                <div style={{ fontSize:12, color:C.green, textAlign:"center", padding:10, fontWeight:600 }}>✅ Niets dat opvalt — het staat er goed voor.</div>
+              )}
+              {attentieAlerts.map(a => {
+                const col = a.level==="rood" ? C.red : C.yellow;
+                return (
+                  <div key={a.id} style={{ display:"flex", alignItems:"center", gap:9, padding:"8px 0", borderTop:`1px solid ${C.border}` }}>
+                    <span style={{ fontSize:17 }}>{a.icon}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{a.title}</div>
+                      <div style={{ fontSize:11, color:C.muted }}>{a.body}</div>
+                    </div>
+                    {a.tab && <button style={{ background:`${col}22`, color:col, border:`1px solid ${col}44`, borderRadius:7, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700, flexShrink:0 }} onClick={()=>setTab(a.tab)}>Fix →</button>}
                   </div>
-                  <ResponsiveContainer width="100%" height={140}>
-                    <LineChart data={trendData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
-                      <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false}/>
-                      <YAxis tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`€${v}`}/>
-                      <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v,n)=>[`€${v}`,n==="totaal"?"Uitgaven":"Inkomen"]}/>
-                      <Line type="stepAfter" dataKey="inkomen" stroke={C.green} strokeWidth={1.5} strokeDasharray="4 2" dot={false}/>
-                      <Line type="monotone" dataKey="totaal" stroke={C.accent} strokeWidth={2.5} dot={{r:4,fill:C.accent,stroke:C.bg,strokeWidth:2}}/>
-                    </LineChart>
-                  </ResponsiveContainer>
-                  <div style={{ display:"flex", gap:16, marginTop:6, fontSize:11, color:C.muted, justifyContent:"center" }}>
-                    <span><span style={{display:"inline-block",width:12,height:3,borderRadius:2,background:C.accent,marginRight:5,verticalAlign:"middle"}}/>Uitgaven</span>
-                    <span><span style={{display:"inline-block",width:12,height:2,borderBottom:`2px dashed ${C.green}`,marginRight:5,verticalAlign:"middle"}}/>Inkomen</span>
+                );
+              })}
+            </div>
+
+            {/* ── 3. Budgetten met tempo-projectie ───────────────────────────── */}
+            <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:C.text }}>🎯 Budgetten {fmtM(selectedMonth)}</h3>
+                <button style={{ ...S.btn(C.accent), fontSize:11, padding:"4px 9px" }} onClick={()=>setTab("budgetten")}>Beheer →</button>
+              </div>
+              {budgetsWithSpent.filter(b=>b.period==="maand").length === 0
+                ? <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Geen maandbudgetten ingesteld</div>
+                : budgetsWithSpent.filter(b=>b.period==="maand").map(b => {
+                    const pct=b.amount>0?Math.min(100,Math.round(b.spent/b.amount*100)):0;
+                    const overBudget = b.spent>b.amount;
+                    const col=overBudget?C.red:pct>80?C.yellow:C.green;
+                    const proj = b.projectie;
+                    const opKoersVoorOverschrijding = proj && proj.overschrijding > 0 && !overBudget;
+                    return (
+                      <div key={b.id} style={{ marginBottom:10 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                          <span style={{ fontSize:13 }}>{CAT_ICON[b.category]||"📦"}</span>
+                          <span style={{ width:90, fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{b.category}</span>
+                          <div style={{ flex:1, background:C.card, borderRadius:3, height:7 }}>
+                            <div style={{ height:"100%", width:`${pct}%`, background:col, borderRadius:3, transition:"width .4s" }}/>
+                          </div>
+                          <span style={{ fontSize:11, fontWeight:700, color:col, width:32, textAlign:"right" }}>{pct}%</span>
+                          <span style={{ fontSize:11, color:C.muted, width:88, textAlign:"right" }}>{euro(b.spent)}/{euro(b.amount)}</span>
+                        </div>
+                        {opKoersVoorOverschrijding && (
+                          <div style={{ marginLeft:24, marginTop:3, fontSize:10.5, color:C.yellow }}>
+                            ⏱️ Op dit tempo: <strong>{euro(proj.projectie)}</strong> eind maand — {euro(proj.overschrijding)} boven budget
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+            </div>
+
+            {/* ── 4. Besparingskansen ─────────────────────────────────────────── */}
+            <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+              <h3 style={{ margin:"0 0 9px", fontSize:14, fontWeight:800, color:C.text }}>📉 Waar kunnen we besparen</h3>
+              {bespaartips.length === 0 && (
+                <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Niets bijzonders te melden — goed bezig!</div>
+              )}
+              {bespaartips.map((t,i) => (
+                <div key={i} style={{ display:"flex", gap:9, padding:"8px 0", borderTop: i===0?"none":`1px solid ${C.border}` }}>
+                  <span style={{ fontSize:16, flexShrink:0 }}>{t.icon}</span>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{t.titel}</div>
+                    <div style={{ fontSize:11, color:C.muted, marginTop:2, lineHeight:1.5 }}>{t.tekst}</div>
                   </div>
                 </div>
-              );
-            })()}
+              ))}
 
-            {/* Jaaroverzicht: 12-maanden staafgrafiek */}
-            {(() => {
-              const jaarMaanden = Array.from({length:12}, (_,i) => {
-                const d = new Date(_now.getFullYear(), _now.getMonth() - 11 + i, 1);
-                return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-              });
-              const jaarData = jaarMaanden.map(m => ({
-                label: fmtM(m),
-                totaal: nettoExpenses.filter(e => e.month === m).reduce((s,e) => s+e.amount, 0),
-              }));
-              const jaarTotaal = jaarData.reduce((s,d) => s+d.totaal, 0);
-              const gemiddeld = jaarTotaal / jaarData.length;
-              return (
-                <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                    <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📊 Jaaroverzicht (laatste 12 maanden)</h3>
-                    <span style={{ fontSize:11, color:C.muted }}>gem. {euro(gemiddeld)}/maand</span>
+              {terugkerend.length > 0 && (
+                <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}` }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                    <span style={{ fontSize:12, fontWeight:700, color:C.text }}>🔁 Terugkerende kosten</span>
+                    <div style={{ textAlign:"right" }}>
+                      <div style={{ fontWeight:800, fontSize:13, color:C.text }}>{euro(terugkerendTotaal)}/mnd</div>
+                      <div style={{ fontSize:9, color:C.muted }}>≈ {euro(terugkerendTotaal*12)}/jaar</div>
+                    </div>
                   </div>
-                  <ResponsiveContainer width="100%" height={160}>
-                    <BarChart data={jaarData} barCategoryGap="20%">
-                      <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
-                      <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false}/>
-                      <YAxis tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`€${v}`}/>
-                      <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v)=>[`€${v}`,"Uitgaven"]}/>
-                      <ReferenceLine y={gemiddeld} stroke={C.green} strokeDasharray="4 2" strokeWidth={1.5}/>
-                      <Bar dataKey="totaal" fill={C.accent} radius={[4,4,0,0]}/>
-                    </BarChart>
-                  </ResponsiveContainer>
-                  <div style={{ display:"flex", justifyContent:"space-between", marginTop:6, fontSize:11, color:C.muted }}>
-                    <span>Totaal 12 maanden: <strong style={{color:C.text}}>{euro(jaarTotaal)}</strong></span>
-                    <span><span style={{display:"inline-block",width:12,height:2,borderBottom:`2px dashed ${C.green}`,marginRight:5,verticalAlign:"middle"}}/>Gemiddelde</span>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
+                    {[{id:"alle", label:"Alle", kleur:C.text}, ...accountOptions.map(a=>({id:a.id, label:a.label, kleur:ACC_COL[a.id]}))].map(f => {
+                      const subtotaal = f.id==="alle" ? terugkerendTotaal : terugkerend.filter(e=>e.account===f.id).reduce((s,e)=>s+e.amount,0);
+                      const actief = terugkerendAccFilter===f.id;
+                      return (
+                        <button key={f.id} onClick={()=>setTerugkerendAccFilter(f.id)}
+                          style={{ padding:"4px 9px", borderRadius:20, border:`1px solid ${actief?f.kleur:C.border}`, background:actief?`${f.kleur}22`:"transparent", color:actief?f.kleur:C.muted, fontSize:10.5, fontWeight:600, cursor:"pointer" }}>
+                          {f.label} · {euro(subtotaal)}
+                        </button>
+                      );
+                    })}
                   </div>
+                  {terugkerend.filter(e => terugkerendAccFilter==="alle" || e.account===terugkerendAccFilter).map(e => (
+                    <div key={e.key} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
+                      <span style={{ fontSize:13 }}>{CAT_ICON[e.category]||"📦"}</span>
+                      <span style={{ flex:1, fontSize:12, color:C.text }}>{e.name}</span>
+                      <AccountBadge accountId={e.account} names={names} C={C} small/>
+                      <span style={{ fontWeight:700, fontSize:12, color:C.text }}>{euro(e.amount)}</span>
+                    </div>
+                  ))}
                 </div>
-              );
-            })()}
+              )}
+            </div>
 
-            {/* Rekening-kaarten */}
+            {/* ── 5. Categorieverdeling deze maand ──────────────────────────── */}
+            <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+              <h3 style={{ margin:"0 0 9px", fontSize:14, fontWeight:800, color:C.text }}>🍩 Categorieverdeling deze maand</h3>
+              {donutData.length === 0 ? (
+                <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen uitgaven in {fmtM(selectedMonth)}</div>
+              ) : (
+                <>
+                  <div style={{ position:"relative" }}>
+                    <ResponsiveContainer width="100%" height={170}>
+                      <PieChart>
+                        <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={48} outerRadius={76} paddingAngle={2} strokeWidth={0}>
+                          {donutData.map((d,i) => <Cell key={i} fill={CAT_COL[d.name]||C.muted}/>)}
+                        </Pie>
+                        <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v,n)=>[euro(v),n]}/>
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)", textAlign:"center", pointerEvents:"none" }}>
+                      <div style={{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Totaal</div>
+                      <div style={{ fontWeight:800, fontSize:14, color:C.text }}>{euro(totalSpent)}</div>
+                    </div>
+                  </div>
+                  {grootsteCats.map(([cat,bedrag]) => {
+                    const pct = totalSpent>0 ? Math.round(bedrag/totalSpent*100) : 0;
+                    return (
+                      <div key={cat} style={{ padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:4 }}>
+                          <span>{CAT_ICON[cat]||"📦"} {cat}</span>
+                          <span style={{ fontWeight:700 }}>{euro(bedrag)} <span style={{ color:C.muted, fontWeight:400 }}>({pct}%)</span></span>
+                        </div>
+                        <div style={{ background:C.card, borderRadius:4, height:5 }}>
+                          <div style={{ height:"100%", width:`${pct}%`, background:CAT_COL[cat]||C.accent, borderRadius:4 }}/>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+
+            {/* ── 6. Stijgers & dalers t.o.v. vorige maand ──────────────────── */}
+            {bewegingen.length > 0 && (
+              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+                <h3 style={{ margin:"0 0 9px", fontSize:14, fontWeight:800, color:C.text }}>📈 Stijgers & dalers t.o.v. {fmtM(PREV)}</h3>
+                {bewegingen.map(m => (
+                  <div key={m.cat} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
+                    <span style={{ fontSize:14 }}>{m.delta>0?"📈":"📉"}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:600 }}>{CAT_ICON[m.cat]||"📦"} {m.cat}</div>
+                      <div style={{ fontSize:11, color:C.muted }}>{euro(m.vorig)} → {euro(m.nu)}</div>
+                    </div>
+                    <span style={{ fontWeight:700, fontSize:13, color:m.delta>0?C.red:C.green }}>{m.delta>0?"+":""}{euro(m.delta)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ── 7. 6-maanden trend ─────────────────────────────────────────── */}
+            <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📊 Uitgaven afgelopen 6 maanden</h3>
+                <button style={{ ...S.btn(C.dim, C.muted), fontSize:11, padding:"4px 9px" }} onClick={()=>setTab("inzichten")}>Meer analyse →</button>
+              </div>
+              <ResponsiveContainer width="100%" height={140}>
+                <LineChart data={trendData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.dim}/>
+                  <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fill:C.muted,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`€${v}`}/>
+                  <Tooltip contentStyle={{background:C.card,border:"none",borderRadius:8,color:C.text,fontSize:11}} formatter={(v,n)=>[`€${v}`,n==="totaal"?"Uitgaven":"Inkomen"]}/>
+                  <Line type="stepAfter" dataKey="inkomen" stroke={C.green} strokeWidth={1.5} strokeDasharray="4 2" dot={false}/>
+                  <Line type="monotone" dataKey="totaal" stroke={C.accent} strokeWidth={2.5} dot={{r:4,fill:C.accent,stroke:C.bg,strokeWidth:2}}/>
+                </LineChart>
+              </ResponsiveContainer>
+              <div style={{ display:"flex", gap:16, marginTop:6, fontSize:11, color:C.muted, justifyContent:"center" }}>
+                <span><span style={{display:"inline-block",width:12,height:3,borderRadius:2,background:C.accent,marginRight:5,verticalAlign:"middle"}}/>Uitgaven</span>
+                <span><span style={{display:"inline-block",width:12,height:2,borderBottom:`2px dashed ${C.green}`,marginRight:5,verticalAlign:"middle"}}/>Inkomen</span>
+              </div>
+            </div>
+
+            {/* ── 8. Rekening-kaarten ─────────────────────────────────────────── */}
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))", gap:10 }}>
               {[{id:"p1",label:`👤 ${names.p1}`,income:incomeForMonthPersoon(incomeHistory, incomes, "p1", selectedMonth),bijdrage:bijdrageP1Aftrek},
                 {id:"p2",label:`👤 ${names.p2}`,income:incomeForMonthPersoon(incomeHistory, incomes, "p2", selectedMonth),bijdrage:bijdrageP2Aftrek},
@@ -2534,82 +2502,7 @@ export default function BudgetApp() {
               })}
             </div>
 
-            {/* Vaste lasten */}
-            {(() => {
-              const vast = nettoExpenses.filter(e => e.fixed && e.month === selectedMonth);
-              const vastTot = vast.reduce((s,e) => s+e.amount, 0);
-              const variabel = totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, selectedMonth) - vastTot - bijdrageP1Aftrek - bijdrageP2Aftrek;
-              return (
-                <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-                    <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>📌 Vaste lasten {fmtM(selectedMonth)}</h3>
-                    <div style={{ textAlign:"right" }}>
-                      <div style={{ fontWeight:800, fontSize:15, color:C.red }}>{euro(vastTot)}</div>
-                      <div style={{ fontSize:10, color:C.muted }}>Vrij te besteden: <strong style={{ color:C.green }}>{euro(Math.max(0,variabel))}</strong></div>
-                    </div>
-                  </div>
-                  {vast.map(e => (
-                    <div key={e.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 0", borderTop:`1px solid ${C.border}` }}>
-                      <span style={{ fontSize:13 }}>{CAT_ICON[e.category]||"📦"}</span>
-                      <span style={{ flex:1, fontSize:12, color:C.text }}>{e.name}</span>
-                      <AccountBadge accountId={e.account} names={names} C={C} small/>
-                      <span style={{ fontWeight:700, fontSize:13, color:C.text }}>{euro(e.amount)}</span>
-                    </div>
-                  ))}
-                  {vast.length === 0 && <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Nog geen vaste lasten — ga naar "Uitgaven" en klik een preset aan bij "Snel een vaste last toevoegen"</div>}
-                </div>
-              );
-            })()}
-
-            {/* Wat vereist actie */}
-            {alerts.filter(a => a.level==="rood"||a.level==="oranje").length > 0 && (
-              <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:9 }}>
-                  <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>⚠️ Vereist aandacht</h3>
-                  <button style={{ ...S.btn(C.dim, C.muted), fontSize:11, padding:"4px 9px" }} onClick={()=>setTab("meldingen")}>Alle meldingen →</button>
-                </div>
-                {alerts.filter(a=>a.level==="rood"||a.level==="oranje").slice(0,3).map(a => {
-                  const col = a.level==="rood"?C.red:C.yellow;
-                  return (
-                    <div key={a.id} style={{ display:"flex", alignItems:"center", gap:9, padding:"7px 0", borderTop:`1px solid ${C.border}` }}>
-                      <span style={{ fontSize:16 }}>{a.icon}</span>
-                      <div style={{ flex:1 }}>
-                        <div style={{ fontSize:12, fontWeight:600, color:C.text }}>{a.title}</div>
-                        <div style={{ fontSize:11, color:C.muted }}>{a.body}</div>
-                      </div>
-                      {a.tab && <button style={{ background:`${col}22`, color:col, border:`1px solid ${col}44`, borderRadius:7, padding:"3px 8px", cursor:"pointer", fontSize:11, fontWeight:700 }} onClick={()=>setTab(a.tab)}>Fix →</button>}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Budget overzicht */}
-            <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-                <h3 style={{ margin:0, fontSize:13, fontWeight:700, color:C.text }}>🎯 Budgetten {fmtM(selectedMonth)}</h3>
-                <button style={{ ...S.btn(C.accent), fontSize:11, padding:"4px 9px" }} onClick={()=>setTab("budgetten")}>Beheer →</button>
-              </div>
-              {budgetsWithSpent.filter(b=>b.period==="maand").length === 0
-                ? <div style={{ fontSize:12, color:C.muted, textAlign:"center", padding:8 }}>Geen maandbudgetten ingesteld</div>
-                : budgetsWithSpent.filter(b=>b.period==="maand").map(b => {
-                    const pct=b.amount>0?Math.min(100,Math.round(b.spent/b.amount*100)):0;
-                    const col=b.spent>b.amount?C.red:pct>80?C.yellow:C.green;
-                    return (
-                      <div key={b.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:7 }}>
-                        <span style={{ fontSize:13 }}>{CAT_ICON[b.category]||"📦"}</span>
-                        <span style={{ width:90, fontSize:12, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{b.category}</span>
-                        <div style={{ flex:1, background:C.card, borderRadius:3, height:7 }}>
-                          <div style={{ height:"100%", width:`${pct}%`, background:col, borderRadius:3, transition:"width .4s" }}/>
-                        </div>
-                        <span style={{ fontSize:11, fontWeight:700, color:col, width:32, textAlign:"right" }}>{pct}%</span>
-                        <span style={{ fontSize:11, color:C.muted, width:88, textAlign:"right" }}>{euro(b.spent)}/{euro(b.amount)}</span>
-                      </div>
-                    );
-                  })}
-            </div>
-
-            {/* Spaardoelen */}
+            {/* ── 9. Spaardoelen preview ─────────────────────────────────────── */}
             {(savingsGoals||[]).length > 0 && (
               <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${C.border}`, padding:14 }}>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
@@ -2638,7 +2531,8 @@ export default function BudgetApp() {
             )}
 
           </div>
-        )}
+          );
+        })()}
 
         {/* ══════════════════════════════════════════════════════════════════
             UITGAVEN
