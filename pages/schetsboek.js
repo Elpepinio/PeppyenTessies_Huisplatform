@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
-import { ChevronLeft, Plus, X, Trash2, Mic, Square, Play, Eraser, Search, FileDown } from "lucide-react";
+import { ChevronLeft, Plus, X, Trash2, Mic, Square, Play, Eraser, Search, FileDown, Pencil } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { getStroke } from "perfect-freehand";
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
@@ -599,6 +599,13 @@ export default function SchetsboekApp() {
   const [zoekterm, setZoekterm] = useState("");
   const [showZoek, setShowZoek] = useState(false);
   const [nieuweReactie, setNieuweReactie] = useState("");
+  const [showHernoemProject, setShowHernoemProject] = useState(false);
+  const [hernoemProjectNaam, setHernoemProjectNaam] = useState("");
+  const [bewerkSchetsModus, setBewerkSchetsModus] = useState(false);
+  const [bewerkTitelVeld, setBewerkTitelVeld] = useState("");
+  const [bewerkTekstVeld, setBewerkTekstVeld] = useState("");
+  const [bewerkReactieId, setBewerkReactieId] = useState(null);
+  const [bewerkReactieTekst, setBewerkReactieTekst] = useState("");
   const [showVolgordeModus, setShowVolgordeModus] = useState(false);
   const [showBordModus, setShowBordModus] = useState(false);
   const lastWriteRef = useRef(0);
@@ -647,6 +654,12 @@ export default function SchetsboekApp() {
     persistProjecten([...projecten, nieuw]);
     setNieuwProjectNaam(""); setNieuwProjectEmoji("💡"); setShowNieuwProject(false);
     setActiefProjectId(nieuw.id);
+  }
+
+  function hernoemProject(id, nieuweNaam) {
+    if (!nieuweNaam.trim()) return;
+    persistProjecten(projecten.map(p => p.id === id ? { ...p, naam: nieuweNaam.trim() } : p));
+    showToast("✅ Projectnaam bijgewerkt");
   }
 
   function verwijderProject(id) {
@@ -699,20 +712,32 @@ export default function SchetsboekApp() {
     showToast("🗑 Schets verwijderd");
   }
 
-  // Reacties zijn lichte tekst — nooit media, dus altijd via de
-  // schetsBijwerken-actie (geen risico dat er per ongeluk media wordt
-  // meegestuurd of overschreven).
+  // Generieke, lichte veld-update voor een schets (titel, tekst, reacties)
+  // — nooit media, dus altijd via schetsBijwerken. Alle onderstaande
+  // bewerkfuncties steunen hierop, zodat het opslaan overal precies
+  // hetzelfde werkt.
+  function bewerkSchetsVelden(schetsId, wijzigingen) {
+    lastWriteRef.current = Date.now();
+    setSchetsen(s => s.map(sk => sk.id === schetsId ? { ...sk, ...wijzigingen } : sk));
+    fetch("/api/schetsboek", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actie: "schetsBijwerken", schetsId, wijzigingen }),
+    }).catch(() => {});
+  }
+
   function voegReactieToe(schetsId, tekst) {
     if (!tekst.trim()) return;
     const reactie = { id: uid(), tekst: tekst.trim(), persoon: huidigeGebruiker, tijdstip: Date.now() };
-    lastWriteRef.current = Date.now();
-    setSchetsen(s => s.map(sk => sk.id === schetsId ? { ...sk, reacties: [...(sk.reacties||[]), reactie] } : sk));
     const bijgewerkteSchets = schetsen.find(sk => sk.id === schetsId);
-    fetch("/api/schetsboek", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actie: "schetsBijwerken", schetsId, wijzigingen: { reacties: [...(bijgewerkteSchets?.reacties||[]), reactie] } }),
-    }).catch(() => {});
+    bewerkSchetsVelden(schetsId, { reacties: [...(bijgewerkteSchets?.reacties||[]), reactie] });
     setNieuweReactie("");
+  }
+
+  function bewerkReactie(schetsId, reactieId, nieuweTekst) {
+    if (!nieuweTekst.trim()) return;
+    const bijgewerkteSchets = schetsen.find(sk => sk.id === schetsId);
+    const reacties = (bijgewerkteSchets?.reacties || []).map(r => r.id === reactieId ? { ...r, tekst: nieuweTekst.trim(), bewerkt: true } : r);
+    bewerkSchetsVelden(schetsId, { reacties });
   }
 
   // Slaat de nieuwe volgorde in één batch-aanroep op, i.p.v. per item een
@@ -809,6 +834,8 @@ export default function SchetsboekApp() {
   async function bekijkSchets(schets) {
     setBekekenSchetsId(schets.id);
     setNieuweReactie("");
+    setBewerkSchetsModus(false);
+    setBewerkReactieId(null);
     if (!schets.heeftMedia) { setBekekenMedia(null); return; }
     setMediaLaden(true);
     setBekekenMedia(null);
@@ -950,9 +977,14 @@ export default function SchetsboekApp() {
         {actiefProject && (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <button onClick={() => verwijderProject(actiefProject.id)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11, cursor: "pointer", padding: 0 }}>
-                🗑 Project verwijderen
-              </button>
+              <div style={{ display: "flex", gap: 14 }}>
+                <button onClick={() => { setHernoemProjectNaam(actiefProject.naam); setShowHernoemProject(true); }} style={{ background: "none", border: "none", color: C.muted, fontSize: 11, cursor: "pointer", padding: 0 }}>
+                  ✏️ Hernoemen
+                </button>
+                <button onClick={() => verwijderProject(actiefProject.id)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11, cursor: "pointer", padding: 0 }}>
+                  🗑 Verwijderen
+                </button>
+              </div>
               <div style={{ display: "flex", gap: 14 }}>
                 {schetsenVanProject.length > 0 && (
                   <button onClick={() => setShowBordModus(true)} style={{ background: "none", border: "none", color: C.accent, fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0 }}>
@@ -1021,6 +1053,26 @@ export default function SchetsboekApp() {
       <button style={S.fab} onClick={() => actiefProject ? setShowTypeKiezer(true) : setShowNieuwProject(true)}>
         <Plus size={24} color="#FFF" />
       </button>
+
+      {showHernoemProject && actiefProject && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", zIndex: 100 }}
+          onClick={() => setShowHernoemProject(false)}>
+          <div style={{ background: C.surf, borderRadius: "20px 20px 0 0", padding: "20px 20px 28px", width: "100%" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: C.accentDark }}>Project hernoemen</h2>
+              <button onClick={() => setShowHernoemProject(false)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                <X size={20} color={C.muted} />
+              </button>
+            </div>
+            <input autoFocus style={{ ...S.inp, marginBottom: 16 }} value={hernoemProjectNaam} onChange={e => setHernoemProjectNaam(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { hernoemProject(actiefProject.id, hernoemProjectNaam); setShowHernoemProject(false); } }} />
+            <button style={{ ...S.btn(), width: "100%", padding: "14px 0", fontSize: 15 }}
+              onClick={() => { hernoemProject(actiefProject.id, hernoemProjectNaam); setShowHernoemProject(false); }}>
+              Opslaan
+            </button>
+          </div>
+        </div>
+      )}
 
       {showNieuwProject && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", zIndex: 100 }}
@@ -1152,20 +1204,37 @@ export default function SchetsboekApp() {
 
       {bekekenSchets && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 }}
-          onClick={() => setBekekenSchetsId(null)}>
+          onClick={() => { setBekekenSchetsId(null); setBewerkSchetsModus(false); }}>
           <div style={{ background: C.surf, borderRadius: 20, padding: 20, width: "100%", maxWidth: 420, maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-              <div>
-                <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: C.text }}>{bekekenSchets.titel || schetsTypeInfo(bekekenSchets.type).label}</p>
-                <p style={{ margin: "2px 0 0", fontSize: 11, color: C.muted }}>{bekekenSchets.persoon} · {formatDatumKort(bekekenSchets.datum)}</p>
+              {bewerkSchetsModus ? (
+                <input autoFocus style={{ ...S.inp, fontSize: 15, fontWeight: 700, padding: "8px 10px", marginRight: 8 }}
+                  placeholder="Titel" value={bewerkTitelVeld} onChange={e => setBewerkTitelVeld(e.target.value)} />
+              ) : (
+                <div>
+                  <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: C.text }}>{bekekenSchets.titel || schetsTypeInfo(bekekenSchets.type).label}</p>
+                  <p style={{ margin: "2px 0 0", fontSize: 11, color: C.muted }}>{bekekenSchets.persoon} · {formatDatumKort(bekekenSchets.datum)}</p>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                {!bewerkSchetsModus && (
+                  <button onClick={() => { setBewerkTitelVeld(bekekenSchets.titel || ""); setBewerkTekstVeld(bekekenSchets.tekst || ""); setBewerkSchetsModus(true); }}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }} title="Bewerken">
+                    <Pencil size={16} color={C.muted} />
+                  </button>
+                )}
+                <button onClick={() => { setBekekenSchetsId(null); setBewerkSchetsModus(false); }} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                  <X size={20} color={C.muted} />
+                </button>
               </div>
-              <button onClick={() => setBekekenSchetsId(null)} style={{ background: "none", border: "none", cursor: "pointer" }}>
-                <X size={20} color={C.muted} />
-              </button>
             </div>
 
             {bekekenSchets.type === "tekst" && (
-              <p style={{ fontSize: 15, color: C.text, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{bekekenSchets.tekst}</p>
+              bewerkSchetsModus ? (
+                <textarea style={{ ...S.inp, height: 140, resize: "none" }} value={bewerkTekstVeld} onChange={e => setBewerkTekstVeld(e.target.value)} />
+              ) : (
+                <p style={{ fontSize: 15, color: C.text, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{bekekenSchets.tekst}</p>
+              )
             )}
             {bekekenSchets.type === "tekening" && (
               <img src={bekekenSchets.thumbnail} alt="" style={{ width: "100%", borderRadius: 12, border: `1px solid ${C.border}` }} />
@@ -1184,17 +1253,54 @@ export default function SchetsboekApp() {
               )
             )}
 
+            {bewerkSchetsModus && (
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button onClick={() => setBewerkSchetsModus(false)} style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                  Annuleer
+                </button>
+                <button onClick={() => {
+                    const wijzigingen = { titel: bewerkTitelVeld.trim() };
+                    if (bekekenSchets.type === "tekst") wijzigingen.tekst = bewerkTekstVeld.trim();
+                    bewerkSchetsVelden(bekekenSchets.id, wijzigingen);
+                    setBewerkSchetsModus(false);
+                  }}
+                  style={{ flex: 1, background: C.accent, color: "#FFF", border: "none", borderRadius: 12, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                  Opslaan
+                </button>
+              </div>
+            )}
+
             <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
               <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>💬 Reacties</p>
               {(bekekenSchets.reacties||[]).length === 0 && (
                 <p style={{ fontSize: 12, color: C.muted, margin: "0 0 10px" }}>Nog geen reacties.</p>
               )}
               {(bekekenSchets.reacties||[]).map(r => (
-                <div key={r.id} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <div key={r.id} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-start" }}>
                   <span style={{ width: 18, height: 18, borderRadius: "50%", background: persoonKleur(r.persoon), color: "#FFF", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 2 }}>
                     {r.persoon.charAt(0)}
                   </span>
-                  <p style={{ margin: 0, fontSize: 13, color: C.text, background: C.card, borderRadius: 10, padding: "6px 10px", flex: 1 }}>{r.tekst}</p>
+                  {bewerkReactieId === r.id ? (
+                    <div style={{ flex: 1, display: "flex", gap: 6 }}>
+                      <input autoFocus style={{ ...S.inp, fontSize: 13, padding: "6px 10px" }} value={bewerkReactieTekst}
+                        onChange={e => setBewerkReactieTekst(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") { bewerkReactie(bekekenSchets.id, r.id, bewerkReactieTekst); setBewerkReactieId(null); } }} />
+                      <button onClick={() => { bewerkReactie(bekekenSchets.id, r.id, bewerkReactieTekst); setBewerkReactieId(null); }}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: C.accent, fontSize: 12, fontWeight: 700, padding: "0 4px" }}>
+                        ✓
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <p style={{ margin: 0, fontSize: 13, color: C.text, background: C.card, borderRadius: 10, padding: "6px 10px", flex: 1 }}>
+                        {r.tekst}{r.bewerkt && <span style={{ fontSize: 10, color: C.muted }}> (bewerkt)</span>}
+                      </p>
+                      <button onClick={() => { setBewerkReactieId(r.id); setBewerkReactieTekst(r.tekst); }}
+                        style={{ background: "none", border: "none", cursor: "pointer", padding: 4, flexShrink: 0 }} title="Reactie bewerken">
+                        <Pencil size={12} color={C.muted} />
+                      </button>
+                    </>
+                  )}
                 </div>
               ))}
               <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
