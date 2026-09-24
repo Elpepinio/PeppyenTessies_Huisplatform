@@ -804,6 +804,12 @@ export default function BudgetApp() {
   const [taskForm,     setTaskForm]     = useState({title:"",due:"",account:"alle",priority:"middel"});
 
   const csvRef  = useRef();
+  // Het Bank-tabblad heeft zijn eigen verborgen bestandsinvoer nodig — met
+  // dezelfde ref als de header zou navigeren weg van dit tabblad de
+  // header-knop breken (React overschrijft csvRef.current met de laatst
+  // gemonteerde/ontmonte input van de twee, dus die wordt dan null zodra
+  // je het Bank-tabblad verlaat).
+  const csvRefBank = useRef();
   const creditcardCsvRef = useRef();
 
   // ── Derived data (memoised) ───────────────────────────────────────────────
@@ -2826,10 +2832,10 @@ export default function BudgetApp() {
               </div>
 
               <div style={{ border:`2px dashed ${csvImport ? C.green : C.border}`, borderRadius:12, padding:22, textAlign:"center", cursor:"pointer" }}
-                onClick={()=>csvRef.current?.click()}
+                onClick={()=>csvRefBank.current?.click()}
                 onDrop={e=>{e.preventDefault();handleCSV(e.dataTransfer.files[0]);}}
                 onDragOver={e=>e.preventDefault()}>
-                <input ref={csvRef} type="file" accept=".csv" style={{ display:"none" }} onChange={e=>handleCSV(e.target.files[0])}/>
+                <input ref={csvRefBank} type="file" accept=".csv" style={{ display:"none" }} onChange={e=>handleCSV(e.target.files[0])}/>
                 {csvImport
                   ? <div><div style={{ fontSize:26, marginBottom:4 }}>✅</div><div style={{ color:C.green, fontWeight:700 }}>{csvImport.length} transacties ingelezen</div></div>
                   : <div><div style={{ fontSize:26, marginBottom:4 }}>📂</div><div style={{ fontWeight:700 }}>Sleep CSV of klik</div><div style={{ color:C.muted, fontSize:11, marginTop:2 }}>Rabobank .csv</div></div>}
