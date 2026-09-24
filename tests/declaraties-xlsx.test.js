@@ -3,9 +3,11 @@ const { sectie, test, samenvatting } = require("./testhulp.js");
 
 sectie("Declaratieformulier-xlsx — vertaling van declaratie-items naar formulierkolommen");
 
-const { veldenVoorItem, maandNaam } = laadFuncties("../pages/api/declaraties-xlsx.js", [
+const { veldenVoorItem, maandNaam, formatDatumVoorLabel, formatBedragVoorLabel } = laadFuncties("../pages/api/declaraties-xlsx.js", [
   /const MAAND_NAMEN = /,
   /function maandNaam\(datumStr\)/,
+  /function formatDatumVoorLabel\(datumStr\)/,
+  /function formatBedragVoorLabel\(bedrag\)/,
   /const VERVOERMIDDEL_LABELS = /,
   /const KM_TARIEF = /,
   /function veldenVoorItem\(item\)/,
@@ -48,5 +50,11 @@ sectie("Overig — beste-gok-kostensoort, duidelijk als zodanig gedocumenteerd i
 const overigItem = veldenVoorItem({ type: "overig", project: "Project Beta", omschrijving: "Zakelijk etentje", bedrag: 42.3 });
 test("krijgt een kostensoort toegewezen (geen lege/undefined waarde)", typeof overigItem.kostensoort === "string" && overigItem.kostensoort.length > 0);
 test("omschrijving en bedrag komen correct door", overigItem.omschrijving.includes("Zakelijk etentje") && overigItem.bedragOfFormule === 42.3);
+
+sectie("Bon-bijlage — labeltekst boven elke ingevoegde afbeelding");
+test("datum wordt dag-maand-jaar met voorloopnullen", formatDatumVoorLabel("2026-09-05") === "5-09-2026");
+test("een lege/ontbrekende datum crasht niet, geeft een lege string", formatDatumVoorLabel("") === "" && formatDatumVoorLabel(null) === "");
+test("bedrag wordt met euroteken en twee decimalen weergegeven", formatBedragVoorLabel(6) === "€ 6,00");
+test("ontbrekend bedrag geeft € 0,00, geen crash", formatBedragVoorLabel(undefined) === "€ 0,00");
 
 samenvatting();

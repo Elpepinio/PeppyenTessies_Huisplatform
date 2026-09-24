@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { ChevronLeft, Plus, X, Car, ParkingSquare, Bus, Receipt, Trash2, Pencil, Check, Download, Calculator, Star } from "lucide-react";
+import { ChevronLeft, Plus, X, Car, ParkingSquare, Bus, Receipt, Trash2, Pencil, Check, Download, Calculator, Star, Camera } from "lucide-react";
 
 // ── Constanten ────────────────────────────────────────────
 // Belastingdienst-vrijstelling voor zakelijke kilometers met eigen vervoer.
@@ -53,6 +53,29 @@ function vandaagStr() {
 }
 function formatBedrag(n) {
   return `€ ${(n||0).toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+// Comprimeert een bon-foto naar een redelijk formaat (dataURL, JPEG) — zelfde
+// aanpak als foto's elders in de app (Moodboard/Gezondheid/Schetsboek), zodat
+// een scherpe foto van een kassabon niet onnodig groot wordt opgeslagen.
+async function comprimeerFoto(file, max = 1400) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > max || height > max) {
+        if (width > height) { height = Math.round(height * max / width); width = max; }
+        else { width = Math.round(width * max / height); height = max; }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Kon foto niet lezen")); };
+    img.src = url;
+  });
 }
 function formatDatumKort(datumStr) {
   if (!datumStr) return "";
@@ -211,7 +234,7 @@ function LEEG_FORM(type, persoon = "Pepijn") {
   return {
     type, persoon, datum: vandaagStr(), project: "",
     van: "", naar: "", vanCoords: null, naarCoords: null, km: "", tarief: KM_TARIEF, retour: false,
-    locatie: "", omschrijving: "", bedrag: "", ritten: [],
+    locatie: "", omschrijving: "", bedrag: "", ritten: [], bonFoto: null,
   };
 }
 
@@ -374,6 +397,53 @@ function OvTrajectInvoer({ form, setForm, favorieten }) {
   );
 }
 
+// Eén declaratiekaart — herbruikbaar voor zowel de "nog in te dienen" als de
+// "al ingediend"-sectie, met een kleuraccent (links) die per sectie
+// verschilt, zodat de status ook zonder te lezen meteen zichtbaar is.
+function DeclaratieKaart({ item, kleurAccent, onFavoriet, onBewerk, onVerwijder }) {
+  const info = typeInfo(item.type);
+  return (
+    <div style={{ ...S.card, borderLeft: `4px solid ${kleurAccent}` }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <span style={{ fontSize: 22 }}>{info.icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+            <p style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>
+              <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: persoonKleur(item.persoon), marginRight: 6 }} />
+              {item.project}
+            </p>
+            <span style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap" }}>{formatBedrag(bedragVoorItem(item))}</span>
+          </div>
+          <p style={{ margin: "2px 0 0", fontSize: 12, color: C.muted }}>
+            {item.persoon} · {formatDatumKort(item.datum)} · Q{kwartaalVan(item.datum)}
+            {item.type === "kilometer" && ` · ${item.van} → ${item.naar}${item.retour ? " (retour)" : ""} · ${kmVoorItem(item)} km × €${(item.tarief??KM_TARIEF).toFixed(2)}`}
+            {item.type === "parkeren" && item.locatie && ` · ${item.locatie}`}
+            {item.type === "ov" && item.ritten && ` · ${item.ritten.map(r => vervoermiddelInfo(r.vervoermiddel).icon).join("")} (${item.ritten.length} traject${item.ritten.length===1?"":"delen"})`}
+            {item.type === "overig" && item.omschrijving && ` · ${item.omschrijving}`}
+            {item.type === "overig" && item.heeftBon && " · 📎 bon"}
+          </p>
+          {item.ingediend && (
+            <span style={{ display: "inline-block", marginTop: 4, fontSize: 10, fontWeight: 700, color: C.green, background: `${C.green}18`, borderRadius: 8, padding: "2px 8px" }}>
+              ✓ Ingediend{item.ingediendOp ? ` · ${new Date(item.ingediendOp).toLocaleDateString("nl-NL")}` : ""}
+            </span>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+        <button style={{ ...S.btn(C.card, "#C97D0C"), border: `1px solid ${C.border}`, fontSize: 11, padding: "6px 10px" }} onClick={onFavoriet} title="Bewaar als favoriet">
+          <Star size={11} />
+        </button>
+        <button style={{ ...S.btn(C.card, C.text), border: `1px solid ${C.border}`, fontSize: 11, padding: "6px 10px" }} onClick={onBewerk}>
+          <Pencil size={11} style={{ verticalAlign: "middle", marginRight: 3 }} />Bewerk
+        </button>
+        <button style={{ ...S.btn(C.card, C.red), border: `1px solid ${C.border}`, fontSize: 11, padding: "6px 10px" }} onClick={onVerwijder}>
+          <Trash2 size={11} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function DeclaratiesApp() {
   const [items, setItems] = useState([]);
   const [favorieten, setFavorieten] = useState([]);
@@ -386,10 +456,12 @@ export default function DeclaratiesApp() {
   const [form, setForm] = useState(null);
   const [editId, setEditId] = useState(null);
   const [afstandLaden, setAfstandLaden] = useState(false);
+  const [bonUploadBezig, setBonUploadBezig] = useState(false);
   const [afstandFout, setAfstandFout] = useState(null);
   const [selectieModus, setSelectieModus] = useState(false);
   const [selectiePreset, setSelectiePreset] = useState("dit-kwartaal");
   const [selectieToonModus, setSelectieToonModus] = useState("openstaand"); // "openstaand" | "ingediend"
+  const [showIngediendSectie, setShowIngediendSectie] = useState(false);
   const [aangepastVan, setAangepastVan] = useState("");
   const [aangepastTot, setAangepastTot] = useState("");
   const [uitgeslotenIds, setUitgeslotenIds] = useState(new Set());
@@ -478,11 +550,23 @@ export default function DeclaratiesApp() {
     setEditId(item.id);
     setAfstandFout(null);
     setShowForm(true);
+    if (item.heeftBon) {
+      fetch(`/api/declaraties?bon=${item.id}`).then(r => r.json()).then(data => {
+        if (data.foto) setForm(f => (f && f.type === item.type ? { ...f, bonFoto: data.foto } : f));
+      }).catch(() => {});
+    }
   }
 
   function verwijderItem(id) {
     if (!window.confirm("Deze declaratie verwijderen?")) return;
+    const item = items.find(i => i.id === id);
     persist(items.filter(i => i.id !== id));
+    if (item?.heeftBon) {
+      fetch("/api/declaraties", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actie: "bonVerwijderen", itemId: id }),
+      }).catch(() => {});
+    }
     showToast("🗑 Verwijderd");
   }
 
@@ -509,7 +593,7 @@ export default function DeclaratiesApp() {
     if (form.type === "kilometer") {
       item = { ...basis, van: form.van.trim(), naar: form.naar.trim(), km: +form.km, tarief: KM_TARIEF, retour: !!form.retour };
     } else if (form.type === "overig") {
-      item = { ...basis, omschrijving: form.omschrijving.trim(), bedrag: +form.bedrag };
+      item = { ...basis, omschrijving: form.omschrijving.trim(), bedrag: +form.bedrag, heeftBon: !!form.bonFoto };
     } else if (form.type === "ov") {
       item = { ...basis, ritten: form.ritten };
     } else {
@@ -517,14 +601,33 @@ export default function DeclaratiesApp() {
     }
 
     setLaatstGebruiktePersoon(form.persoon);
+    const itemId = editId || uid();
     if (editId) {
       const bestaand = items.find(i => i.id === editId);
       persist(items.map(i => i.id === editId ? { ...bestaand, ...item } : i));
       showToast("✅ Bijgewerkt");
     } else {
-      persist([...items, { ...item, id: uid(), toegevoegdOp: Date.now() }]);
+      persist([...items, { ...item, id: itemId, toegevoegdOp: Date.now() }]);
       showToast("✅ Toegevoegd");
     }
+
+    // De bon-foto altijd apart van de hoofdlijst opslaan/verwijderen — zelfde
+    // reden als bij media elders in de app: anders zou elke wijziging aan
+    // wélke declaratie dan ook de foto's van alle andere weer meesturen.
+    if (form.type === "overig") {
+      if (form.bonFoto) {
+        fetch("/api/declaraties", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ actie: "bonOpslaan", itemId, foto: form.bonFoto }),
+        }).catch(() => {});
+      } else if (editId) {
+        fetch("/api/declaraties", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ actie: "bonVerwijderen", itemId }),
+        }).catch(() => {});
+      }
+    }
+
     setShowForm(false);
     setForm(null);
     setEditId(null);
@@ -661,6 +764,11 @@ export default function DeclaratiesApp() {
   beschikbareJaren.sort((a,b) => b-a);
 
   const itemsDitJaar = items.filter(i => i.datum?.startsWith(String(jaar)) && (!persoonFilter || i.persoon === persoonFilter)).sort((a,b) => (b.datum||"").localeCompare(a.datum||""));
+  // Voor het jaaroverzicht apart getoond, zodat in één oogopslag duidelijk
+  // is wat nog moet gebeuren en wat al klaar is — i.p.v. dat door elkaar
+  // heen in één lange lijst.
+  const openstaandeItemsDitJaar = itemsDitJaar.filter(i => !i.ingediend);
+  const ingediendeItemsDitJaar = itemsDitJaar.filter(i => i.ingediend);
   const totaalDitJaar = itemsDitJaar.reduce((s,i) => s + bedragVoorItem(i), 0);
   const nogNietIngediendTotaal = nogNietIngediendDitJaar.reduce((s,i) => s + bedragVoorItem(i), 0);
 
@@ -856,48 +964,32 @@ export default function DeclaratiesApp() {
                 <p style={{ fontSize: 15, color: C.muted, margin: 0 }}>Nog geen declaraties voor {jaar}.</p>
               </div>
             )}
-            {itemsDitJaar.map(item => {
-              const info = typeInfo(item.type);
-              return (
-                <div key={item.id} style={S.card}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                    <span style={{ fontSize: 22 }}>{info.icon}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                        <p style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>
-                          <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: persoonKleur(item.persoon), marginRight: 6 }} />
-                          {item.project}
-                        </p>
-                        <span style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap" }}>{formatBedrag(bedragVoorItem(item))}</span>
-                      </div>
-                      <p style={{ margin: "2px 0 0", fontSize: 12, color: C.muted }}>
-                        {item.persoon} · {formatDatumKort(item.datum)} · Q{kwartaalVan(item.datum)}
-                        {item.type === "kilometer" && ` · ${item.van} → ${item.naar}${item.retour ? " (retour)" : ""} · ${kmVoorItem(item)} km × €${(item.tarief??KM_TARIEF).toFixed(2)}`}
-                        {item.type === "parkeren" && item.locatie && ` · ${item.locatie}`}
-                        {item.type === "ov" && item.ritten && ` · ${item.ritten.map(r => vervoermiddelInfo(r.vervoermiddel).icon).join("")} (${item.ritten.length} traject${item.ritten.length===1?"":"delen"})`}
-                        {item.type === "overig" && item.omschrijving && ` · ${item.omschrijving}`}
-                      </p>
-                      {item.ingediend && (
-                        <span style={{ display: "inline-block", marginTop: 4, fontSize: 10, fontWeight: 700, color: C.green, background: `${C.green}18`, borderRadius: 8, padding: "2px 8px" }}>
-                          ✓ Ingediend
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-                    <button style={{ ...S.btn(C.card, "#C97D0C"), border: `1px solid ${C.border}`, fontSize: 11, padding: "6px 10px" }} onClick={() => maakFavorietVanItem(item)} title="Bewaar als favoriet">
-                      <Star size={11} />
-                    </button>
-                    <button style={{ ...S.btn(C.card, C.text), border: `1px solid ${C.border}`, fontSize: 11, padding: "6px 10px" }} onClick={() => bewerkItem(item)}>
-                      <Pencil size={11} style={{ verticalAlign: "middle", marginRight: 3 }} />Bewerk
-                    </button>
-                    <button style={{ ...S.btn(C.card, C.red), border: `1px solid ${C.border}`, fontSize: 11, padding: "6px 10px" }} onClick={() => verwijderItem(item.id)}>
-                      <Trash2 size={11} />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+
+            {openstaandeItemsDitJaar.length > 0 && (
+              <>
+                <p style={{ fontSize: 12, fontWeight: 700, color: "#C97D0C", margin: "10px 0 8px" }}>
+                  📋 Nog in te dienen ({openstaandeItemsDitJaar.length})
+                </p>
+                {openstaandeItemsDitJaar.map(item => (
+                  <DeclaratieKaart key={item.id} item={item} kleurAccent="#C97D0C"
+                    onFavoriet={() => maakFavorietVanItem(item)} onBewerk={() => bewerkItem(item)} onVerwijder={() => verwijderItem(item.id)} />
+                ))}
+              </>
+            )}
+
+            {ingediendeItemsDitJaar.length > 0 && (
+              <>
+                <button onClick={() => setShowIngediendSectie(v => !v)}
+                  style={{ width: "100%", background: "none", border: "none", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0 8px", cursor: "pointer" }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.green }}>✅ Al ingediend ({ingediendeItemsDitJaar.length})</span>
+                  <span style={{ fontSize: 11, color: C.muted }}>{showIngediendSectie ? "Verberg ▲" : "Toon ▼"}</span>
+                </button>
+                {showIngediendSectie && ingediendeItemsDitJaar.map(item => (
+                  <DeclaratieKaart key={item.id} item={item} kleurAccent={C.green}
+                    onFavoriet={() => maakFavorietVanItem(item)} onBewerk={() => bewerkItem(item)} onVerwijder={() => verwijderItem(item.id)} />
+                ))}
+              </>
+            )}
           </>
         )}
       </main>
@@ -1119,6 +1211,35 @@ export default function DeclaratiesApp() {
                 <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Bedrag</label>
                 <input type="number" step="0.01" style={{ ...S.inp, marginBottom: 12 }} placeholder="€ 0,00" value={form.bedrag}
                   onChange={e => setForm(f => ({ ...f, bedrag: e.target.value }))} />
+
+                <label style={{ fontSize: 12, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 }}>Bon (foto)</label>
+                {form.bonFoto ? (
+                  <div style={{ position: "relative", marginBottom: 12 }}>
+                    <img src={form.bonFoto} alt="Bon" style={{ width: "100%", maxHeight: 220, objectFit: "contain", borderRadius: 12, border: `1px solid ${C.border}`, background: C.card }} />
+                    <button type="button" onClick={() => setForm(f => ({ ...f, bonFoto: null }))}
+                      style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                      <X size={14} color="#FFF" />
+                    </button>
+                  </div>
+                ) : (
+                  <label style={{ ...S.btn(C.card, C.accentDark), border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13, padding: "12px 0", marginBottom: 12, cursor: bonUploadBezig ? "default" : "pointer" }}>
+                    {bonUploadBezig ? "Bezig…" : (<><Camera size={15} /> Foto van de bon toevoegen</>)}
+                    <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} disabled={bonUploadBezig}
+                      onChange={async e => {
+                        const bestand = e.target.files?.[0];
+                        e.target.value = "";
+                        if (!bestand) return;
+                        setBonUploadBezig(true);
+                        try {
+                          const dataUrl = await comprimeerFoto(bestand);
+                          setForm(f => ({ ...f, bonFoto: dataUrl }));
+                        } catch {
+                          showToast("⚠️ Kon de foto niet verwerken");
+                        }
+                        setBonUploadBezig(false);
+                      }} />
+                  </label>
+                )}
               </>
             )}
 

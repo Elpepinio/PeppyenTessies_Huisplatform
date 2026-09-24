@@ -4,11 +4,20 @@ import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
 
 const redis = Redis.fromEnv();
 const SJABLOON_KEY = "huishouden:declaraties-sjablonen";
+const BON_KEY = (itemId) => `huishouden:declaraties:bon:${itemId}`;
 
 const MAAND_NAMEN = ["januari","februari","maart","april","mei","juni","juli","augustus","september","oktober","november","december"];
 function maandNaam(datumStr) {
   const maand = Number(datumStr.split("-")[1]) - 1;
   return MAAND_NAMEN[maand].charAt(0).toUpperCase() + MAAND_NAMEN[maand].slice(1);
+}
+function formatDatumVoorLabel(datumStr) {
+  if (!datumStr) return "";
+  const [j, m, d] = datumStr.split("-").map(Number);
+  return `${d}-${String(m).padStart(2,"0")}-${j}`;
+}
+function formatBedragVoorLabel(bedrag) {
+  return `€ ${(bedrag || 0).toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 const VERVOERMIDDEL_LABELS = { trein: "Trein", bus: "Bus", tram: "Tram", metro: "Metro", ovfiets: "OV-fiets", overig: "Overig" };
@@ -100,6 +109,41 @@ export default async function handler(req, res) {
       ws.getCell(`D${rij}`).value = omschrijving;
       ws.getCell(`E${rij}`).value = bedragOfFormule;
       rij++;
+    }
+
+    // Bonnetje-foto's ("overige kosten") als bijlage toevoegen — op een
+    // apart tabblad, zodat het officiële "Declaratieformulier"-tabblad van
+    // de werkgever zelf onaangeroerd blijft. Elke foto krijgt een label met
+    // welke regel (project/datum/omschrijving) 'm hoort.
+    const itemsMetBon = items.filter(i => i.type === "overig" && i.heeftBon);
+    if (itemsMetBon.length > 0) {
+      const bonnenWs = workbook.addWorksheet("Bonnen");
+      bonnenWs.getColumn(1).width = 45;
+      let bonRij = 1;
+      for (const item of itemsMetBon) {
+        try {
+          const foto = await redis.get(BON_KEY(item.id));
+          if (!foto) continue; // bon niet (meer) gevonden — geen bijlage, geen harde fout
+          const match = /^data:image\/(\w+);base64,(.+)$/.exec(foto);
+          if (!match) continue;
+          const [, extensieRuw, base64Data] = match;
+          const extensie = extensieRuw === "jpg" ? "jpeg" : extensieRuw;
+
+          bonnenWs.getCell(`A${bonRij}`).value = `${item.project} — ${formatDatumVoorLabel(item.datum)}${item.omschrijving ? ` — ${item.omschrijving}` : ""} — ${formatBedragVoorLabel(item.bedrag)}`;
+          bonnenWs.getCell(`A${bonRij}`).font = { bold: true, size: 11 };
+          bonRij += 1;
+
+          const imageId = workbook.addImage({ base64: `data:image/${extensie};base64,${base64Data}`, extension: extensie });
+          // Vaste breedte, hoogte naar verhouding onbekend vooraf (exceljs
+          // kent de pixelafmetingen niet zonder de afbeelding te decoderen),
+          // dus een ruime vaste blokgrootte die een bonnetje goed leesbaar
+          // toont zonder het tabblad onnodig lang te maken.
+          bonnenWs.addImage(imageId, { tl: { col: 0, row: bonRij - 1 }, ext: { width: 320, height: 420 } });
+          bonRij += 23; // ruimte voor de afbeelding, plus wat marge tot het volgende label
+        } catch {
+          // Eén hapering bij één bon mag de rest van het formulier niet blokkeren.
+        }
+      }
     }
 
     const uitvoerBuffer = await workbook.xlsx.writeBuffer();
