@@ -1138,6 +1138,12 @@ export default function BudgetApp() {
 
   function handleCSV(file) {
     if (!file) return;
+    // De header-knop en de dashboard-snelkoppeling ("Nu bijwerken") kunnen
+    // vanaf elk tabblad een bestand laten kiezen — maar het overzicht van
+    // wat er is ingelezen (of een foutmelding) stond alleen op het
+    // Bank-tabblad zelf. Zonder deze omschakeling leek het alsof de upload
+    // niets deed, terwijl 'm gewoon op de achtergrond was verwerkt.
+    setTab("bank");
     setCsvError(""); setCsvImport(null); setCsvDubbelCount(0); setCsvReviewPagina(0);
     const reader = new FileReader();
     reader.onload = e => {
@@ -1167,6 +1173,7 @@ export default function BudgetApp() {
   // geleerde-categorieën als bij de bank-CSV.
   function handleCreditcardCSV(file) {
     if (!file) return;
+    setTab("bank"); // zelfde reden als bij handleCSV hierboven
     setCsvError(""); setCsvImport(null); setCsvDubbelCount(0); setCsvReviewPagina(0);
     const reader = new FileReader();
     reader.onload = e => {
