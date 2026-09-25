@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Budget — huishoudbudget-tool, platform-versie (zonder AI-functies)
+// Budget — huishoudbudget-tool, met een AI-chat om door te vragen op
+// meldingen/inzichten (via de al bestaande /api/ai-route)
 // ═══════════════════════════════════════════════════════════════════════════════
 import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
@@ -438,6 +439,57 @@ function projecteerEindeMaand(budget, spent, selectedMonth, nowMonth = NOW_MONTH
   return { projectie, dagenInMaand, dagVanMaand, overschrijding: projectie - budget.amount };
 }
 
+// ── Context-opbouw voor de AI-budgetchat — puur tekst, geen React, dus
+//    rechtstreeks testbaar. Stuurt bewust een gerichte SAMENVATTING mee
+//    i.p.v. de volledige transactiegeschiedenis: sneller, goedkoper, en
+//    voorkomt dat maanden aan ruwe data in één prompt belandt. ────────────
+function bouwAlgemeneContext(nettoExpenses, budgets, selectedMonth, totalIncome, totalSpent) {
+  const maandExp = nettoExpenses.filter(e => e.month === selectedMonth);
+  const perCat = {};
+  maandExp.forEach(e => { perCat[e.category] = (perCat[e.category]||0) + e.amount; });
+  const catRegels = Object.entries(perCat).sort((a,b) => b[1]-a[1]).map(entry => `- ${entry[0]}: ${euro(entry[1])}`).join("\n") || "(nog geen uitgaven)";
+  const budgetRegels = budgets.filter(b => b.period === "maand").map(b => `- ${b.category}: budget ${euro(b.amount)}`).join("\n") || "(geen maandbudgetten ingesteld)";
+  return `Maand: ${fmtM(selectedMonth)}
+Inkomen: ${euro(totalIncome)}
+Totaal uitgegeven: ${euro(totalSpent)}
+
+Uitgaven per categorie deze maand:
+${catRegels}
+
+Ingestelde maandbudgetten:
+${budgetRegels}`;
+}
+
+// Itemiseert één categorie voor twee maanden — zodat de AI, in plaats van
+// alleen "het steeg", ook kan benoemen WELKE aankopen dat waren.
+function bouwCategorieContext(expenses, categorie, huidigeMaand, vorigeMaand) {
+  const regels = items => items.map(e => `- ${e.name}: ${euro(e.amount)}${e.fixed ? " (vast)" : ""}`).join("\n") || "(geen)";
+  const huidig = expenses.filter(e => e.category === categorie && e.month === huidigeMaand && !e.genegeerd);
+  const vorig  = expenses.filter(e => e.category === categorie && e.month === vorigeMaand && !e.genegeerd);
+  return `Categorie "${categorie}" — ${fmtM(huidigeMaand)} (totaal ${euro(huidig.reduce((s,e)=>s+e.amount,0))}):
+${regels(huidig)}
+
+Categorie "${categorie}" — ${fmtM(vorigeMaand)} (totaal ${euro(vorig.reduce((s,e)=>s+e.amount,0))}):
+${regels(vorig)}`;
+}
+
+// Best-effort: probeert de categorienaam uit een melding-titel te halen, zodat
+// de chat die categorie kan itemiseren. Geeft null als niets matcht — de
+// chat werkt dan gewoon met de algemene maand-context, geen harde eis.
+function categorieUitAlert(titel) {
+  const patronen = [
+    /^(.+?) \+\d+% vs gemiddelde$/,
+    /^Budget overschreden: (.+)$/,
+    /^(.+?) \d+% vol$/,
+    /^(.+?): op koers voor overschrijding$/,
+  ];
+  for (const patroon of patronen) {
+    const match = titel.match(patroon);
+    if (match && CATEGORIES.includes(match[1])) return match[1];
+  }
+  return null;
+}
+
 function buildAlerts(expenses, budgets, savingsGoals, incomes, maand = NOW_MONTH, incomeHistory = [], extraInkomsten = []) {
   const alerts = [];
   const totalIncome = totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, maand);
@@ -631,6 +683,99 @@ function makeS(C) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── AI-chat om te sparren over een melding of de bredere budgetsituatie —
+//    hergebruikt de al bestaande /api/ai-route (dezelfde die Gezondheid,
+//    Recepten etc. ook gebruiken), nu uitgebreid met een messages-array voor
+//    een echt gesprek met meerdere beurten i.p.v. één losse vraag. ────────
+function BudgetChatPaneel({ context, startVraag, titel, onSluiten, C, S }) {
+  const [berichten, setBerichten] = useState([]);
+  const [invoer, setInvoer] = useState("");
+  const [bezig, setBezig] = useState(false);
+  const [fout, setFout] = useState(null);
+  const eersteBeurtRef = useRef(false);
+  const scrollRef = useRef(null);
+
+  async function verstuur(tekst) {
+    if (!tekst.trim() || bezig) return;
+    const nieuw = [...berichten, { role: "user", text: tekst.trim() }];
+    setBerichten(nieuw);
+    setInvoer("");
+    setBezig(true);
+    setFout(null);
+    try {
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bron: "budget-chat",
+          systemPrompt: `Je bent een behulpzame financiële sparringpartner binnen het huishoudbudget van een Nederlands gezin. Hieronder staan de relevante cijfers. Geef korte, concrete antwoorden in het Nederlands, gebaseerd op déze cijfers — geen algemene financiële adviezen die er los van staan. Als iets niet uit de cijfers is af te leiden (bv. WAAROM iemand iets kocht), zeg dat gerust en stel een gerichte vraag terug.\n\n${context}`,
+          messages: nieuw.map(b => ({ role: b.role, content: b.text })),
+          maxTokens: 600,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setBerichten(b => [...b, { role: "assistant", text: data.text || "(geen antwoord ontvangen)" }]);
+    } catch (e) {
+      setFout("Kon geen antwoord ophalen: " + e.message);
+    }
+    setBezig(false);
+  }
+
+  useEffect(() => {
+    if (startVraag && !eersteBeurtRef.current) {
+      eersteBeurtRef.current = true;
+      verstuur(startVraag);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [berichten, bezig]);
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:200, display:"flex", alignItems:"flex-end" }} onClick={onSluiten}>
+      <div style={{ background:C.bg, borderRadius:"18px 18px 0 0", width:"100%", maxWidth:560, margin:"0 auto", maxHeight:"85vh", display:"flex", flexDirection:"column" }} onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"16px 18px", borderBottom:`1px solid ${C.border}` }}>
+          <div>
+            <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:C.text }}>💬 Sparren met AI</h3>
+            {titel && <p style={{ margin:"2px 0 0", fontSize:11, color:C.muted }}>{titel}</p>}
+          </div>
+          <button onClick={onSluiten} style={{ background:"none", border:"none", fontSize:18, color:C.muted, cursor:"pointer", padding:4 }}>✕</button>
+        </div>
+
+        <div ref={scrollRef} style={{ flex:1, overflowY:"auto", padding:"14px 18px", display:"flex", flexDirection:"column", gap:10 }}>
+          {berichten.length === 0 && !bezig && (
+            <p style={{ fontSize:12, color:C.muted, textAlign:"center", padding:20 }}>Stel een vraag over je uitgaven — bv. "wat kan ik hierop besparen?" of "is dit eenmalig of structureel?".</p>
+          )}
+          {berichten.map((b,i) => (
+            <div key={i} style={{ alignSelf:b.role==="user"?"flex-end":"flex-start", maxWidth:"85%", background:b.role==="user"?C.accent:C.surf, color:b.role==="user"?"#FFF":C.text, border:b.role==="user"?"none":`1px solid ${C.border}`, borderRadius:14, padding:"9px 13px", fontSize:13, lineHeight:1.5, whiteSpace:"pre-wrap" }}>
+              {b.text}
+            </div>
+          ))}
+          {bezig && (
+            <div style={{ alignSelf:"flex-start", background:C.surf, border:`1px solid ${C.border}`, borderRadius:14, padding:"9px 13px", fontSize:13, color:C.muted }}>
+              typt…
+            </div>
+          )}
+          {fout && <p style={{ fontSize:12, color:C.red, textAlign:"center" }}>⚠️ {fout}</p>}
+        </div>
+
+        <div style={{ display:"flex", gap:8, padding:"12px 18px", borderTop:`1px solid ${C.border}`, paddingBottom:"calc(12px + env(safe-area-inset-bottom))" }}>
+          <input value={invoer} onChange={e=>setInvoer(e.target.value)} placeholder="Typ je vraag…"
+            onKeyDown={e => { if (e.key === "Enter") verstuur(invoer); }}
+            style={{ flex:1, background:C.surf, border:`1px solid ${C.border}`, borderRadius:10, padding:"10px 12px", fontSize:13, color:C.text }} />
+          <button onClick={()=>verstuur(invoer)} disabled={bezig || !invoer.trim()}
+            style={{ ...S.btn(C.accent), padding:"0 16px", opacity:(bezig||!invoer.trim())?0.5:1 }}>
+            Stuur
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function BudgetApp() {
   const [loading, setLoading] = useState(true);
   const [verbindingsFout, setVerbindingsFout] = useState(false);
@@ -795,6 +940,7 @@ export default function BudgetApp() {
 
   // ── Ephemeral UI state ────────────────────────────────────────────────────
   const [tab,          setTab]          = useState("dashboard");
+  const [chat, setChat] = useState(null); // { context, startVraag, titel } | null
   const [quickAdd,     setQuickAdd]     = useState(false);
   const [activeAcc,    setActiveAcc]    = useState("alle");
   const [uitgavenZoek, setUitgavenZoek] = useState("");
@@ -1943,6 +2089,17 @@ export default function BudgetApp() {
         )}
 
         {/* ══ MELDINGEN ══ */}
+        {/* AI-chatpaneel — om te sparren over een melding of de bredere situatie */}
+        {chat && (
+          <BudgetChatPaneel
+            context={chat.context}
+            startVraag={chat.startVraag}
+            titel={chat.titel}
+            onSluiten={() => setChat(null)}
+            C={C} S={S}
+          />
+        )}
+
         {/* Note editor overlay */}
         {editNote && (
           <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.6)", zIndex:999, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }} onClick={()=>setEditNote(null)}>
@@ -2336,6 +2493,16 @@ export default function BudgetApp() {
               )}
             </div>
 
+            <button
+              onClick={() => setChat({
+                context: bouwAlgemeneContext(nettoExpenses, budgets, selectedMonth, totalIncome, totalSpent),
+                startVraag: null,
+                titel: `Budget ${fmtM(selectedMonth)}`,
+              })}
+              style={{ ...S.btn(C.accent), width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:7 }}>
+              💬 Sparren met AI over je budget
+            </button>
+
             {/* ── 2. Uit de bocht — alles wat aandacht vraagt, volledig ──────── */}
             <div style={{ background:C.surf, borderRadius:13, border:`1px solid ${attentieAlerts.some(a=>a.level==="rood")?C.red+"66":C.border}`, padding:14 }}>
               <h3 style={{ margin:"0 0 9px", fontSize:14, fontWeight:800, color:C.text }}>🚨 Uit de bocht — vraagt aandacht</h3>
@@ -2344,6 +2511,16 @@ export default function BudgetApp() {
               )}
               {attentieAlerts.map(a => {
                 const col = a.level==="rood" ? C.red : C.yellow;
+                const openChat = () => {
+                  const cat = categorieUitAlert(a.title);
+                  const algemeen = bouwAlgemeneContext(nettoExpenses, budgets, selectedMonth, totalIncome, totalSpent);
+                  const catDetail = cat ? bouwCategorieContext(expenses, cat, selectedMonth, prevMonth(selectedMonth)) + "\n\n" : "";
+                  setChat({
+                    context: `Deze melding werd getoond: "${a.title}" — ${a.body}\n\n${catDetail}${algemeen}`,
+                    startVraag: "Kun je toelichten wat hier aan de hand is, en wat ik hiermee zou moeten doen?",
+                    titel: a.title,
+                  });
+                };
                 return (
                   <div key={a.id} style={{ display:"flex", alignItems:"center", gap:9, padding:"8px 0", borderTop:`1px solid ${C.border}` }}>
                     <span style={{ fontSize:17 }}>{a.icon}</span>
@@ -2351,6 +2528,7 @@ export default function BudgetApp() {
                       <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{a.title}</div>
                       <div style={{ fontSize:11, color:C.muted }}>{a.body}</div>
                     </div>
+                    <button style={{ background:C.dim, color:C.muted, border:`1px solid ${C.border}`, borderRadius:7, padding:"3px 8px", cursor:"pointer", fontSize:11, flexShrink:0 }} onClick={openChat} title="Sparren met AI">💬</button>
                     {a.tab && <button style={{ background:`${col}22`, color:col, border:`1px solid ${col}44`, borderRadius:7, padding:"3px 9px", cursor:"pointer", fontSize:11, fontWeight:700, flexShrink:0 }} onClick={()=>setTab(a.tab)}>Fix →</button>}
                   </div>
                 );
