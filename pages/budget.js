@@ -529,7 +529,12 @@ function nettoExpensesFilter(expenses) {
   const maandenMetItemisatie = new Set(expenses.filter(e => e.bron === "creditcard").map(e => e.month));
   return expenses.filter(e =>
     !e.genegeerd &&
-    !(e.category === "Afschrijving creditcard" && e.bron !== "creditcard" && maandenMetItemisatie.has(e.month))
+    !(e.category === "Afschrijving creditcard" && e.bron !== "creditcard" && maandenMetItemisatie.has(e.month)) &&
+    // Een overboeking náár sparen/beleggen is geen "uitgave" in de
+    // gewone zin — het geld is er nog, alleen op een andere rekening. Zonder
+    // deze uitsluiting telde elke storting mee als kosten, wat de
+    // spaarquote juist liet dálen naarmate er méér gespaard werd.
+    !isVermoedelijkOverboeking(e.name, e.category)
   );
 }
 
@@ -2208,6 +2213,13 @@ export default function BudgetApp() {
           const maandExp     = nettoExpenses.filter(e => e.month === selectedMonth);
           const totalSpent   = maandExp.reduce((s,e) => s+e.amount, 0);
           const spaarquote   = totalIncome > 0 ? (totalIncome - totalSpent) / totalIncome : 0;
+          // Overboekingen naar sparen/beleggen tellen niet mee als uitgave
+          // (zie nettoExpensesFilter) — hier apart zichtbaar gemaakt, zodat
+          // dat bedrag niet gewoon "verdwijnt" maar correct als sparen wordt
+          // getoond i.p.v. als kosten.
+          const gespaardDezeMaand = expenses
+            .filter(e => e.month === selectedMonth && !e.genegeerd && isVermoedelijkOverboeking(e.name, e.category))
+            .reduce((s,e) => s+e.amount, 0);
 
           // Grootste categorieën + donut (deze maand)
           const catNow = {};
@@ -2316,6 +2328,12 @@ export default function BudgetApp() {
                 <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>Spaarquote</div>
                 <div style={{ fontWeight:800, fontSize:19, color:spaarquote>=0.2?C.green:spaarquote>=0?C.yellow:C.red, marginTop:2 }}>{Math.round(spaarquote*100)}%</div>
               </div>
+              {gespaardDezeMaand > 0 && (
+                <div style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 14px" }}>
+                  <div style={{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:.4 }}>💰 Gespaard</div>
+                  <div style={{ fontWeight:800, fontSize:19, color:C.green, marginTop:2 }}>{euro(gespaardDezeMaand)}</div>
+                </div>
+              )}
             </div>
 
             {/* ── 2. Uit de bocht — alles wat aandacht vraagt, volledig ──────── */}
