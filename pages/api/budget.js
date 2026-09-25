@@ -3,6 +3,19 @@ import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
 import { logFout } from "../../lib/error-log";
 
 const redis = Redis.fromEnv();
+
+// Elke opslag stuurt de VOLLEDIGE budget-staat mee (geen diff) — met jaren
+// aan transacties, budgetten en geschiedenis kan dat royaal boven Next.js'
+// standaardlimiet van 1MB uitkomen, zeker bij een grote inhaal-import in één
+// keer. Zonder deze verhoging wijst Next.js zo'n verzoek stilletjes af (413)
+// vóórdat de eigen handler-code er ooit aan te pas komt — de import lijkt
+// dan even te lukken (lokale state update), tot de eerstvolgende
+// achtergrond-sync de nooit-echt-opgeslagen wijziging weer overschrijft.
+// Let op: Vercel zelf hanteert voor serverless functions een harde limiet
+// van ~4,5MB voor de request-body, die deze instelling niet kan
+// overschrijven — vandaar dat er hier ruim onder gebleven wordt i.p.v. een
+// hogere waarde op te geven die het platform toch zou blokkeren.
+export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };
 const DATA_KEY = "huishouden:budget";
 
 const EMPTY_STATE = {
