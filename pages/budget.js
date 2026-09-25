@@ -561,13 +561,21 @@ async function loadBudgetData() {
 
 async function saveBudgetData(data) {
   try {
-    await fetch("/api/budget", {
+    const res = await fetch("/api/budget", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
+    // fetch() gooit alléén bij een netwerkfout, niet bij een HTTP-foutstatus
+    // (bv. een verlopen sessie of een mislukte Redis-write) — zonder deze
+    // controle leek opslaan altijd te lukken, ook als de server het bericht
+    // eigenlijk had afgewezen. De volgende achtergrond-sync haalt dan gewoon
+    // weer de oude data op en overschrijft stilletjes wat je net had gedaan.
+    if (!res.ok) throw new Error(`Server gaf status ${res.status} terug`);
+    return true;
   } catch (e) {
     console.error("Opslaan mislukt", e);
+    return false;
   }
 }
 
@@ -698,7 +706,12 @@ export default function BudgetApp() {
     if (patch.savingsGoals !== undefined) setSavingsGoalsState(patch.savingsGoals);
     if (patch.tasks !== undefined) setTasksState(patch.tasks);
     if (patch.bijst !== undefined) setBijstState(patch.bijst);
-    saveBudgetData(next);
+    // De belofte teruggeven is puur additief — bestaande aanroepen die 'm
+    // niet opvangen (de meeste) blijven exact hetzelfde werken. Kritieke
+    // plekken (zoals het bevestigen van een bank-import) kunnen 'm nu wél
+    // gebruiken om een mislukte server-opslag zichtbaar te maken i.p.v. stil
+    // te laten verdwijnen bij de volgende achtergrond-sync.
+    return saveBudgetData(next);
   }, [setupDone, themeName, names, incomes, incomeHistory, extraInkomsten, expenses, budgets, receipts, savingsGoals, tasks, bijst, laatsteBankImport, ibanMap, categorieMap, bekendeIbans]);
 
   // Kleine helper-setters die op dezelfde manier werken als de oude setX(updater)-vorm,
@@ -1117,15 +1130,27 @@ export default function BudgetApp() {
   function toggleTask(id) { setTasks(p=>p.map(t=>t.id===id?{...t,done:!t.done}:t)); }
   function delTask(id) { setTasks(p=>p.filter(t=>t.id!==id)); }
 
-  function confirmCSV(rows) {
+  async function confirmCSV(rows) {
     if (csvImportingRef.current) return; // beschermt tegen een dubbele tik vóór de eerste herrender
     csvImportingRef.current = true;
-    persist({ expenses: [...expenses, ...rows], laatsteBankImport: Date.now() });
-    setCsvImport(null);
-    setCsvDubbelCount(0);
-    showToast(`✅ ${rows.length} transacties ingeladen`);
-    setTab("uitgaven");
-    csvImportingRef.current = false;
+    try {
+      const gelukt = await persist({ expenses: [...expenses, ...rows], laatsteBankImport: Date.now() });
+      if (!gelukt) {
+        // Server-opslag mislukt (bv. verlopen sessie) — dit expliciet laten
+        // zien i.p.v. stil te laten verdwijnen bij de volgende
+        // achtergrond-sync. De reviewlijst blijft staan zodat "Importeer"
+        // gewoon opnieuw geklikt kan worden, zonder het bestand opnieuw te
+        // hoeven kiezen.
+        showToast("⚠️ Opslaan is mislukt — probeer het zo nog eens. Je overzicht hieronder blijft staan.", C.red);
+        return;
+      }
+      setCsvImport(null);
+      setCsvDubbelCount(0);
+      showToast(`✅ ${rows.length} transacties ingeladen`);
+      setTab("uitgaven");
+    } finally {
+      csvImportingRef.current = false;
+    }
   }
 
   // ── CSV import ────────────────────────────────────────────────────────────
