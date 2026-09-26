@@ -408,6 +408,15 @@ const S = {
 // ════════════════════════════════════════════════════════
 // HOOFD APP
 // ════════════════════════════════════════════════════════
+// Bepaalt welke items overblijven na het afronden van een pak-/
+// boodschappenronde — puur en dus apart te testen, los van de
+// archief/geschiedenis-bijwerking eromheen die in finishPacking gebeurt.
+function berekenVolgendeItems(items, modus) {
+  if (modus === "leegmaken") return [];
+  if (modus === "afgevinktVerwijderen") return items.filter(i => !i.checked);
+  return items.map(i => ({ ...i, checked: false, inCart: false })); // "bewaren"
+}
+
 export default function LijstenApp() {
   const router = useRouter();
   const [lists, setListsState] = useState([]);
@@ -844,7 +853,7 @@ export default function LijstenApp() {
   }
 
   // ── Pakken afronden: keuze bewaren of leegmaken ──────
-  function finishPacking(leegmaken) {
+  function finishPacking(modus) { // "bewaren" | "leegmaken" | "afgevinktVerwijderen"
     updateList(activeListId, l => {
       const huidigRonde = {
         datum: new Date().toLocaleDateString("nl-NL"),
@@ -861,21 +870,16 @@ export default function LijstenApp() {
           count: (nextHistory[key]?.count || 0) + 1, lastUsed: Date.now(),
         };
       });
-      if (leegmaken) {
-        return { ...l, items: [], history: nextHistory, archief: nextArchief };
-      } else {
-        // Bewaren: afvinkjes resetten, lijst intact laten
-        return {
-          ...l,
-          items: l.items.map(i => ({ ...i, checked: false, inCart: false })),
-          history: nextHistory,
-          archief: nextArchief,
-        };
-      }
+      return { ...l, items: berekenVolgendeItems(l.items, modus), history: nextHistory, archief: nextArchief };
     });
     setMode("lijst");
     setShowPakkenKeuze(false);
-    showToast(leegmaken ? "✅ Lijst geleegd — alles opgeslagen" : "✅ Klaar! Vinkjes gereset voor volgende keer");
+    const meldingen = {
+      leegmaken: "✅ Lijst geleegd — alles opgeslagen",
+      afgevinktVerwijderen: "✅ Afgevinkte items verwijderd — de rest staat nog klaar",
+      bewaren: "✅ Klaar! Vinkjes gereset voor volgende keer",
+    };
+    showToast(meldingen[modus]);
   }
 
   // Start een nieuwe boodschappen-/pakronde. inCart wordt hier altijd hard
@@ -965,12 +969,19 @@ export default function LijstenApp() {
               <p style={{ margin: "0 0 6px", fontWeight: 700, fontSize: 17, color: "#2D4A3E" }}>Klaar met {isVakantie ? "inpakken" : "boodschappen"}!</p>
               <p style={{ margin: "0 0 20px", fontSize: 14, color: "#8C8576" }}>Wat wil je doen met de lijst?</p>
               <button style={{ ...S.btn(), width: "100%", marginBottom: 10, padding: "15px 0", borderRadius: 14 }}
-                onClick={() => finishPacking(false)}>
+                onClick={() => finishPacking("bewaren")}>
                 🔄 Vinkjes resetten — lijst bewaren
                 <span style={{ display: "block", fontSize: 12, fontWeight: 400, opacity: 0.8, marginTop: 3 }}>Handig voor volgende vakantie of week</span>
               </button>
+              {activeList.items.some(i => !i.checked) && (
+                <button style={{ ...S.btn("#4A7A6C"), width: "100%", marginBottom: 10, padding: "15px 0", borderRadius: 14 }}
+                  onClick={() => finishPacking("afgevinktVerwijderen")}>
+                  ✅ Afgevinkte items verwijderen
+                  <span style={{ display: "block", fontSize: 12, fontWeight: 400, opacity: 0.8, marginTop: 3 }}>Wat nog niet gepakt is blijft gewoon staan</span>
+                </button>
+              )}
               <button style={{ ...S.btn("#C86E4A"), width: "100%", padding: "15px 0", borderRadius: 14, marginBottom: 12 }}
-                onClick={() => finishPacking(true)}>
+                onClick={() => finishPacking("leegmaken")}>
                 🗑 Lijst leegmaken
                 <span style={{ display: "block", fontSize: 12, fontWeight: 400, opacity: 0.8, marginTop: 3 }}>Items worden verwijderd, archief bewaard</span>
               </button>

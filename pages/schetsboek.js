@@ -483,7 +483,30 @@ function SpraakOpnemer({ onKlaar, onAnnuleer }) {
 // ── Actiepunten per project — de plek waar een AI-vervolgstap of een
 //    spar-inzicht landt als iets tastbaars, in plaats van weg te zakken in
 //    een onderzoeksrapport of chatgeschiedenis. ──────────────────────────
-function ActiepuntenSectie({ project, onToevoegen, onWisselKlaar, onVerwijderen }) {
+// ── Actiepunten — compacte balk die altijd even groot blijft (los van het
+//    aantal punten), met de volledige lijst achter één tik in een
+//    bottom-sheet — hetzelfde patroon als Sparren/AI-research/Volgorde.
+//    Zo blijft de schetsen-grid eronder altijd meteen zichtbaar. ─────────
+function ActiepuntenBalk({ project, onOpenen }) {
+  const actiepunten = project.actiepunten || [];
+  const open = actiepunten.filter(a => !a.klaar).length;
+  return (
+    <button onClick={onOpenen}
+      style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", background: C.surf, border: `1px solid ${C.border}`, borderRadius: 12, padding: "11px 14px", marginBottom: 16, cursor: "pointer" }}>
+      <span style={{ fontSize: 13, fontWeight: 700, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+        ✅ Actiepunten
+        {actiepunten.length > 0 && (
+          <span style={{ fontSize: 11, fontWeight: 700, color: open > 0 ? C.accentDark : C.green, background: open > 0 ? `${C.accent}22` : `${C.green}22`, borderRadius: 20, padding: "2px 9px" }}>
+            {open > 0 ? `${open} open` : "alles klaar"}
+          </span>
+        )}
+      </span>
+      <span style={{ fontSize: 14, color: C.muted }}>›</span>
+    </button>
+  );
+}
+
+function ActiepuntenModal({ project, onSluiten, onToevoegen, onWisselKlaar, onVerwijderen }) {
   const [invoer, setInvoer] = useState("");
   const actiepunten = project.actiepunten || [];
   const open = actiepunten.filter(a => !a.klaar);
@@ -496,34 +519,40 @@ function ActiepuntenSectie({ project, onToevoegen, onWisselKlaar, onVerwijderen 
   }
 
   return (
-    <div style={{ background: C.surf, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 800, color: C.text }}>✅ Actiepunten</h3>
-        {actiepunten.length > 0 && <span style={{ fontSize: 11, color: C.muted }}>{klaar.length}/{actiepunten.length} klaar</span>}
-      </div>
-
-      {actiepunten.length === 0 && (
-        <p style={{ fontSize: 12, color: C.muted, margin: "0 0 10px" }}>Nog geen actiepunten — voeg er hieronder een toe, of laat AI-research een vervolgstap voorstellen.</p>
-      )}
-
-      {[...open, ...klaar].map(a => (
-        <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 0", borderTop: `1px solid ${C.border}` }}>
-          <button onClick={() => onWisselKlaar(a.id)}
-            style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${a.klaar ? C.green : C.border}`, background: a.klaar ? C.green : "transparent", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
-            {a.klaar && <span style={{ color: "#FFF", fontSize: 12, lineHeight: 1 }}>✓</span>}
-          </button>
-          <span style={{ flex: 1, fontSize: 13, color: a.klaar ? C.muted : C.text, textDecoration: a.klaar ? "line-through" : "none" }}>
-            {a.tekst}{a.bron === "ai" ? " 🔍" : a.bron === "chat" ? " 💬" : ""}
-          </span>
-          <button onClick={() => onVerwijderen(a.id)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14, padding: 4, flexShrink: 0 }}>✕</button>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={onSluiten}>
+      <div style={{ background: C.bg, borderRadius: "18px 18px 0 0", width: "100%", maxWidth: 560, margin: "0 auto", maxHeight: "85vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 18px", borderBottom: `1px solid ${C.border}` }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: C.text }}>✅ Actiepunten</h3>
+            {actiepunten.length > 0 && <p style={{ margin: "2px 0 0", fontSize: 11, color: C.muted }}>{klaar.length}/{actiepunten.length} klaar</p>}
+          </div>
+          <button onClick={onSluiten} style={{ background: "none", border: "none", fontSize: 18, color: C.muted, cursor: "pointer", padding: 4 }}>✕</button>
         </div>
-      ))}
 
-      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <input value={invoer} onChange={e => setInvoer(e.target.value)} placeholder="Nieuw actiepunt…"
-          onKeyDown={e => { if (e.key === "Enter") versturen(); }}
-          style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 11px", fontSize: 13, color: C.text }} />
-        <button onClick={versturen} style={{ background: C.accent, color: "#FFF", border: "none", borderRadius: 9, padding: "0 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+</button>
+        <div style={{ flex: 1, overflowY: "auto", padding: "10px 18px" }}>
+          {actiepunten.length === 0 && (
+            <p style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: 20 }}>Nog geen actiepunten — voeg er hieronder een toe, of laat AI-research een vervolgstap voorstellen.</p>
+          )}
+          {[...open, ...klaar].map(a => (
+            <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 0", borderTop: `1px solid ${C.border}` }}>
+              <button onClick={() => onWisselKlaar(a.id)}
+                style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${a.klaar ? C.green : C.border}`, background: a.klaar ? C.green : "transparent", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+                {a.klaar && <span style={{ color: "#FFF", fontSize: 13, lineHeight: 1 }}>✓</span>}
+              </button>
+              <span style={{ flex: 1, fontSize: 13, color: a.klaar ? C.muted : C.text, textDecoration: a.klaar ? "line-through" : "none" }}>
+                {a.tekst}{a.bron === "ai" ? " 🔍" : a.bron === "chat" ? " 💬" : ""}
+              </span>
+              <button onClick={() => onVerwijderen(a.id)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14, padding: 4, flexShrink: 0 }}>✕</button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, padding: "12px 18px", borderTop: `1px solid ${C.border}`, paddingBottom: "calc(12px + env(safe-area-inset-bottom))" }}>
+          <input value={invoer} onChange={e => setInvoer(e.target.value)} placeholder="Nieuw actiepunt…" autoFocus
+            onKeyDown={e => { if (e.key === "Enter") versturen(); }}
+            style={{ flex: 1, background: C.surf, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", fontSize: 13, color: C.text }} />
+          <button onClick={versturen} style={{ background: C.accent, color: "#FFF", border: "none", borderRadius: 10, padding: "0 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>+</button>
+        </div>
       </div>
     </div>
   );
@@ -1088,6 +1117,7 @@ export default function SchetsboekApp() {
   const [showHernoemProject, setShowHernoemProject] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showResearch, setShowResearch] = useState(false);
+  const [showActiepunten, setShowActiepunten] = useState(false);
   const [hernoemProjectNaam, setHernoemProjectNaam] = useState("");
   const [bewerkSchetsModus, setBewerkSchetsModus] = useState(false);
   const [bewerkTitelVeld, setBewerkTitelVeld] = useState("");
@@ -1643,11 +1673,7 @@ export default function SchetsboekApp() {
               </div>
             )}
 
-            <ActiepuntenSectie
-              project={actiefProject}
-              onToevoegen={(tekst) => voegActiepuntToe(actiefProject.id, tekst, "handmatig")}
-              onWisselKlaar={(actiepuntId) => wisselActiepuntKlaar(actiefProject.id, actiepuntId)}
-              onVerwijderen={(actiepuntId) => verwijderActiepunt(actiefProject.id, actiepuntId)} />
+            <ActiepuntenBalk project={actiefProject} onOpenen={() => setShowActiepunten(true)} />
 
             {schetsenVanProject.length === 0 && (
               <div style={{ textAlign: "center", padding: "60px 20px" }}>
@@ -1838,6 +1864,15 @@ export default function SchetsboekApp() {
           schetsen={schetsenVanProject}
           project={actiefProject}
           onSluiten={() => setShowBordModus(false)} />
+      )}
+
+      {showActiepunten && actiefProject && (
+        <ActiepuntenModal
+          project={actiefProject}
+          onToevoegen={(tekst) => voegActiepuntToe(actiefProject.id, tekst, "handmatig")}
+          onWisselKlaar={(actiepuntId) => wisselActiepuntKlaar(actiefProject.id, actiepuntId)}
+          onVerwijderen={(actiepuntId) => verwijderActiepunt(actiefProject.id, actiepuntId)}
+          onSluiten={() => setShowActiepunten(false)} />
       )}
 
       {showChat && actiefProject && (
