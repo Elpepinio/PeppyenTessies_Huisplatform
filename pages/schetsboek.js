@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { ChevronLeft, Plus, X, Trash2, Mic, Square, Play, Eraser, Search, FileDown, Pencil } from "lucide-react";
 import { jsPDF } from "jspdf";
+import ReactMarkdown from "react-markdown";
 import { getStroke } from "perfect-freehand";
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, arrayMove, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Tldraw, createTLStore, getSnapshot, loadSnapshot, AssetRecordType } from "tldraw";
+import { Tldraw, createTLStore, getSnapshot, loadSnapshot, AssetRecordType, toRichText } from "tldraw";
 import "tldraw/tldraw.css";
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -52,7 +53,59 @@ function formatDuur(sec) {
 function schetsMatcht(schets, term) {
   if (!term.trim()) return true;
   const zoek = term.trim().toLowerCase();
-  return (schets.titel || "").toLowerCase().includes(zoek) || (schets.tekst || "").toLowerCase().includes(zoek);
+  return (schets.titel || "").toLowerCase().includes(zoek) || (schets.tekst || "").toLowerCase().includes(zoek) || (schets.transcript || "").toLowerCase().includes(zoek);
+}
+
+// Verzamelt alle tekst-inhoud van een project (tekst-schetsen volledig, de
+// rest via hun titel + type-label) tot één samenhangende samenvatting — de
+// basis voor zowel de AI-research als de spar-chat. Visuele schetsen
+// (tekening/foto/video) worden alleen via hun titel meegenomen: de AI ziet
+// de afbeelding zelf niet, dus een goede titel is daar belangrijk voor.
+function bouwIdeeenSamenvatting(schetsenVanProject) {
+  const regels = schetsenVanProject.map(s => {
+    if (s.type === "tekst") {
+      return s.titel ? `- ${s.titel}: ${s.tekst || ""}` : `- ${s.tekst || ""}`;
+    }
+    if (s.type === "spraakbericht" && s.transcript) {
+      return s.titel ? `- ${s.titel} (spraakbericht): ${s.transcript}` : `- (spraakbericht): ${s.transcript}`;
+    }
+    return `- [${schetsTypeInfo(s.type).label}] ${s.titel || "(zonder titel)"}`;
+  });
+  return regels.join("\n");
+}
+
+// Wanneer is er voor het laatst iets aan dit project toegevoegd? Het
+// aanmaakmoment van het project zelf telt als ondergrens (een net
+// aangemaakt, nog lege project is niet "stilgevallen").
+function projectLaatstAangeraakt(project, schetsenVanDitProject) {
+  const momenten = [project.aangemaaktOp || 0, ...schetsenVanDitProject.map(s => s.toegevoegdOp || 0)];
+  return Math.max(...momenten);
+}
+
+// Een project is pas "stilgevallen" als het al minstens één schets heeft
+// (anders is het gewoon nieuw) én er in geruime tijd niets bij is gekomen.
+function isProjectStilgevallen(project, schetsenVanDitProject, nu = Date.now(), drempelDagen = 45) {
+  if (schetsenVanDitProject.length === 0) return false;
+  const laatstAangeraakt = projectLaatstAangeraakt(project, schetsenVanDitProject);
+  const dagenGeleden = Math.floor((nu - laatstAangeraakt) / (1000 * 60 * 60 * 24));
+  return dagenGeleden >= drempelDagen;
+}
+
+// Een markt verandert — onderzoek van een half jaar geleden zegt weinig meer
+// over "is er nu markt voor". Geeft false als er nog helemaal geen
+// onderzoek is (niets om verouderd te verklaren).
+function isResearchVerouderd(laatsteResearch, nu = Date.now(), drempelDagen = 90) {
+  if (!laatsteResearch || !laatsteResearch.datum) return false;
+  const dagenGeleden = Math.floor((nu - laatsteResearch.datum) / (1000 * 60 * 60 * 24));
+  return dagenGeleden >= drempelDagen;
+}
+
+// De PDF-export gebruikt jsPDF's platte tekstregels, geen echte
+// markdown-renderer (dat zou voor dit ene gebruik overkill zijn) — dus
+// koppen en vet-opmaak worden hier weggehaald i.p.v. als kale
+// #-tekens/sterretjes in het document te belanden.
+function markdownNaarPlatteTekst(analyse) {
+  return analyse.replace(/^#{1,6}\s*/gm, "").replace(/\*\*(.+?)\*\*/g, "$1");
 }
 
 // Kort tekst in JavaScript zelf in i.p.v. te vertrouwen op CSS-trucjes zoals
@@ -297,17 +350,25 @@ function TekenKanvas({ onKlaar, onAnnuleer }) {
   );
 }
 
-// ── Spraakopname — MediaRecorder API, opgeslagen als webm-audio. ─────────
+// ── Spraakopname — MediaRecorder API, opgeslagen als webm-audio. Draait
+//    daarnaast (waar de browser dat ondersteunt) de ingebouwde Web Speech
+//    API mee voor een live transcript — gratis, on-device, geen aparte
+//    AI-aanroep nodig. Werkt op Chrome/Edge en op Safari (macOS 14.1+,
+//    iOS/iPadOS 14.5+) via het webkit-voorvoegsel; browsers zonder
+//    ondersteuning (Firefox) leveren gewoon stil geen transcript. ───────
 function SpraakOpnemer({ onKlaar, onAnnuleer }) {
   const [status, setStatus] = useState("gereed"); // gereed | opnemen | opgenomen
   const [duurSec, setDuurSec] = useState(0);
   const [fout, setFout] = useState(null);
+  const [transcript, setTranscript] = useState("");
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
   const startTijdRef = useRef(0);
   const timerRef = useRef(null);
   const opnameUrlRef = useRef(null);
   const [opnameBlob, setOpnameBlob] = useState(null);
+  const herkenningRef = useRef(null);
+  const transcriptRef = useRef(""); // los van state, zodat onresult altijd de actuele waarde ziet
 
   async function startOpname() {
     setFout(null);
@@ -326,6 +387,28 @@ function SpraakOpnemer({ onKlaar, onAnnuleer }) {
       startTijdRef.current = Date.now();
       setStatus("opnemen");
       timerRef.current = setInterval(() => setDuurSec((Date.now() - startTijdRef.current) / 1000), 100);
+
+      const SpeechRecognitionKlasse = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognitionKlasse) {
+        transcriptRef.current = "";
+        setTranscript("");
+        const herkenning = new SpeechRecognitionKlasse();
+        herkenning.lang = "nl-NL";
+        herkenning.continuous = true;
+        herkenning.interimResults = false;
+        herkenning.onresult = e => {
+          let nieuw = "";
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            if (e.results[i].isFinal) nieuw += e.results[i][0].transcript;
+          }
+          if (nieuw) {
+            transcriptRef.current = (transcriptRef.current + " " + nieuw).trim();
+            setTranscript(transcriptRef.current);
+          }
+        };
+        herkenning.onerror = () => {}; // een transcriptiefout mag de opname zelf nooit verstoren
+        try { herkenning.start(); herkenningRef.current = herkenning; } catch { /* microfoon al in gebruik door de recognizer — negeren, opname werkt dan gewoon zonder transcript */ }
+      }
     } catch {
       setFout("Kon geen toegang krijgen tot de microfoon.");
     }
@@ -333,19 +416,22 @@ function SpraakOpnemer({ onKlaar, onAnnuleer }) {
   function stopOpname() {
     recorderRef.current?.stop();
     clearInterval(timerRef.current);
+    try { herkenningRef.current?.stop(); } catch {}
     setStatus("opgenomen");
   }
   function opnieuw() {
     setOpnameBlob(null);
     setDuurSec(0);
+    setTranscript("");
+    transcriptRef.current = "";
     setStatus("gereed");
   }
   async function klaar() {
     const dataUrl = await bestandNaarDataUrl(opnameBlob);
-    onKlaar(dataUrl, duurSec);
+    onKlaar(dataUrl, duurSec, transcript.trim());
   }
 
-  useEffect(() => () => clearInterval(timerRef.current), []);
+  useEffect(() => () => { clearInterval(timerRef.current); try { herkenningRef.current?.stop(); } catch {} }, []);
 
   return (
     <div style={{ textAlign: "center", padding: "30px 10px" }}>
@@ -359,13 +445,23 @@ function SpraakOpnemer({ onKlaar, onAnnuleer }) {
         </button>
       )}
       {status === "opnemen" && (
-        <button onClick={stopOpname} style={{ background: "#2D2A26", color: "#FFF", border: "none", borderRadius: 16, width: 72, height: 72, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>
-          <Square size={24} fill="#FFF" />
-        </button>
+        <>
+          <button onClick={stopOpname} style={{ background: "#2D2A26", color: "#FFF", border: "none", borderRadius: 16, width: 72, height: 72, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>
+            <Square size={24} fill="#FFF" />
+          </button>
+          {transcript && <p style={{ fontSize: 12, color: "#8C8576", marginTop: 16, fontStyle: "italic" }}>"{transcript}"</p>}
+        </>
       )}
       {status === "opgenomen" && (
         <div>
-          <audio controls src={URL.createObjectURL(opnameBlob)} style={{ width: "100%", marginBottom: 16 }} />
+          <audio controls src={URL.createObjectURL(opnameBlob)} style={{ width: "100%", marginBottom: 12 }} />
+          {(transcript || window.SpeechRecognition || window.webkitSpeechRecognition) && (
+            <div style={{ textAlign: "left", marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: "#8C8576", fontWeight: 600, display: "block", marginBottom: 4 }}>Transcript (automatisch, corrigeer gerust)</label>
+              <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="(geen transcript herkend)"
+                style={{ width: "100%", minHeight: 60, border: "1px solid #E4DCCB", borderRadius: 10, padding: "8px 10px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={opnieuw} style={{ flex: 1, background: "#F3EFE6", border: "1px solid #E4DCCB", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Opnieuw</button>
             <button onClick={klaar} style={{ flex: 1, background: "#3D7A5C", color: "#FFF", border: "none", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Gebruik deze</button>
@@ -384,6 +480,55 @@ function SpraakOpnemer({ onKlaar, onAnnuleer }) {
 // ── Volgorde aanbrengen — een simpele lijst waarin je items kunt slepen
 //    (aanraak/muis) óf met pijltjes kunt verplaatsen. De pijltjes zijn de
 //    garantie dat het overal werkt; het slepen is het prettige extraatje.
+// ── Actiepunten per project — de plek waar een AI-vervolgstap of een
+//    spar-inzicht landt als iets tastbaars, in plaats van weg te zakken in
+//    een onderzoeksrapport of chatgeschiedenis. ──────────────────────────
+function ActiepuntenSectie({ project, onToevoegen, onWisselKlaar, onVerwijderen }) {
+  const [invoer, setInvoer] = useState("");
+  const actiepunten = project.actiepunten || [];
+  const open = actiepunten.filter(a => !a.klaar);
+  const klaar = actiepunten.filter(a => a.klaar);
+
+  function versturen() {
+    if (!invoer.trim()) return;
+    onToevoegen(invoer);
+    setInvoer("");
+  }
+
+  return (
+    <div style={{ background: C.surf, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 800, color: C.text }}>✅ Actiepunten</h3>
+        {actiepunten.length > 0 && <span style={{ fontSize: 11, color: C.muted }}>{klaar.length}/{actiepunten.length} klaar</span>}
+      </div>
+
+      {actiepunten.length === 0 && (
+        <p style={{ fontSize: 12, color: C.muted, margin: "0 0 10px" }}>Nog geen actiepunten — voeg er hieronder een toe, of laat AI-research een vervolgstap voorstellen.</p>
+      )}
+
+      {[...open, ...klaar].map(a => (
+        <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 0", borderTop: `1px solid ${C.border}` }}>
+          <button onClick={() => onWisselKlaar(a.id)}
+            style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${a.klaar ? C.green : C.border}`, background: a.klaar ? C.green : "transparent", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+            {a.klaar && <span style={{ color: "#FFF", fontSize: 12, lineHeight: 1 }}>✓</span>}
+          </button>
+          <span style={{ flex: 1, fontSize: 13, color: a.klaar ? C.muted : C.text, textDecoration: a.klaar ? "line-through" : "none" }}>
+            {a.tekst}{a.bron === "ai" ? " 🔍" : a.bron === "chat" ? " 💬" : ""}
+          </span>
+          <button onClick={() => onVerwijderen(a.id)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 14, padding: 4, flexShrink: 0 }}>✕</button>
+        </div>
+      ))}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <input value={invoer} onChange={e => setInvoer(e.target.value)} placeholder="Nieuw actiepunt…"
+          onKeyDown={e => { if (e.key === "Enter") versturen(); }}
+          style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 11px", fontSize: 13, color: C.text }} />
+        <button onClick={versturen} style={{ background: C.accent, color: "#FFF", border: "none", borderRadius: 9, padding: "0 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+</button>
+      </div>
+    </div>
+  );
+}
+
 function VolgordeRij({ item, idx, totaal, onOmhoog, onOmlaag }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
   const stijl = {
@@ -413,6 +558,309 @@ function VolgordeRij({ item, idx, totaal, onOmhoog, onOmlaag }) {
 // ── Volgorde aanbrengen — @dnd-kit (de gevestigde, toegankelijke standaard
 //    voor sleep-en-herordenen in React) i.p.v. een handgeschreven
 //    pointer-implementatie. De pijltjes blijven als extra, betrouwbare weg.
+// ── Sparren met AI over de ideeën van een project — hergebruikt dezelfde
+//    /api/ai-route (met de al bestaande messages-array voor een echt
+//    gesprek) die ook de Budget-tool en andere onderdelen gebruiken. ──────
+function SchetsboekChatPaneel({ context, projectNaam, projectId, onSluiten, onActiepuntVastleggen }) {
+  const [berichten, setBerichten] = useState([]);
+  const [laden, setLaden] = useState(true);
+  const [invoer, setInvoer] = useState("");
+  const [bezig, setBezig] = useState(false);
+  const [fout, setFout] = useState(null);
+  const [actiepuntBewerkIdx, setActiepuntBewerkIdx] = useState(null);
+  const [actiepuntTekst, setActiepuntTekst] = useState("");
+  const scrollRef = useRef(null);
+  const gestartRef = useRef(false);
+
+  function slaOp(bijgewerkt) {
+    fetch("/api/schetsboek", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actie: "chatOpslaan", projectId, berichten: bijgewerkt }),
+    }).catch(() => {});
+  }
+
+  useEffect(() => {
+    if (gestartRef.current) return;
+    gestartRef.current = true;
+    fetch(`/api/schetsboek?chat=${projectId}`).then(r => r.json()).then(data => {
+      setBerichten(data.berichten || []);
+      setLaden(false);
+    }).catch(() => setLaden(false));
+  }, [projectId]);
+
+  async function verstuur(tekst) {
+    if (!tekst.trim() || bezig) return;
+    const nieuw = [...berichten, { role: "user", text: tekst.trim() }];
+    setBerichten(nieuw);
+    slaOp(nieuw);
+    setInvoer("");
+    setBezig(true);
+    setFout(null);
+    try {
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bron: "schetsboek-chat",
+          systemPrompt: `Je bent een creatieve sparringpartner voor een bedrijfsidee met de werktitel "${projectNaam}". Hieronder staan de ideeën die al zijn opgeschreven. Denk actief mee: stel scherpe vragen, opper varianten, wijs op mogelijke haken en ogen — kort en concreet, in het Nederlands. Dit wordt op een telefoon gelezen, dus geen lange lappen tekst.\n\nOpgeschreven ideeën:\n${context || "(nog geen tekst-schetsen in dit project)"}`,
+          messages: nieuw.map(b => ({ role: b.role, content: b.text })),
+          maxTokens: 600,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      const compleet = [...nieuw, { role: "assistant", text: data.text || "(geen antwoord ontvangen)" }];
+      setBerichten(compleet);
+      slaOp(compleet);
+    } catch (e) {
+      setFout("Kon geen antwoord ophalen: " + e.message);
+    }
+    setBezig(false);
+  }
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [berichten, bezig]);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={onSluiten}>
+      <div style={{ background: C.bg, borderRadius: "18px 18px 0 0", width: "100%", maxWidth: 560, margin: "0 auto", maxHeight: "85vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 18px", borderBottom: `1px solid ${C.border}` }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: C.text }}>💬 Sparren met AI</h3>
+            <p style={{ margin: "2px 0 0", fontSize: 11, color: C.muted }}>{projectNaam}</p>
+          </div>
+          <button onClick={onSluiten} style={{ background: "none", border: "none", fontSize: 18, color: C.muted, cursor: "pointer", padding: 4 }}>✕</button>
+        </div>
+
+        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+          {laden && (
+            <p style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: 20 }}>Eerder gesprek laden…</p>
+          )}
+          {!laden && berichten.length === 0 && !bezig && (
+            <p style={{ fontSize: 12, color: C.muted, textAlign: "center", padding: 20 }}>Stel een vraag of gooi een gedachte in de groep — bv. "welke variant is het sterkst?" of "wat zijn de risico's?".</p>
+          )}
+          {berichten.map((b, i) => (
+            <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: b.role === "user" ? "flex-end" : "flex-start", maxWidth: "85%" }}>
+              <div style={{ background: b.role === "user" ? C.accent : C.surf, color: b.role === "user" ? "#FFF" : C.text, border: b.role === "user" ? "none" : `1px solid ${C.border}`, borderRadius: 14, padding: "9px 13px", fontSize: 13, lineHeight: 1.5 }}>
+                {b.role === "user" ? (
+                  <span style={{ whiteSpace: "pre-wrap" }}>{b.text}</span>
+                ) : (
+                  <ReactMarkdown components={{ p: p => <p style={{ margin: "0 0 6px" }} {...p} />, ul: p => <ul style={{ margin: "0 0 6px", paddingLeft: 16 }} {...p} />, li: p => <li style={{ marginBottom: 2 }} {...p} /> }}>{b.text}</ReactMarkdown>
+                )}
+              </div>
+              {b.role === "assistant" && onActiepuntVastleggen && (
+                actiepuntBewerkIdx === i ? (
+                  <div style={{ marginTop: 5, width: "100%", display: "flex", gap: 6 }}>
+                    <input value={actiepuntTekst} onChange={e => setActiepuntTekst(e.target.value)} autoFocus
+                      onKeyDown={e => { if (e.key === "Enter" && actiepuntTekst.trim()) { onActiepuntVastleggen(actiepuntTekst); setActiepuntBewerkIdx(null); } }}
+                      style={{ flex: 1, fontSize: 12, padding: "6px 9px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.card, color: C.text }} />
+                    <button onClick={() => { if (actiepuntTekst.trim()) { onActiepuntVastleggen(actiepuntTekst); setActiepuntBewerkIdx(null); } }}
+                      style={{ background: C.accent, color: "#FFF", border: "none", borderRadius: 8, padding: "0 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓</button>
+                    <button onClick={() => setActiepuntBewerkIdx(null)} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer" }}>✕</button>
+                  </div>
+                ) : (
+                  <button onClick={() => { setActiepuntBewerkIdx(i); setActiepuntTekst(b.text.length > 100 ? b.text.slice(0, 100).trimEnd() + "…" : b.text); }}
+                    style={{ marginTop: 4, background: "none", border: "none", color: C.accentDark, fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 }}>
+                    + Als actiepunt vastleggen
+                  </button>
+                )
+              )}
+            </div>
+          ))}
+          {bezig && (
+            <div style={{ alignSelf: "flex-start", background: C.surf, border: `1px solid ${C.border}`, borderRadius: 14, padding: "9px 13px", fontSize: 13, color: C.muted }}>typt…</div>
+          )}
+          {fout && <p style={{ fontSize: 12, color: "#C0392B", textAlign: "center" }}>⚠️ {fout}</p>}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, padding: "12px 18px", borderTop: `1px solid ${C.border}`, paddingBottom: "calc(12px + env(safe-area-inset-bottom))" }}>
+          <input value={invoer} onChange={e => setInvoer(e.target.value)} placeholder="Typ je gedachte…"
+            onKeyDown={e => { if (e.key === "Enter") verstuur(invoer); }}
+            style={{ flex: 1, background: C.surf, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", fontSize: 13, color: C.text }} />
+          <button onClick={() => verstuur(invoer)} disabled={bezig || !invoer.trim()}
+            style={{ background: C.accent, color: "#FFF", border: "none", borderRadius: 10, padding: "0 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", opacity: (bezig || !invoer.trim()) ? 0.5 : 1 }}>
+            Stuur
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── AI-research naar een projectidee — bestaat het al, is er markt voor,
+//    kans van slagen. Toont een laadstatus en daarna de analyse als
+//    leesbare tekst met tussenkopjes. ──────────────────────────────────
+function SchetsboekResearchPaneel({ project, ideeen, onSluiten, onOpgeslagen, onVervolgstapAlsActiepunt }) {
+  const [status, setStatus] = useState("laden"); // laden | bezig | klaar | fout
+  const [analyse, setAnalyse] = useState("");
+  const [bronnen, setBronnen] = useState([]);
+  const [structuur, setStructuur] = useState({});
+  const [datum, setDatum] = useState(null);
+  const [foutTekst, setFoutTekst] = useState("");
+  const gestartRef = useRef(false);
+
+  async function voerOnderzoekUit() {
+    setStatus("bezig");
+    setFoutTekst("");
+    try {
+      const res = await fetch("/api/schetsboek-research", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectNaam: project.naam, ideeenSamenvatting: ideeen }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      const nu = Date.now();
+      const research = {
+        analyse: data.analyse, bronnen: data.bronnen || [], kortVerdict: data.kortVerdict || "", datum: nu,
+        marktomvang: data.marktomvang || null, concurrentie: data.concurrentie || null, investering: data.investering || null, vervolgstap: data.vervolgstap || null,
+      };
+      setAnalyse(research.analyse);
+      setBronnen(research.bronnen);
+      setStructuur(research);
+      setDatum(research.datum);
+      setStatus("klaar");
+      // Opslaan gebeurt op de achtergrond — een mislukte opslag hoeft de
+      // zojuist getoonde analyse niet te blokkeren, die staat al op het
+      // scherm. Bij een volgend bezoek wordt dan gewoon opnieuw onderzocht.
+      fetch("/api/schetsboek", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actie: "researchOpslaan", projectId: project.id, research }),
+      }).catch(() => {});
+      onOpgeslagen?.(research);
+    } catch (e) {
+      setFoutTekst(e.message);
+      setStatus("fout");
+    }
+  }
+
+  useEffect(() => {
+    if (gestartRef.current) return;
+    gestartRef.current = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/schetsboek?research=${project.id}`);
+        const data = await res.json();
+        if (data.research) {
+          setAnalyse(data.research.analyse);
+          setBronnen(data.research.bronnen || []);
+          setStructuur(data.research);
+          setDatum(data.research.datum);
+          setStatus("klaar");
+        } else {
+          voerOnderzoekUit();
+        }
+      } catch {
+        voerOnderzoekUit();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={onSluiten}>
+      <div style={{ background: C.bg, borderRadius: "18px 18px 0 0", width: "100%", maxWidth: 560, margin: "0 auto", maxHeight: "85vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 18px", borderBottom: `1px solid ${C.border}` }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: C.text }}>🔍 AI-research</h3>
+            <p style={{ margin: "2px 0 0", fontSize: 11, color: C.muted }}>
+              {project.naam}{status === "klaar" && datum ? ` · ${formatDatumKort(new Date(datum).toISOString().slice(0,10))}` : ""}
+              {status === "klaar" && datum && isResearchVerouderd({ datum }) && (
+                <span style={{ color: "#B8860B", fontWeight: 600 }}> · verouderd, misschien tijd voor een update?</span>
+              )}
+            </p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {status === "klaar" && (
+              <button onClick={voerOnderzoekUit} style={{ background: "none", border: "none", color: C.accentDark, fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0 }}>
+                🔄 Opnieuw
+              </button>
+            )}
+            <button onClick={onSluiten} style={{ background: "none", border: "none", fontSize: 18, color: C.muted, cursor: "pointer", padding: 4 }}>✕</button>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 18px" }}>
+          {(status === "bezig" || status === "laden") && (
+            <div style={{ textAlign: "center", padding: 30 }}>
+              <p style={{ fontSize: 28, margin: "0 0 10px" }}>🔍</p>
+              <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>
+                {status === "laden" ? "Even kijken of dit project al eerder onderzocht is…" : "Bezig met zoeken naar vergelijkbare ideeën en marktinformatie… dit kan een halve minuut duren."}
+              </p>
+            </div>
+          )}
+          {status === "fout" && (
+            <p style={{ fontSize: 13, color: "#C0392B", textAlign: "center", padding: 20 }}>⚠️ {foutTekst}</p>
+          )}
+          {status === "klaar" && (
+            <>
+              {(structuur.marktomvang || structuur.concurrentie || structuur.investering) && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 14 }}>
+                  {structuur.marktomvang && (
+                    <div style={{ background: C.card, borderRadius: 10, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 9, color: C.muted, textTransform: "uppercase" }}>Marktomvang</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginTop: 2 }}>{structuur.marktomvang}</div>
+                    </div>
+                  )}
+                  {structuur.concurrentie && (
+                    <div style={{ background: C.card, borderRadius: 10, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 9, color: C.muted, textTransform: "uppercase" }}>Concurrentie</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginTop: 2 }}>{"●".repeat(+structuur.concurrentie || 0)}{"○".repeat(5 - (+structuur.concurrentie || 0))}</div>
+                    </div>
+                  )}
+                  {structuur.investering && (
+                    <div style={{ background: C.card, borderRadius: 10, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 9, color: C.muted, textTransform: "uppercase" }}>Investering</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginTop: 2 }}>{structuur.investering}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {structuur.vervolgstap && (
+                <div style={{ background: `${C.accent}18`, border: `1px solid ${C.accent}44`, borderRadius: 12, padding: 12, marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.accentDark, fontWeight: 700, textTransform: "uppercase" }}>Voorgestelde vervolgstap</div>
+                    <div style={{ fontSize: 13, color: C.text, marginTop: 2 }}>{structuur.vervolgstap}</div>
+                  </div>
+                  {onVervolgstapAlsActiepunt && (
+                    <button onClick={() => onVervolgstapAlsActiepunt(structuur.vervolgstap)}
+                      style={{ background: C.accent, color: "#FFF", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }}>
+                      + Actiepunt
+                    </button>
+                  )}
+                </div>
+              )}
+              <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>
+                <ReactMarkdown components={{
+                  h1: p => <h4 style={{ fontSize: 14, fontWeight: 800, color: C.accentDark, margin: "14px 0 6px" }} {...p} />,
+                  h2: p => <h4 style={{ fontSize: 14, fontWeight: 800, color: C.accentDark, margin: "14px 0 6px" }} {...p} />,
+                  h3: p => <h5 style={{ fontSize: 13, fontWeight: 700, color: C.accentDark, margin: "12px 0 5px" }} {...p} />,
+                  p: p => <p style={{ margin: "0 0 8px" }} {...p} />,
+                  strong: p => <strong style={{ fontWeight: 700 }} {...p} />,
+                  ul: p => <ul style={{ margin: "0 0 8px", paddingLeft: 18 }} {...p} />,
+                  ol: p => <ol style={{ margin: "0 0 8px", paddingLeft: 18 }} {...p} />,
+                  li: p => <li style={{ marginBottom: 3 }} {...p} />,
+                }}>{analyse}</ReactMarkdown>
+              </div>
+              {bronnen.length > 0 && (
+                <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+                  <p style={{ margin: "0 0 8px", fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.03em" }}>Bronnen</p>
+                  {bronnen.map((b, i) => (
+                    <a key={i} href={b.url} target="_blank" rel="noopener noreferrer"
+                      style={{ display: "block", fontSize: 12, color: C.accentDark, marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {i + 1}. {b.titel}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function VolgordeLijst({ items, onVolgordeGewijzigd, onSluiten }) {
   const [volgorde, setVolgorde] = useState(items);
   useEffect(() => { setVolgorde(items); }, [items]);
@@ -474,10 +922,26 @@ function VolgordeLijst({ items, onVolgordeGewijzigd, onSluiten }) {
 //    opgeslagen per project, i.p.v. losse bordX/bordY-velden per schets.
 //    Bij de allereerste keer openen van een project zonder eigen bord wordt
 //    het automatisch gevuld met een afbeelding per bestaande schets.
+// Bouwt de tekst voor een notitie-vorm op het bord — voor tekst-schetsen de
+// titel+inhoud zelf, voor spraakberichten (die geen duimnagel hebben) een
+// label met icoon en duur, zodat ook dié een herkenbare plek op het bord
+// krijgen i.p.v. simpelweg overgeslagen te worden.
+function inhoudVoorNotitie(schets) {
+  if (schets.type === "tekst") {
+    return schets.titel ? `${schets.titel}\n\n${schets.tekst || ""}` : (schets.tekst || "");
+  }
+  const label = `${schetsTypeInfo(schets.type).icon} ${schets.titel || schetsTypeInfo(schets.type).label}${schets.duurSec ? ` (${formatDuur(schets.duurSec)})` : ""}`;
+  // Een spraakbericht met transcript krijgt de tekst zelf als notitie-inhoud
+  // — veel bruikbaarder op het bord dan alleen "🎙️ Spraakbericht (0:47)".
+  if (schets.type === "spraakbericht" && schets.transcript) {
+    return `${label}\n\n"${schets.transcript}"`;
+  }
+  return label;
+}
+
 function BordWeergave({ schetsen, project, onSluiten }) {
   const [store] = useState(() => createTLStore());
   const [laden, setLaden] = useState(true);
-  const heeftBestaandBordRef = useRef(false);
   const opslaanTimeoutRef = useRef(null);
 
   useEffect(() => {
@@ -486,7 +950,6 @@ function BordWeergave({ schetsen, project, onSluiten }) {
       if (!actief) return;
       if (data.snapshot) {
         loadSnapshot(store, { document: data.snapshot });
-        heeftBestaandBordRef.current = true;
       }
       setLaden(false);
     }).catch(() => setLaden(false));
@@ -495,30 +958,53 @@ function BordWeergave({ schetsen, project, onSluiten }) {
   }, []);
 
   function handleMount(editor) {
-    // Eerste keer dat dit project een bord krijgt (nog geen eigen
-    // opgeslagen document): vul 'm met een afbeelding per bestaande schets
-    // die een duimnagel heeft, in een rasterpatroon — via de gedocumenteerde
-    // createAssets/createShape-API, niet door zelf ruwe store-records te
-    // verzinnen.
-    if (!heeftBestaandBordRef.current) {
-      schetsen.forEach((schets, i) => {
-        if (!schets.thumbnail) return;
+    // Welke schetsen staan al als vorm op dit bord? Elke aangemaakte vorm
+    // krijgt schetsId in zijn meta-veld mee (zie hieronder), dus dat is
+    // te herleiden zonder een apart register bij te houden. Dit draait
+    // bij ÉLKE keer openen (niet alleen de allereerste), zodat nieuw
+    // toegevoegde schetsen automatisch alsnog op het bord verschijnen —
+    // handmatig verwijderde/verplaatste vormen worden met rust gelaten.
+    const bestaandeSchetsIds = new Set(
+      editor.getCurrentPageShapes().map(s => s.meta?.schetsId).filter(Boolean)
+    );
+    const nieuweSchetsen = schetsen.filter(s => !bestaandeSchetsIds.has(s.id));
+
+    if (nieuweSchetsen.length > 0) {
+      // Rasterpositie verder laten lopen ná de reeds aanwezige vormen, zodat
+      // nieuwe schetsen niet bovenop bestaande (mogelijk al verplaatste)
+      // vormen belanden.
+      const startIndex = bestaandeSchetsIds.size;
+      nieuweSchetsen.forEach((schets, offset) => {
+        const i = startIndex + offset;
         const breedte = 200, hoogte = 200;
-        const asset = AssetRecordType.create({
-          id: AssetRecordType.createId(),
-          type: "image",
-          props: {
-            name: schets.titel || schetsTypeInfo(schets.type).label,
-            src: schets.thumbnail, w: breedte, h: hoogte, mimeType: "image/jpeg", isAnimated: false,
-          },
-        });
-        editor.createAssets([asset]);
-        editor.createShape({
-          type: "image",
-          x: (i % 5) * (breedte + 40) + 40,
-          y: Math.floor(i / 5) * (hoogte + 60) + 40,
-          props: { assetId: asset.id, w: breedte, h: hoogte },
-        });
+        const x = (i % 5) * (breedte + 40) + 40;
+        const y = Math.floor(i / 5) * (hoogte + 60) + 40;
+
+        if (schets.thumbnail) {
+          // Tekening, foto of video — een echte afbeelding, via de
+          // gedocumenteerde createAssets/createShape-API.
+          const asset = AssetRecordType.create({
+            id: AssetRecordType.createId(),
+            type: "image",
+            props: {
+              name: schets.titel || schetsTypeInfo(schets.type).label,
+              src: schets.thumbnail, w: breedte, h: hoogte, mimeType: "image/jpeg", isAnimated: false,
+            },
+          });
+          editor.createAssets([asset]);
+          editor.createShape({
+            type: "image", x, y, meta: { schetsId: schets.id },
+            props: { assetId: asset.id, w: breedte, h: hoogte },
+          });
+        } else {
+          // Tekst en spraakberichten hebben geen duimnagel — die krijgen een
+          // notitie-vorm i.p.v. een afbeelding, zodat ÉLKE schets een plek op
+          // het bord krijgt, niet alleen de visuele.
+          editor.createShape({
+            type: "note", x, y, meta: { schetsId: schets.id },
+            props: { richText: toRichText(inhoudVoorNotitie(schets)) },
+          });
+        }
       });
     }
 
@@ -600,6 +1086,8 @@ export default function SchetsboekApp() {
   const [showZoek, setShowZoek] = useState(false);
   const [nieuweReactie, setNieuweReactie] = useState("");
   const [showHernoemProject, setShowHernoemProject] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  const [showResearch, setShowResearch] = useState(false);
   const [hernoemProjectNaam, setHernoemProjectNaam] = useState("");
   const [bewerkSchetsModus, setBewerkSchetsModus] = useState(false);
   const [bewerkTitelVeld, setBewerkTitelVeld] = useState("");
@@ -662,6 +1150,31 @@ export default function SchetsboekApp() {
     showToast("✅ Projectnaam bijgewerkt");
   }
 
+  // Alleen het korte verdict + datum op het project zelf bewaren (voor het
+  // overzicht) — de volledige analyse staat al apart opgeslagen via
+  // researchOpslaan en hoeft niet dubbel in de (kleinere) projectenlijst.
+  function bijwerkLaatsteResearch(id, research) {
+    persistProjecten(projecten.map(p => p.id === id ? { ...p, laatsteResearch: { kortVerdict: research.kortVerdict, datum: research.datum } } : p));
+  }
+
+  // Actiepunten leven op het project zelf (net als naam/emoji) — lichte
+  // tekstregels, dus geen aparte opslagroute nodig, gewoon mee in
+  // persistProjecten.
+  function voegActiepuntToe(projectId, tekst, bron = "handmatig") {
+    if (!tekst.trim()) return;
+    const nieuw = { id: uid(), tekst: tekst.trim(), klaar: false, bron, aangemaaktOp: Date.now() };
+    persistProjecten(projecten.map(p => p.id === projectId ? { ...p, actiepunten: [...(p.actiepunten||[]), nieuw] } : p));
+    showToast("✅ Actiepunt toegevoegd");
+  }
+  function wisselActiepuntKlaar(projectId, actiepuntId) {
+    persistProjecten(projecten.map(p => p.id === projectId
+      ? { ...p, actiepunten: (p.actiepunten||[]).map(a => a.id === actiepuntId ? { ...a, klaar: !a.klaar } : a) }
+      : p));
+  }
+  function verwijderActiepunt(projectId, actiepuntId) {
+    persistProjecten(projecten.map(p => p.id === projectId ? { ...p, actiepunten: (p.actiepunten||[]).filter(a => a.id !== actiepuntId) } : p));
+  }
+
   function verwijderProject(id) {
     if (!window.confirm("Dit project en alle schetsen erin verwijderen? Dit kan niet ongedaan gemaakt worden.")) return;
     lastWriteRef.current = Date.now();
@@ -676,10 +1189,10 @@ export default function SchetsboekApp() {
   }
 
   // ── Schetsen ──────────────────────────────────────────────
-  async function voegSchetsToe(type, { media = null, tekst = "", thumbnail = null, duurSec = null } = {}) {
+  async function voegSchetsToe(type, { media = null, tekst = "", thumbnail = null, duurSec = null, transcript = "" } = {}) {
     const nieuweSchets = {
       id: uid(), projectId: actiefProjectId, type,
-      titel: titelInvoer.trim(), tekst, thumbnail, duurSec,
+      titel: titelInvoer.trim(), tekst, thumbnail, duurSec, transcript,
       heeftMedia: !!media,
       persoon: huidigeGebruiker, datum: vandaagStr(), toegevoegdOp: Date.now(), volgorde: Date.now(),
     };
@@ -757,7 +1270,7 @@ export default function SchetsboekApp() {
   //    een duimnagel (waar beschikbaar), titel, wie/wanneer, tekst en
   //    reacties. Spraak/video kunnen niet afspeelbaar in een PDF, dus die
   //    krijgen een duidelijk gelabeld icoon i.p.v. te doen alsof. ────────
-  function exporteerProjectAlsPdf(project, schetsenLijst) {
+  async function exporteerProjectAlsPdf(project, schetsenLijst) {
     const doc = new jsPDF({ unit: "mm", format: "a4" });
     const paginaBreedte = 210, paginaHoogte = 297, marge = 15;
     let y = marge;
@@ -777,6 +1290,99 @@ export default function SchetsboekApp() {
     doc.text(`Geëxporteerd op ${new Date().toLocaleDateString("nl-NL")} · ${schetsenLijst.length} schets${schetsenLijst.length===1?"":"en"}`, marge, y);
     doc.setTextColor(0, 0, 0);
     y += 12;
+
+    // Onderzoeksconclusie + bronnen vooraan — dit maakt van de export een
+    // echt deelbaar "business case"-document i.p.v. alleen een verzameling
+    // losse schetsen. Alleen ophalen als er ooit onderzoek is gedaan.
+    if (project.laatsteResearch) {
+      try {
+        const res = await fetch(`/api/schetsboek?research=${project.id}`);
+        const data = await res.json();
+        if (data.research) {
+          nieuwePaginaIndienNodig(30);
+          doc.setFillColor(245, 240, 230);
+          doc.setFontSize(13);
+          doc.setFont(undefined, "bold");
+          doc.text("🔍 AI-marktonderzoek", marge, y);
+          y += 7;
+          doc.setFont(undefined, "normal");
+          doc.setFontSize(9);
+          doc.setTextColor(140, 133, 118);
+          doc.text(`Onderzocht op ${new Date(data.research.datum).toLocaleDateString("nl-NL")}`, marge, y);
+          doc.setTextColor(0, 0, 0);
+          y += 7;
+
+          const statRegels = [
+            data.research.marktomvang ? `Marktomvang: ${data.research.marktomvang}` : null,
+            data.research.concurrentie ? `Concurrentie: ${data.research.concurrentie}/5` : null,
+            data.research.investering ? `Investering: ${data.research.investering}` : null,
+          ].filter(Boolean);
+          if (statRegels.length > 0) {
+            doc.setFontSize(9.5);
+            doc.text(statRegels.join("   ·   "), marge, y);
+            y += 7;
+          }
+          if (data.research.vervolgstap) {
+            doc.setFont(undefined, "bold");
+            doc.setFontSize(9.5);
+            doc.text("Voorgestelde vervolgstap:", marge, y);
+            doc.setFont(undefined, "normal");
+            const vervolgRegels = doc.splitTextToSize(data.research.vervolgstap, paginaBreedte - 2*marge - 45);
+            doc.text(vervolgRegels, marge + 45, y);
+            y += Math.max(6, vervolgRegels.length * 5) + 2;
+          }
+
+          // De analyse is markdown — voor de PDF is platte tekst met de
+          // ##-koppen eruit gehaald ruim voldoende leesbaar, een volledige
+          // markdown-renderer is hier overkill.
+          const platteAnalyse = markdownNaarPlatteTekst(data.research.analyse);
+          doc.setFontSize(9.5);
+          const analyseRegels = doc.splitTextToSize(platteAnalyse, paginaBreedte - 2*marge);
+          for (const regel of analyseRegels) {
+            nieuwePaginaIndienNodig(5);
+            doc.text(regel, marge, y);
+            y += 4.6;
+          }
+          y += 4;
+
+          if ((data.research.bronnen || []).length > 0) {
+            nieuwePaginaIndienNodig(6 + data.research.bronnen.length * 4.5);
+            doc.setFontSize(8.5);
+            doc.setTextColor(140, 133, 118);
+            doc.text("Bronnen:", marge, y);
+            y += 4.5;
+            data.research.bronnen.forEach((b, i) => {
+              doc.text(`${i+1}. ${b.titel} — ${b.url}`, marge, y);
+              y += 4.2;
+            });
+            doc.setTextColor(0, 0, 0);
+            y += 4;
+          }
+
+          nieuwePaginaIndienNodig(10);
+          doc.setDrawColor(220, 210, 190);
+          doc.line(marge, y, paginaBreedte - marge, y);
+          y += 10;
+        }
+      } catch { /* export mag nooit stuklopen op een niet-opgehaald onderzoek — gewoon zonder verder */ }
+    }
+
+    // Actiepunten — net zo tastbaar in het gedeelde document als in de app.
+    if ((project.actiepunten || []).length > 0) {
+      nieuwePaginaIndienNodig(10 + project.actiepunten.length * 6);
+      doc.setFontSize(13);
+      doc.setFont(undefined, "bold");
+      doc.text("✅ Actiepunten", marge, y);
+      y += 8;
+      doc.setFont(undefined, "normal");
+      doc.setFontSize(10);
+      for (const a of project.actiepunten) {
+        nieuwePaginaIndienNodig(6);
+        doc.text(`${a.klaar ? "☑" : "☐"} ${a.tekst}`, marge, y);
+        y += 6;
+      }
+      y += 6;
+    }
 
     for (const schets of schetsenLijst) {
       const afbeelding = schets.type === "tekening" || schets.type === "foto" || schets.type === "video" ? schets.thumbnail : null;
@@ -960,13 +1566,33 @@ export default function SchetsboekApp() {
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               {projecten.map(project => {
-                const aantal = schetsen.filter(s => s.projectId === project.id).length;
+                const schetsenVanDitProject = schetsen.filter(s => s.projectId === project.id);
+                const aantal = schetsenVanDitProject.length;
+                const stilgevallen = isProjectStilgevallen(project, schetsenVanDitProject);
+                const actiepunten = project.actiepunten || [];
+                const openActiepunten = actiepunten.filter(a => !a.klaar).length;
+                const onderzoekVerouderd = isResearchVerouderd(project.laatsteResearch);
                 return (
                   <button key={project.id} onClick={() => setActiefProjectId(project.id)}
                     style={{ background: C.surf, border: `1px solid ${C.border}`, borderTop: `4px solid ${project.kleur}`, borderRadius: 16, padding: "18px 14px", textAlign: "left", cursor: "pointer" }}>
                     <div style={{ fontSize: 30, marginBottom: 8 }}>{project.emoji}</div>
                     <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.text }}>{project.naam}</p>
                     <p style={{ margin: "4px 0 0", fontSize: 11, color: C.muted }}>{aantal} schets{aantal===1?"":"en"}</p>
+                    {project.laatsteResearch && (
+                      <p style={{ margin: "8px 0 0", fontSize: 10.5, color: C.accentDark, lineHeight: 1.4 }}>
+                        🔍 {project.laatsteResearch.kortVerdict}{onderzoekVerouderd ? " · verouderd" : ""}
+                      </p>
+                    )}
+                    {actiepunten.length > 0 && (
+                      <p style={{ margin: "6px 0 0", fontSize: 10.5, color: openActiepunten > 0 ? C.text : C.green, fontWeight: 600 }}>
+                        {openActiepunten > 0 ? `☐ ${openActiepunten} open actiepunt${openActiepunten===1?"":"en"}` : "✅ Alle actiepunten klaar"}
+                      </p>
+                    )}
+                    {stilgevallen && (
+                      <p style={{ margin: "6px 0 0", fontSize: 10, color: "#B8860B", fontWeight: 600 }}>
+                        ⏳ Al even stil — {Math.floor((Date.now() - projectLaatstAangeraakt(project, schetsenVanDitProject)) / (1000*60*60*24))} dagen
+                      </p>
+                    )}
                   </button>
                 );
               })}
@@ -1003,6 +1629,25 @@ export default function SchetsboekApp() {
                 )}
               </div>
             </div>
+
+            {schetsenVanProject.length > 0 && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                <button onClick={() => setShowChat(true)}
+                  style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, color: C.text, borderRadius: 12, padding: "10px 0", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+                  💬 Sparren
+                </button>
+                <button onClick={() => setShowResearch(true)}
+                  style={{ flex: 1, background: C.accent, border: "none", color: "#FFF", borderRadius: 12, padding: "10px 0", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+                  🔍 AI-research
+                </button>
+              </div>
+            )}
+
+            <ActiepuntenSectie
+              project={actiefProject}
+              onToevoegen={(tekst) => voegActiepuntToe(actiefProject.id, tekst, "handmatig")}
+              onWisselKlaar={(actiepuntId) => wisselActiepuntKlaar(actiefProject.id, actiepuntId)}
+              onVerwijderen={(actiepuntId) => verwijderActiepunt(actiefProject.id, actiepuntId)} />
 
             {schetsenVanProject.length === 0 && (
               <div style={{ textAlign: "center", padding: "60px 20px" }}>
@@ -1183,7 +1828,7 @@ export default function SchetsboekApp() {
             <input style={{ ...S.inp }} placeholder="Titel (optioneel)" value={titelInvoer} onChange={e => setTitelInvoer(e.target.value)} />
             <SpraakOpnemer
               onAnnuleer={() => setActieveSchetsMaker(null)}
-              onKlaar={(dataUrl, duurSec) => voegSchetsToe("spraakbericht", { media: dataUrl, duurSec })} />
+              onKlaar={(dataUrl, duurSec, transcript) => voegSchetsToe("spraakbericht", { media: dataUrl, duurSec, transcript })} />
           </div>
         </div>
       )}
@@ -1193,6 +1838,24 @@ export default function SchetsboekApp() {
           schetsen={schetsenVanProject}
           project={actiefProject}
           onSluiten={() => setShowBordModus(false)} />
+      )}
+
+      {showChat && actiefProject && (
+        <SchetsboekChatPaneel
+          context={bouwIdeeenSamenvatting(schetsenVanProject)}
+          projectNaam={actiefProject.naam}
+          projectId={actiefProject.id}
+          onActiepuntVastleggen={(tekst) => voegActiepuntToe(actiefProject.id, tekst, "chat")}
+          onSluiten={() => setShowChat(false)} />
+      )}
+
+      {showResearch && actiefProject && (
+        <SchetsboekResearchPaneel
+          project={actiefProject}
+          ideeen={bouwIdeeenSamenvatting(schetsenVanProject)}
+          onOpgeslagen={(research) => bijwerkLaatsteResearch(actiefProject.id, research)}
+          onVervolgstapAlsActiepunt={(tekst) => voegActiepuntToe(actiefProject.id, tekst, "ai")}
+          onSluiten={() => setShowResearch(false)} />
       )}
 
       {showVolgordeModus && actiefProject && (
@@ -1251,6 +1914,9 @@ export default function SchetsboekApp() {
               ) : (
                 <audio src={bekekenMedia} controls style={{ width: "100%" }} />
               )
+            )}
+            {bekekenSchets.type === "spraakbericht" && bekekenSchets.transcript && (
+              <p style={{ fontSize: 13, color: C.muted, fontStyle: "italic", marginTop: 10, lineHeight: 1.5 }}>"{bekekenSchets.transcript}"</p>
             )}
 
             {bewerkSchetsModus && (

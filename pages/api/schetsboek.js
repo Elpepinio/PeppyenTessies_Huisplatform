@@ -6,6 +6,8 @@ const PROJECTEN_KEY = "huishouden:schetsboek:projecten";
 const SCHETSEN_KEY = "huishouden:schetsboek:schetsen";
 const MEDIA_KEY = (id) => `huishouden:schetsboek:media:${id}`;
 const BORD_KEY = (projectId) => `huishouden:schetsboek:bord:${projectId}`;
+const RESEARCH_KEY = (projectId) => `huishouden:schetsboek:research:${projectId}`;
+const CHAT_KEY = (projectId) => `huishouden:schetsboek:chat:${projectId}`;
 
 // Video/spraak/foto kunnen groot zijn — Vercel's standaard limiet (4,5MB)
 // is snel te klein voor een spraakbericht of videofragment, dus die zetten
@@ -37,6 +39,29 @@ export default async function handler(req, res) {
       return res.status(200).json({ snapshot });
     } catch (e) {
       return res.status(500).json({ error: "Kon bord niet laden" });
+    }
+  }
+
+  // Eerder opgeslagen AI-research van een project — lazy, en meteen
+  // bruikbaar zonder opnieuw te hoeven betalen voor web-search.
+  if (req.method === "GET" && req.query.research) {
+    try {
+      const data = await redis.get(RESEARCH_KEY(req.query.research));
+      const research = data ? (typeof data === "string" ? JSON.parse(data) : data) : null;
+      return res.status(200).json({ research });
+    } catch (e) {
+      return res.status(500).json({ error: "Kon onderzoek niet laden" });
+    }
+  }
+
+  // Eerder gesparde chatgeschiedenis van een project.
+  if (req.method === "GET" && req.query.chat) {
+    try {
+      const data = await redis.get(CHAT_KEY(req.query.chat));
+      const berichten = data ? (typeof data === "string" ? JSON.parse(data) : data) : [];
+      return res.status(200).json({ berichten });
+    } catch (e) {
+      return res.status(500).json({ error: "Kon gesprek niet laden" });
     }
   }
 
@@ -104,6 +129,21 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true });
       }
 
+      if (actie === "researchOpslaan") {
+        // Overschrijft eerder onderzoek voor dit project — er is bewust maar
+        // één bewaard exemplaar per project (het meest recente), geen
+        // geschiedenis van oudere onderzoeken.
+        const { projectId, research } = req.body;
+        await redis.set(RESEARCH_KEY(projectId), JSON.stringify(research));
+        return res.status(200).json({ ok: true });
+      }
+
+      if (actie === "chatOpslaan") {
+        const { projectId, berichten } = req.body;
+        await redis.set(CHAT_KEY(projectId), JSON.stringify(berichten || []));
+        return res.status(200).json({ ok: true });
+      }
+
       if (actie === "schetsVerwijderen") {
         const { schetsId } = req.body;
         const schetsenData = await redis.get(SCHETSEN_KEY);
@@ -124,6 +164,8 @@ export default async function handler(req, res) {
         const teVerwijderen = schetsen.filter(s => s.projectId === projectId);
         await Promise.all(teVerwijderen.map(s => redis.del(MEDIA_KEY(s.id)).catch(() => {})));
         await redis.del(BORD_KEY(projectId)).catch(() => {});
+        await redis.del(RESEARCH_KEY(projectId)).catch(() => {});
+        await redis.del(CHAT_KEY(projectId)).catch(() => {});
         await Promise.all([
           redis.set(PROJECTEN_KEY, JSON.stringify(projecten.filter(p => p.id !== projectId))),
           redis.set(SCHETSEN_KEY, JSON.stringify(schetsen.filter(s => s.projectId !== projectId))),
