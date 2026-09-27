@@ -411,9 +411,23 @@ const S = {
 // Bepaalt welke items overblijven na het afronden van een pak-/
 // boodschappenronde — puur en dus apart te testen, los van de
 // archief/geschiedenis-bijwerking eromheen die in finishPacking gebeurt.
+// Welke items tellen mee als "deze ronde daadwerkelijk gekocht" voor het
+// archief en de koopfrequentie-geschiedenis? Bewust een eigen, geteste
+// functie — checked/inCart door elkaar halen heeft hier al eerder tot een
+// bug geleid (zie berekenVolgendeItems hieronder), dus dit onderscheid
+// verdient een expliciete, niet vergeetbare plek.
+function itemsGekochtDezeRonde(items) {
+  return items.filter(i => i.inCart);
+}
+
 function berekenVolgendeItems(items, modus) {
   if (modus === "leegmaken") return [];
-  if (modus === "afgevinktVerwijderen") return items.filter(i => !i.checked);
+  // Let op: dit draait binnen pakken-modus, waar ALLE zichtbare items al
+  // checked:true hebben (dat is precies de reden dat ze hier staan) — de
+  // "heb ik 'm al gepakt"-status zit in inCart, niet in checked. Filteren
+  // op checked zou hier vrijwel alles verwijderen, ongeacht wat je al
+  // daadwerkelijk gepakt had.
+  if (modus === "afgevinktVerwijderen") return items.filter(i => !i.inCart);
   return items.map(i => ({ ...i, checked: false, inCart: false })); // "bewaren"
 }
 
@@ -855,15 +869,21 @@ export default function LijstenApp() {
   // ── Pakken afronden: keuze bewaren of leegmaken ──────
   function finishPacking(modus) { // "bewaren" | "leegmaken" | "afgevinktVerwijderen"
     updateList(activeListId, l => {
+      // Alleen wat daadwerkelijk gepakt is (inCart) hoort in de "wat heb ik
+      // deze ronde gekocht"-registratie thuis — checked zegt alleen dat het
+      // op de lijst STOND, niet dat het ook echt is meegenomen. Zonder dit
+      // onderscheid zou een item dat je bewust laat liggen toch als gekocht
+      // meetellen in de koopfrequentie/geschiedenis.
+      const daadwerkelijkGepakt = itemsGekochtDezeRonde(l.items);
       const huidigRonde = {
         datum: new Date().toLocaleDateString("nl-NL"),
-        items: l.items.filter(i => i.checked).map(i => ({
+        items: daadwerkelijkGepakt.map(i => ({
           name: i.name, category: i.category, amount: i.amount, unit: i.unit,
         })),
       };
       const nextArchief = [huidigRonde, ...(l.archief || [])].slice(0, 5);
       const nextHistory = { ...l.history };
-      l.items.filter(i => i.checked).forEach(i => {
+      daadwerkelijkGepakt.forEach(i => {
         const key = i.name.toLowerCase();
         nextHistory[key] = {
           name: i.name, category: i.category, amount: i.amount, unit: i.unit,
@@ -973,7 +993,7 @@ export default function LijstenApp() {
                 🔄 Vinkjes resetten — lijst bewaren
                 <span style={{ display: "block", fontSize: 12, fontWeight: 400, opacity: 0.8, marginTop: 3 }}>Handig voor volgende vakantie of week</span>
               </button>
-              {activeList.items.some(i => !i.checked) && (
+              {teNemen.some(i => !i.inCart) && (
                 <button style={{ ...S.btn("#4A7A6C"), width: "100%", marginBottom: 10, padding: "15px 0", borderRadius: 14 }}
                   onClick={() => finishPacking("afgevinktVerwijderen")}>
                   ✅ Afgevinkte items verwijderen
