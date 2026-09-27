@@ -3,10 +3,10 @@ const { sectie, test, samenvatting } = require("./testhulp.js");
 
 sectie("Regenradar — wind-verschuiving voor geschatte toekomst-frames");
 
-const { windVerschuiving } = laadFuncties("../pages/weer-radar.js", [
+const { windVerschuiving } = laadFuncties("../pages/weer.js", [
   /function windVerschuiving\(lat, windSnelheidKmh, windRichtingGraden, offsetMinuten\)/,
 ]);
-const { rondAfNaarVijfMinuten } = laadFuncties("../pages/weer-radar.js", [
+const { rondAfNaarVijfMinuten } = laadFuncties("../pages/weer.js", [
   /function rondAfNaarVijfMinuten\(datum\)/,
 ]);
 

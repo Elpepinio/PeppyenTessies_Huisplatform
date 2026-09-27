@@ -5,6 +5,7 @@ const redis = Redis.fromEnv();
 const PROJECTEN_KEY = "huishouden:schetsboek:projecten";
 const SCHETSEN_KEY = "huishouden:schetsboek:schetsen";
 const MEDIA_KEY = (id) => `huishouden:schetsboek:media:${id}`;
+const VECTOR_KEY = (id) => `huishouden:schetsboek:vector:${id}`;
 const BORD_KEY = (projectId) => `huishouden:schetsboek:bord:${projectId}`;
 const RESEARCH_KEY = (projectId) => `huishouden:schetsboek:research:${projectId}`;
 const CHAT_KEY = (projectId) => `huishouden:schetsboek:chat:${projectId}`;
@@ -27,6 +28,18 @@ export default async function handler(req, res) {
       return res.status(200).json({ media });
     } catch (e) {
       return res.status(500).json({ error: "Kon media niet laden" });
+    }
+  }
+
+  // Het tldraw-documentsnapshot van een vectorschets — alleen nodig als je
+  // 'm daadwerkelijk opnieuw opent om te bewerken, dus ook lazy.
+  if (req.method === "GET" && req.query.vectorschets) {
+    try {
+      const data = await redis.get(VECTOR_KEY(req.query.vectorschets));
+      const snapshot = data ? (typeof data === "string" ? JSON.parse(data) : data) : null;
+      return res.status(200).json({ snapshot });
+    } catch (e) {
+      return res.status(500).json({ error: "Kon vectorschets niet laden" });
     }
   }
 
@@ -110,6 +123,34 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true });
       }
 
+      if (actie === "tekeningBijwerken") {
+        // Enige plek waar media WEL verandert na het aanmaken — het
+        // overschrijven van een al opgeslagen tekening met een nieuwe versie
+        // ervan. Werkt zowel de losse media-opslag als de embedded
+        // thumbnail bij, zodat grid en detailweergave weer synchroon lopen.
+        // Generiek genoeg om ook voor vectorschetsen te hergebruiken (de
+        // geëxporteerde afbeelding wordt op precies dezelfde manier
+        // bijgewerkt, ongeacht of de bron raster of vector was).
+        const { schetsId, dataUrl } = req.body;
+        await redis.set(MEDIA_KEY(schetsId), dataUrl);
+        const schetsenData = await redis.get(SCHETSEN_KEY);
+        const schetsen = schetsenData ? (typeof schetsenData === "string" ? JSON.parse(schetsenData) : schetsenData) : [];
+        const bijgewerkt = schetsen.map(s => s.id === schetsId ? { ...s, thumbnail: dataUrl } : s);
+        await redis.set(SCHETSEN_KEY, JSON.stringify(bijgewerkt));
+        return res.status(200).json({ ok: true });
+      }
+
+      if (actie === "vectorSnapshotOpslaan") {
+        // Los van de geëxporteerde platte afbeelding (die via
+        // tekeningBijwerken/schetsToevoegen loopt) — dit is het volledige
+        // tldraw-document, zodat een vectorschets bij het heropenen weer
+        // met losse, verplaatsbare/aanpasbare vormen verschijnt i.p.v. als
+        // kale afbeelding.
+        const { schetsId, snapshot } = req.body;
+        await redis.set(VECTOR_KEY(schetsId), JSON.stringify(snapshot));
+        return res.status(200).json({ ok: true });
+      }
+
       if (actie === "volgordeBijwerken") {
         // { volgordes: [{id, volgorde}, ...] } — na het slepen worden alle
         // betrokken volgorde-nummers in één keer weggeschreven i.p.v. per
@@ -150,6 +191,7 @@ export default async function handler(req, res) {
         const schetsen = schetsenData ? (typeof schetsenData === "string" ? JSON.parse(schetsenData) : schetsenData) : [];
         await redis.set(SCHETSEN_KEY, JSON.stringify(schetsen.filter(s => s.id !== schetsId)));
         try { await redis.del(MEDIA_KEY(schetsId)); } catch {}
+        try { await redis.del(VECTOR_KEY(schetsId)); } catch {}
         return res.status(200).json({ ok: true });
       }
 
@@ -163,6 +205,7 @@ export default async function handler(req, res) {
         const schetsen = schetsenData ? (typeof schetsenData === "string" ? JSON.parse(schetsenData) : schetsenData) : [];
         const teVerwijderen = schetsen.filter(s => s.projectId === projectId);
         await Promise.all(teVerwijderen.map(s => redis.del(MEDIA_KEY(s.id)).catch(() => {})));
+        await Promise.all(teVerwijderen.map(s => redis.del(VECTOR_KEY(s.id)).catch(() => {})));
         await redis.del(BORD_KEY(projectId)).catch(() => {});
         await redis.del(RESEARCH_KEY(projectId)).catch(() => {});
         await redis.del(CHAT_KEY(projectId)).catch(() => {});

@@ -115,4 +115,12 @@ test("markdownNaarPlatteTekst haalt vet-sterretjes weg maar behoudt de tekst",
 test("meerdere vette stukken in dezelfde zin worden allebei opgeschoond",
   markdownNaarPlatteTekst("**Eerste** en **tweede** vet stuk.") === "Eerste en tweede vet stuk.");
 
+sectie("Vectorschets — nieuw schetstype naast Tekening");
+test("schetsTypeInfo herkent 'vectorschets' met het juiste label en icoon",
+  schetsTypeInfo("vectorschets").label === "Vectorschets" && schetsTypeInfo("vectorschets").icon === "🔷");
+test("een vectorschets met titel zoekt correct mee op titel (net als elk ander type)",
+  schetsMatcht({ type:"vectorschets", titel:"Logo-schets", tekst:"" }, "logo"));
+test("bouwIdeeenSamenvatting neemt een vectorschets mee via het generieke type+titel-label",
+  bouwIdeeenSamenvatting([{ type:"vectorschets", titel:"Plattegrond" }]).includes("[Vectorschets] Plattegrond"));
+
 samenvatting();

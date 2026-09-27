@@ -2,15 +2,10 @@ const { laadFuncties } = require("./extractie.js");
 const { sectie, test, samenvatting } = require("./testhulp.js");
 const SunCalc = require("suncalc");
 
-sectie("Weer-tool — geëxtraheerd uit de echte broncode van weer.js/weer-zon.js");
+sectie("Weer-tool — geëxtraheerd uit de echte broncode van weer.js (samengevoegd)");
 
-// Zonpositie staat sinds de suncalc-migratie alleen nog in weer-zon.js
-// (in weer.js was het ongebruikte dode code, die daarom is opgeruimd).
-const { berekenZonPositie } = laadFuncties("../pages/weer-zon.js", [
+const { berekenZonPositie, berekenMaanfase, kledingAdvies, fietsWaarschuwing } = laadFuncties("../pages/weer.js", [
   /function berekenZonPositie\(lat, lon, datum = new Date\(\)\)/,
-], { SunCalc });
-
-const { berekenMaanfase, kledingAdvies, fietsWaarschuwing } = laadFuncties("../pages/weer.js", [
   /const MAANFASEN = /,
   /function berekenMaanfase\(datum = new Date\(\)\)/,
   /function kledingAdvies\(/,

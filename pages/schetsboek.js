@@ -22,6 +22,7 @@ function persoonKleur(naam) {
 
 const SCHETS_TYPES = [
   { id: "tekening",      label: "Tekening",       icon: "✏️" },
+  { id: "vectorschets",  label: "Vectorschets",   icon: "🔷" },
   { id: "tekst",         label: "Tekst",          icon: "📝" },
   { id: "spraakbericht", label: "Spraakbericht",  icon: "🎙️" },
   { id: "foto",          label: "Foto",           icon: "📷" },
@@ -205,7 +206,18 @@ function bestandNaarDataUrl(file) {
 // ── Tekenkanvas — vrije-hand tekenen met vinger/muis/stylus, een paar
 //    kleuren en penseeldiktes, wissen en klaar-maken (naar dataURL). ──────
 const TEKEN_KLEUREN = ["#2D2A26", "#C0392B", "#3D7A5C", "#5B9BD5", "#C97D0C", "#FFFFFF"];
-function TekenKanvas({ onKlaar, onAnnuleer }) {
+
+// Meerdere penseeltypes — elk met eigen perfect-freehand-instellingen en
+// dekking, zodat ze ook echt anders aanvoelen i.p.v. alleen een andere naam
+// te hebben. sizeMult werkt bovenop de gekozen dikte.
+const PENSELEN = [
+  { id: "pen",      label: "Pen",      icon: "🖊️", thinning: 0.6,  smoothing: 0.55, streamline: 0.5, sizeMult: 2.2, dekking: 1 },
+  { id: "stift",    label: "Stift",    icon: "🖍️", thinning: 0.15, smoothing: 0.3,  streamline: 0.3, sizeMult: 3.2, dekking: 1 },
+  { id: "potlood",  label: "Potlood",  icon: "✏️", thinning: 0.8,  smoothing: 0.75, streamline: 0.6, sizeMult: 1.3, dekking: 0.85 },
+  { id: "marker",   label: "Marker",   icon: "🖌️", thinning: 0,    smoothing: 0.2,  streamline: 0.2, sizeMult: 4,   dekking: 0.4 },
+];
+
+function TekenKanvas({ onKlaar, onAnnuleer, bestaandeAfbeelding = null }) {
   const canvasRef = useRef(null);
   const tekenendRef = useRef(false);
   const huidigeStreekPuntenRef = useRef([]);
@@ -214,6 +226,8 @@ function TekenKanvas({ onKlaar, onAnnuleer }) {
   const [kanOngedaanMaken, setKanOngedaanMaken] = useState(false);
   const [kleur, setKleur] = useState(TEKEN_KLEUREN[0]);
   const [dikte, setDikte] = useState(4);
+  const [gereedschap, setGereedschap] = useState("pen"); // "pen" | "gum"
+  const [penseelId, setPenseelId] = useState(PENSELEN[0].id);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -225,6 +239,17 @@ function TekenKanvas({ onKlaar, onAnnuleer }) {
     ctx.fillRect(0, 0, canvas.offsetWidth, canvas.offsetHeight);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
+    // Bij het bewerken van een al opgeslagen tekening: die eerst inladen, zodat
+    // je verder werkt op wat er al stond i.p.v. blanco te beginnen.
+    if (bestaandeAfbeelding) {
+      const img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0, 0, canvas.offsetWidth, canvas.offsetHeight);
+        ctx.drawImage(img, 0, 0, canvas.offsetWidth, canvas.offsetHeight);
+      };
+      img.src = bestaandeAfbeelding;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function puntUitEvent(e) {
@@ -236,20 +261,29 @@ function TekenKanvas({ onKlaar, onAnnuleer }) {
 
   // Tekent één streek als vloeiend gevulde polygoon i.p.v. losse rechte
   // lijnstukjes — perfect-freehand berekent de omtrekpunten op basis van
-  // alle ingezamelde punten, wat er merkbaar natuurlijker uitziet dan recht
-  // van punt naar punt te trekken.
+  // alle ingezamelde punten. Het gekozen penseel bepaalt vorm/dekking; de
+  // gum hergebruikt exact dezelfde streek-berekening maar vult met wit i.p.v.
+  // een kleur, en negeert het gekozen penseel (een gum heeft geen "stijl").
   function tekenStreek(ctx, punten) {
     if (punten.length === 0) return;
+    const isGum = gereedschap === "gum";
+    const penseel = PENSELEN.find(p => p.id === penseelId) || PENSELEN[0];
     const omtrek = getStroke(punten, {
-      size: dikte * 2.2, thinning: 0.6, smoothing: 0.55, streamline: 0.5, simulatePressure: true,
+      size: dikte * (isGum ? 3.4 : penseel.sizeMult),
+      thinning: isGum ? 0 : penseel.thinning,
+      smoothing: isGum ? 0.5 : penseel.smoothing,
+      streamline: isGum ? 0.5 : penseel.streamline,
+      simulatePressure: !isGum,
     });
     if (omtrek.length === 0) return;
-    ctx.fillStyle = kleur;
+    ctx.globalAlpha = isGum ? 1 : penseel.dekking;
+    ctx.fillStyle = isGum ? "#FFFFFF" : kleur;
     ctx.beginPath();
     ctx.moveTo(omtrek[0][0], omtrek[0][1]);
     for (let i = 1; i < omtrek.length; i++) ctx.lineTo(omtrek[i][0], omtrek[i][1]);
     ctx.closePath();
     ctx.fill();
+    ctx.globalAlpha = 1; // resetten, anders blijft een volgende (niet-marker) streek ook doorschijnend
   }
 
   function startTekenen(e) {
@@ -318,8 +352,33 @@ function TekenKanvas({ onKlaar, onAnnuleer }) {
         style={{ flex: 1, width: "100%", touchAction: "none", background: "#FFFFFF", borderRadius: 12, border: "1px solid #E4DCCB" }}
         onMouseDown={startTekenen} onMouseMove={teken} onMouseUp={stopTekenen} onMouseLeave={stopTekenen}
         onTouchStart={startTekenen} onTouchMove={teken} onTouchEnd={stopTekenen} />
+
+      {/* Gereedschap: pen of gum */}
+      <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+        <button onClick={() => setGereedschap("pen")}
+          style={{ flex: 1, background: gereedschap==="pen" ? "#2D4A3E" : "#F3EFE6", color: gereedschap==="pen" ? "#FFF" : "#2D2A26", border: "1px solid #E4DCCB", borderRadius: 10, padding: "8px 0", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+          <Pencil size={13} /> Pen
+        </button>
+        <button onClick={() => setGereedschap("gum")}
+          style={{ flex: 1, background: gereedschap==="gum" ? "#2D4A3E" : "#F3EFE6", color: gereedschap==="gum" ? "#FFF" : "#2D2A26", border: "1px solid #E4DCCB", borderRadius: 10, padding: "8px 0", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+          <Eraser size={13} /> Gum
+        </button>
+      </div>
+
+      {/* Penseelkeuze — alleen relevant als je aan het tekenen bent, niet bij gum */}
+      {gereedschap === "pen" && (
+        <div style={{ display: "flex", gap: 6, marginTop: 8, overflowX: "auto" }}>
+          {PENSELEN.map(p => (
+            <button key={p.id} onClick={() => setPenseelId(p.id)}
+              style={{ flexShrink: 0, background: penseelId===p.id ? "#2D4A3E" : "#F3EFE6", color: penseelId===p.id ? "#FFF" : "#2D2A26", border: "1px solid #E4DCCB", borderRadius: 10, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              {p.icon} {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-        {TEKEN_KLEUREN.map(k => (
+        {gereedschap === "pen" && TEKEN_KLEUREN.map(k => (
           <button key={k} onClick={() => setKleur(k)}
             style={{ width: 28, height: 28, borderRadius: "50%", background: k, border: kleur === k ? "3px solid #3D7A5C" : "1px solid #E4DCCB", cursor: "pointer" }} />
         ))}
@@ -337,13 +396,84 @@ function TekenKanvas({ onKlaar, onAnnuleer }) {
           ↩︎ Ongedaan
         </button>
         <button onClick={wis} style={{ flex: 1, background: "#F3EFE6", border: "1px solid #E4DCCB", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-          <Eraser size={14} /> Wis alles
+          <Trash2 size={14} /> Wis alles
         </button>
         <button onClick={onAnnuleer} style={{ flex: 1, background: "#F3EFE6", border: "1px solid #E4DCCB", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
           Annuleer
         </button>
         <button onClick={klaar} style={{ flex: 1, background: "#3D7A5C", color: "#FFF", border: "none", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
           Klaar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Vectorschets — een volwaardige, bewerkbare vector-tekenaar via tldraw
+//    (dezelfde engine als het Bord, zie BordWeergave verderop), i.p.v. de
+//    platte pixel-tekening van TekenKanvas hierboven. Vormen (rechthoek,
+//    ellips, pijl, lijn), tekst en vrij tekenen blijven bij het heropenen
+//    los verplaatsbaar/aanpasbaar, in plaats van vast te liggen als kale
+//    afbeelding. Exporteert bij "Klaar" zowel een platte PNG (voor de
+//    grid/duimnagel, zelfde manier als elke andere schets) áls het volledige
+//    tldraw-document (voor echte vector-bewerkbaarheid bij het heropenen). ──
+function VectorTekenaar({ onKlaar, onAnnuleer, bestaandSnapshot = null }) {
+  const [store] = useState(() => createTLStore());
+  const editorRef = useRef(null);
+  const [laden, setLaden] = useState(!!bestaandSnapshot);
+  const [bezigMetOpslaan, setBezigMetOpslaan] = useState(false);
+  const [fout, setFout] = useState(null);
+
+  useEffect(() => {
+    if (bestaandSnapshot) {
+      try {
+        loadSnapshot(store, { document: bestaandSnapshot });
+      } catch {
+        setFout("Kon de eerdere versie niet inladen — begin opnieuw of annuleer.");
+      }
+      setLaden(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function klaar() {
+    const editor = editorRef.current;
+    if (!editor || bezigMetOpslaan) return;
+    const shapeIds = [...editor.getCurrentPageShapeIds()];
+    if (shapeIds.length === 0) {
+      setFout("Nog niets getekend — voeg eerst een vorm of lijn toe.");
+      return;
+    }
+    setBezigMetOpslaan(true);
+    setFout(null);
+    try {
+      const { blob } = await editor.toImage(shapeIds, { background: true, format: "png", padding: 24 });
+      const dataUrl = await bestandNaarDataUrl(blob);
+      const { document } = getSnapshot(editor.store);
+      onKlaar(dataUrl, document);
+    } catch (e) {
+      setFout("Exporteren is mislukt — probeer het nog eens.");
+      setBezigMetOpslaan(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={{ flex: 1, minHeight: 0, position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid #E4DCCB" }}>
+        {laden ? (
+          <p style={{ textAlign: "center", color: "#8C8576", fontSize: 13, padding: 30 }}>Vectorschets laden…</p>
+        ) : (
+          <Tldraw store={store} onMount={editor => { editorRef.current = editor; }} />
+        )}
+      </div>
+      {fout && <p style={{ margin: "8px 0 0", fontSize: 12, color: "#C0392B", textAlign: "center" }}>⚠️ {fout}</p>}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button onClick={onAnnuleer} style={{ flex: 1, background: "#F3EFE6", border: "1px solid #E4DCCB", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+          Annuleer
+        </button>
+        <button onClick={klaar} disabled={bezigMetOpslaan}
+          style={{ flex: 1, background: "#3D7A5C", color: "#FFF", border: "none", borderRadius: 12, padding: "12px 0", fontWeight: 700, fontSize: 13, cursor: bezigMetOpslaan ? "default" : "pointer", opacity: bezigMetOpslaan ? 0.6 : 1 }}>
+          {bezigMetOpslaan ? "Bezig…" : "Klaar"}
         </button>
       </div>
     </div>
@@ -1101,7 +1231,11 @@ export default function SchetsboekApp() {
   const [nieuwProjectEmoji, setNieuwProjectEmoji] = useState("💡");
 
   const [showTypeKiezer, setShowTypeKiezer] = useState(false);
-  const [actieveSchetsMaker, setActieveSchetsMaker] = useState(null); // "tekening" | "tekst" | "spraakbericht" | "foto" | "video"
+  const [actieveSchetsMaker, setActieveSchetsMaker] = useState(null); // "tekening" | "vectorschets" | "tekst" | "spraakbericht" | "foto" | "video"
+  const [bewerkTekeningId, setBewerkTekeningId] = useState(null); // schetsId van een tekening die opnieuw wordt geopend om bij te werken
+  const [bewerkVectorId, setBewerkVectorId] = useState(null); // schetsId van een vectorschets die opnieuw wordt geopend
+  const [bewerkVectorSnapshot, setBewerkVectorSnapshot] = useState(null);
+  const [vectorSnapshotLaden, setVectorSnapshotLaden] = useState(false);
   const [tekstInvoer, setTekstInvoer] = useState("");
   const [titelInvoer, setTitelInvoer] = useState("");
   const [uploadBezig, setUploadBezig] = useState(false);
@@ -1219,9 +1353,9 @@ export default function SchetsboekApp() {
   }
 
   // ── Schetsen ──────────────────────────────────────────────
-  async function voegSchetsToe(type, { media = null, tekst = "", thumbnail = null, duurSec = null, transcript = "" } = {}) {
+  async function voegSchetsToe(type, { media = null, tekst = "", thumbnail = null, duurSec = null, transcript = "", id = null } = {}) {
     const nieuweSchets = {
-      id: uid(), projectId: actiefProjectId, type,
+      id: id || uid(), projectId: actiefProjectId, type,
       titel: titelInvoer.trim(), tekst, thumbnail, duurSec, transcript,
       heeftMedia: !!media,
       persoon: huidigeGebruiker, datum: vandaagStr(), toegevoegdOp: Date.now(), volgorde: Date.now(),
@@ -1241,6 +1375,59 @@ export default function SchetsboekApp() {
     }
     setTitelInvoer(""); setTekstInvoer(""); setActieveSchetsMaker(null); setShowTypeKiezer(false);
     showToast("✨ Schets toegevoegd");
+  }
+
+  // Enige plek waar media van een schets ná het aanmaken verandert — het
+  // overschrijven van een tekening met een bijgewerkte versie. Werkt zowel
+  // de lokale weergave (thumbnail + de al geladen bekekenMedia) als de
+  // server bij, zodat je meteen het resultaat ziet zonder opnieuw te laden.
+  function werkTekeningBij(schetsId, dataUrl) {
+    lastWriteRef.current = Date.now();
+    setSchetsen(s => s.map(sk => sk.id === schetsId ? { ...sk, thumbnail: dataUrl } : sk));
+    setBekekenMedia(dataUrl);
+    fetch("/api/schetsboek", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actie: "tekeningBijwerken", schetsId, dataUrl }),
+    }).catch(() => showToast("⚠️ Bijwerken is niet opgeslagen — probeer het nog eens"));
+    setBewerkTekeningId(null);
+    showToast("✅ Tekening bijgewerkt");
+  }
+
+  // Het tldraw-documentsnapshot van een vectorschets apart opslaan — los van
+  // tekeningBijwerken (die alleen de platte exportafbeelding bijwerkt),
+  // zodat de schets bij het heropenen weer met losse, aanpasbare vormen
+  // verschijnt i.p.v. als kale afbeelding.
+  function slaVectorSnapshotOp(schetsId, snapshot) {
+    fetch("/api/schetsboek", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actie: "vectorSnapshotOpslaan", schetsId, snapshot }),
+    }).catch(() => {});
+  }
+  function voegVectorschetsToe(dataUrl, snapshot) {
+    const nieuweId = uid();
+    voegSchetsToe("vectorschets", { media: dataUrl, thumbnail: dataUrl, id: nieuweId });
+    slaVectorSnapshotOp(nieuweId, snapshot);
+  }
+  function werkVectorschetsBij(schetsId, dataUrl, snapshot) {
+    werkTekeningBij(schetsId, dataUrl); // platte exportafbeelding — zelfde logica als bij een gewone tekening
+    slaVectorSnapshotOp(schetsId, snapshot);
+    setBewerkVectorId(null);
+    setBewerkVectorSnapshot(null);
+  }
+  // Vóór het heropenen van een vectorschets eerst het bewaarde
+  // tldraw-document ophalen — zonder dat document zou je alleen de platte
+  // exportafbeelding kunnen zien, niet de losse vormen erin bewerken.
+  async function openVectorschetsTerBewerking(schetsId) {
+    setBewerkVectorId(schetsId);
+    setVectorSnapshotLaden(true);
+    try {
+      const res = await fetch(`/api/schetsboek?vectorschets=${schetsId}`);
+      const data = await res.json();
+      setBewerkVectorSnapshot(data.snapshot || null);
+    } catch {
+      setBewerkVectorSnapshot(null);
+    }
+    setVectorSnapshotLaden(false);
   }
 
   function verwijderSchets(id) {
@@ -1415,7 +1602,7 @@ export default function SchetsboekApp() {
     }
 
     for (const schets of schetsenLijst) {
-      const afbeelding = schets.type === "tekening" || schets.type === "foto" || schets.type === "video" ? schets.thumbnail : null;
+      const afbeelding = schets.type === "tekening" || schets.type === "vectorschets" || schets.type === "foto" || schets.type === "video" ? schets.thumbnail : null;
       const afbeeldingHoogte = afbeelding ? 45 : 0;
       nieuwePaginaIndienNodig(afbeeldingHoogte + 25);
 
@@ -1827,16 +2014,40 @@ export default function SchetsboekApp() {
         </div>
       )}
 
-      {actieveSchetsMaker === "tekening" && (
+      {(actieveSchetsMaker === "tekening" || bewerkTekeningId) && (
         <div style={{ position: "fixed", inset: 0, background: C.surf, zIndex: 101, display: "flex", flexDirection: "column", padding: "20px 20px calc(20px + env(safe-area-inset-bottom))" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: C.accentDark }}>✏️ Tekening</h2>
-            <input style={{ ...S.inp, width: 160, fontSize: 12, padding: "6px 10px" }} placeholder="Titel (optioneel)" value={titelInvoer} onChange={e => setTitelInvoer(e.target.value)} />
+            {!bewerkTekeningId && (
+              <input style={{ ...S.inp, width: 160, fontSize: 12, padding: "6px 10px" }} placeholder="Titel (optioneel)" value={titelInvoer} onChange={e => setTitelInvoer(e.target.value)} />
+            )}
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             <TekenKanvas
-              onAnnuleer={() => setActieveSchetsMaker(null)}
-              onKlaar={dataUrl => voegSchetsToe("tekening", { media: dataUrl, thumbnail: dataUrl })} />
+              bestaandeAfbeelding={bewerkTekeningId ? (bekekenMedia || schetsen.find(sk => sk.id === bewerkTekeningId)?.thumbnail) : null}
+              onAnnuleer={() => { setActieveSchetsMaker(null); setBewerkTekeningId(null); }}
+              onKlaar={dataUrl => bewerkTekeningId ? werkTekeningBij(bewerkTekeningId, dataUrl) : voegSchetsToe("tekening", { media: dataUrl, thumbnail: dataUrl })} />
+          </div>
+        </div>
+      )}
+
+      {(actieveSchetsMaker === "vectorschets" || bewerkVectorId) && (
+        <div style={{ position: "fixed", inset: 0, background: C.surf, zIndex: 101, display: "flex", flexDirection: "column", padding: "20px 20px calc(20px + env(safe-area-inset-bottom))" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: C.accentDark }}>🔷 Vectorschets</h2>
+            {!bewerkVectorId && (
+              <input style={{ ...S.inp, width: 160, fontSize: 12, padding: "6px 10px" }} placeholder="Titel (optioneel)" value={titelInvoer} onChange={e => setTitelInvoer(e.target.value)} />
+            )}
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            {vectorSnapshotLaden ? (
+              <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 30 }}>Laden…</p>
+            ) : (
+              <VectorTekenaar
+                bestaandSnapshot={bewerkVectorId ? bewerkVectorSnapshot : null}
+                onAnnuleer={() => { setActieveSchetsMaker(null); setBewerkVectorId(null); setBewerkVectorSnapshot(null); }}
+                onKlaar={(dataUrl, snapshot) => bewerkVectorId ? werkVectorschetsBij(bewerkVectorId, dataUrl, snapshot) : voegVectorschetsToe(dataUrl, snapshot)} />
+            )}
           </div>
         </div>
       )}
@@ -1935,7 +2146,22 @@ export default function SchetsboekApp() {
               )
             )}
             {bekekenSchets.type === "tekening" && (
-              <img src={bekekenSchets.thumbnail} alt="" style={{ width: "100%", borderRadius: 12, border: `1px solid ${C.border}` }} />
+              <>
+                <img src={bekekenSchets.thumbnail} alt="" style={{ width: "100%", borderRadius: 12, border: `1px solid ${C.border}` }} />
+                <button onClick={() => setBewerkTekeningId(bekekenSchets.id)}
+                  style={{ marginTop: 10, width: "100%", background: C.card, border: `1px solid ${C.border}`, color: C.text, borderRadius: 12, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                  <Pencil size={14} /> Tekening bewerken
+                </button>
+              </>
+            )}
+            {bekekenSchets.type === "vectorschets" && (
+              <>
+                <img src={bekekenSchets.thumbnail} alt="" style={{ width: "100%", borderRadius: 12, border: `1px solid ${C.border}`, background: "#FFF" }} />
+                <button onClick={() => openVectorschetsTerBewerking(bekekenSchets.id)}
+                  style={{ marginTop: 10, width: "100%", background: C.card, border: `1px solid ${C.border}`, color: C.text, borderRadius: 12, padding: "10px 0", fontWeight: 700, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                  <Pencil size={14} /> Vectorschets bewerken
+                </button>
+              </>
             )}
             {(bekekenSchets.type === "foto" || bekekenSchets.type === "video" || bekekenSchets.type === "spraakbericht") && (
               mediaLaden ? (

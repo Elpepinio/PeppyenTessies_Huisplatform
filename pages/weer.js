@@ -1,7 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { ChevronLeft, MapPin, Plus, X, RefreshCw, Compass, CloudRain } from "lucide-react";
+import { ChevronLeft, MapPin, Plus, X, RefreshCw, Compass, Play, Pause, BarChart3, Map as MapIcon, Camera as CameraIcon } from "lucide-react";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from "recharts";
 import SunCalc from "suncalc";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Weer — volledig herzien: voorheen 3 losse pagina's (weer / weer-radar / weer-zon)
+// met elk hun eigen gedupliceerde kleuren en navigatie, nu samengevoegd tot één
+// samenhangende tool met tabbladen (Vandaag / Radar / Zonkompas). Alle
+// onderliggende logica (KNMI-nowcast, AR-zonkompas, kledingadvies, etc.) is
+// letterlijk overgenomen — dit is een herstructurering, geen herschrijving van
+// de hard bevochten berekeningen zelf.
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Weer-iconen op basis van Open-Meteo's WMO weathercode ───────────────
 const WEERCODE_INFO = {
@@ -87,10 +97,6 @@ function vandaagStr() {
 
 // ── Maanfase — via suncalc (mourner/suncalc, 3,4k sterren op GitHub, BSD-
 //    licentie, geschreven door Leaflet's maker) i.p.v. een eigen formule.
-//    Beide kwamen bij het testen exact overeen tegen de 2 onafhankelijk
-//    bevestigde volle-maan-referentiedata die eerder al werden gebruikt in
-//    de Gezondheid-tool, maar een gevestigde library is betrouwbaarder dan
-//    zelf uitgevonden wiskunde. ────────────────────────────────────────
 const MAANFASEN = [
   { max: 0.033, label: "Nieuwe maan",      emoji: "🌑" },
   { max: 0.216, label: "Wassende sikkel",  emoji: "🌒" },
@@ -106,6 +112,20 @@ function berekenMaanfase(datum = new Date()) {
   const { fraction, phase } = SunCalc.getMoonIllumination(datum);
   const fase = MAANFASEN.find(f => phase <= f.max) || MAANFASEN[MAANFASEN.length - 1];
   return { label: fase.label, emoji: fase.emoji, illuminatie: Math.round(fraction * 100) };
+}
+
+// ── Zonpositie — via suncalc, met een adapter voor de kompasrichting
+//    (0°=zuid i.p.v. 0°=noord bij suncalc zelf, radialen i.p.v. graden). ──
+function berekenZonPositie(lat, lon, datum = new Date()) {
+  const pos = SunCalc.getPosition(datum, lat, lon);
+  const azimutGraden = pos.azimuth * 180 / Math.PI;
+  const kompasAzimut = (azimutGraden + 180 + 360) % 360;
+  const elevatie = pos.altitude * 180 / Math.PI;
+  return { azimut: kompasAzimut, elevatie };
+}
+function hoekVerschil(a, b) {
+  let verschil = (a - b + 540) % 360 - 180;
+  return verschil;
 }
 
 // ── Kledingadvies + fiets-regenwaarschuwing ──────────────────────────────
@@ -152,7 +172,28 @@ function fietsWaarschuwing(hourly, vensters = [[7,9],[16,19]]) {
   return waarschuwingen;
 }
 
-// ── Stijlen ───────────────────────────────────────────────
+// ── Regenradar — helpers ─────────────────────────────────────────────────
+const NEERSLAG_GRENZEN = { licht: 2.5, matig: 7.6 };
+const TILE_SIZE = typeof window !== "undefined" && window.devicePixelRatio >= 2 ? 512 : 256;
+
+function windVerschuiving(lat, windSnelheidKmh, windRichtingGraden, offsetMinuten) {
+  const bewegingsrichting = (windRichtingGraden + 180) % 360;
+  const afstandKm = windSnelheidKmh * (offsetMinuten / 60);
+  const rad = bewegingsrichting * Math.PI / 180;
+  const deltaLat = (afstandKm / 111) * Math.cos(rad);
+  const deltaLon = (afstandKm / (111 * Math.cos(lat * Math.PI / 180))) * Math.sin(rad);
+  return { deltaLat, deltaLon };
+}
+
+const KNMI_WMS_URL = "https://anonymous.api.dataplatform.knmi.nl/wms/adaguc-server";
+function rondAfNaarVijfMinuten(datum) {
+  const afgerond = new Date(datum);
+  afgerond.setSeconds(0, 0);
+  afgerond.setMinutes(Math.floor(afgerond.getMinutes() / 5) * 5);
+  return afgerond;
+}
+
+// ── Stijlen (gedeeld door alle tabbladen) ─────────────────────────────────
 const C = {
   bg: "#0F1B2D", surf: "#1B2B45", card: "#22335020",
   border: "#33456622", accent: "#5B9BD5", accentDark: "#F2A93B",
@@ -168,11 +209,42 @@ const S = {
   inp: { background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 12, padding: "12px 16px", fontSize: 15, width: "100%", boxSizing: "border-box", color: C.text },
   loadingWrap: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, minHeight: "100vh" },
   switchBtn: { fontSize: 12, letterSpacing: "0.04em", textTransform: "uppercase", color: C.muted, fontWeight: 600, background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "none", display: "inline-block" },
+  tab: (active) => ({ flex: 1, border: "none", borderRadius: 8, padding: "9px 0", fontSize: 12.5, fontWeight: 600, cursor: "pointer", background: active ? C.accent : "transparent", color: active ? "#0F1B2D" : C.muted, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }),
 };
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 export default function WeerApp() {
+  const [tab, setTab] = useState("vandaag"); // "vandaag" | "radar" | "zonkompas"
+
+  return (
+    <div style={S.appBg}>
+      <header style={S.header}>
+        <div>
+          <Link href="/" style={S.switchBtn}><ChevronLeft size={13} style={{ verticalAlign: "middle" }} /> Terug</Link>
+          <h1 style={{ margin: "4px 0 0", fontSize: 24, fontWeight: 700 }}>🌤️ Weer</h1>
+        </div>
+      </header>
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+
+      <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.06)", borderRadius: 11, padding: 3, margin: "0 20px 4px" }}>
+        <button style={S.tab(tab==="vandaag")} onClick={() => setTab("vandaag")}>☀️ Vandaag</button>
+        <button style={S.tab(tab==="radar")} onClick={() => setTab("radar")}>🌧️ Radar</button>
+        <button style={S.tab(tab==="zonkompas")} onClick={() => setTab("zonkompas")}>🧭 Zonkompas</button>
+      </div>
+
+      {tab === "vandaag" && <VandaagTab />}
+      {tab === "radar" && <RadarTab />}
+      {tab === "zonkompas" && <ZonkompasTab />}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// VANDAAG — huidig weer, uurstrip, wind/UV/lucht, zon&maan, kledingadvies,
+// 7-daagse vooruitblik, fietswaarschuwing, locatiebeheer.
+// ══════════════════════════════════════════════════════════════════════════
+function VandaagTab() {
   const [locaties, setLocaties] = useState([]);
   const [huidigePositie, setHuidigePositie] = useState(null); // { lat, lon } via GPS
   const [actieveLocatieId, setActieveLocatieId] = useState("huidige"); // "huidige" of locatie.id
@@ -184,6 +256,7 @@ export default function WeerApp() {
   const [zoekterm, setZoekterm] = useState("");
   const [zoekresultaten, setZoekresultaten] = useState([]);
   const [zoekLaden, setZoekLaden] = useState(false);
+  const [uurDetailIdx, setUurDetailIdx] = useState(null);
   const lastWriteRef = useRef(0);
 
   // ── Locatie-instellingen laden/opslaan ─────────────────────
@@ -220,9 +293,7 @@ export default function WeerApp() {
   useEffect(() => { haalGpsOp(); }, [haalGpsOp]);
 
   // Plaatsnaam bij de GPS-coördinaten opzoeken (reverse geocoding), zodat je
-  // kunt controleren of "huidige locatie" ook echt klopt — precies waar je
-  // om vroeg. Nominatim/OpenStreetMap: gratis, geen sleutel nodig, dezelfde
-  // kaartenbron die de app al gebruikt (Places-tool).
+  // kunt controleren of "huidige locatie" ook echt klopt.
   useEffect(() => {
     if (!huidigePositie) return;
     let actief = true;
@@ -291,11 +362,9 @@ export default function WeerApp() {
   }
 
   if (laden) return (
-    <div style={S.appBg}>
-      <div style={S.loadingWrap}>
-        <div style={{ fontSize: 40 }}>🌤️</div>
-        <p style={{ color: C.muted, fontSize: 14 }}>Weer laden…</p>
-      </div>
+    <div style={S.loadingWrap}>
+      <div style={{ fontSize: 40 }}>🌤️</div>
+      <p style={{ color: C.muted, fontSize: 14 }}>Weer laden…</p>
     </div>
   );
 
@@ -318,33 +387,22 @@ export default function WeerApp() {
   const uurStrip = hourly?.time?.slice(uurStartIdx, uurStartIdx + 12).map((t, i) => ({
     tijd: new Date(t), temp: hourly.temperature_2m[uurStartIdx+i], code: hourly.weather_code[uurStartIdx+i],
     regenkans: hourly.precipitation_probability[uurStartIdx+i], isDag: hourly.is_day[uurStartIdx+i],
+    neerslag: hourly.precipitation[uurStartIdx+i], uv: hourly.uv_index?.[uurStartIdx+i],
   })) || [];
 
   const lkn = weerData?.lucht?.european_aqi != null ? luchtkwaliteitNiveau(weerData.lucht.european_aqi) : null;
   const pollenWaarden = weerData?.lucht ? POLLEN_TYPES.map(p => ({ label: p.label, waarde: weerData.lucht[p.id] ?? 0 })) : [];
   const hoogstePollen = pollenWaarden.length ? pollenWaarden.reduce((max, p) => p.waarde > max.waarde ? p : max, pollenWaarden[0]) : null;
+  const uurInDetail = uurDetailIdx != null ? uurStrip[uurDetailIdx] : null;
 
   return (
-    <div style={S.appBg}>
-      <header style={S.header}>
-        <div>
-          <Link href="/" style={S.switchBtn}><ChevronLeft size={13} style={{ verticalAlign: "middle" }} /> Terug</Link>
-          <h1 style={{ margin: "4px 0 0", fontSize: 24, fontWeight: 700 }}>🌤️ Weer</h1>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <Link href="/weer-radar" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}>
-            <CloudRain size={17} color={C.accent} />
-          </Link>
-          <Link href="/weer-zon" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}>
-            <Compass size={17} color={C.accentDark} />
-          </Link>
-          <button onClick={laadWeer} disabled={verversLaden}
-            style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", cursor: verversLaden ? "default" : "pointer" }}>
-            <RefreshCw size={16} color={C.accent} style={{ animation: verversLaden ? "spin 1s linear infinite" : "none" }} />
-          </button>
-        </div>
-      </header>
-      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+    <>
+      <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 20px", marginBottom: 4 }}>
+        <button onClick={laadWeer} disabled={verversLaden}
+          style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", cursor: verversLaden ? "default" : "pointer" }}>
+          <RefreshCw size={15} color={C.accent} style={{ animation: verversLaden ? "spin 1s linear infinite" : "none" }} />
+        </button>
+      </div>
 
       <main style={S.main}>
         {/* Locatie-kiezer */}
@@ -405,19 +463,39 @@ export default function WeerApp() {
           </div>
         )}
 
-        {/* Uurstrip */}
+        {/* Uurstrip — elk uur is nu aan te tikken voor een detailkaartje
+            (regenkans, neerslag in mm, UV) i.p.v. alleen het kale getal. */}
         {uurStrip.length > 0 && (
           <div style={{ ...S.card, overflowX: "auto" }}>
             <div style={{ display: "flex", gap: 18 }}>
               {uurStrip.map((u, idx) => (
-                <div key={idx} style={{ textAlign: "center", flexShrink: 0 }}>
+                <button key={idx} onClick={() => setUurDetailIdx(i => i === idx ? null : idx)}
+                  style={{ textAlign: "center", flexShrink: 0, background: uurDetailIdx===idx ? "rgba(91,155,213,0.18)" : "none", border: "none", borderRadius: 10, padding: "4px 6px", cursor: "pointer" }}>
                   <p style={{ margin: "0 0 6px", fontSize: 11, color: C.muted }}>{idx === 0 ? "Nu" : u.tijd.getHours() + "u"}</p>
                   <div style={{ fontSize: 20 }}>{weerInfo(u.code, u.isDag).icon}</div>
                   <p style={{ margin: "6px 0 0", fontSize: 13, fontWeight: 700 }}>{Math.round(u.temp)}°</p>
                   {u.regenkans > 20 && <p style={{ margin: "2px 0 0", fontSize: 10, color: C.accent }}>{u.regenkans}%</p>}
-                </div>
+                </button>
               ))}
             </div>
+            {uurInDetail && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.1)", display: "flex", justifyContent: "space-around", textAlign: "center" }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: C.accent }}>{uurInDetail.regenkans}%</p>
+                  <p style={{ margin: "2px 0 0", fontSize: 10, color: C.muted }}>Regenkans</p>
+                </div>
+                <div>
+                  <p style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>{uurInDetail.neerslag?.toFixed(1) ?? 0} mm</p>
+                  <p style={{ margin: "2px 0 0", fontSize: 10, color: C.muted }}>Neerslag</p>
+                </div>
+                {uurInDetail.uv != null && (
+                  <div>
+                    <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: uvNiveau(uurInDetail.uv).kleur }}>{Math.round(uurInDetail.uv)}</p>
+                    <p style={{ margin: "2px 0 0", fontSize: 10, color: C.muted }}>UV-index</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -520,7 +598,623 @@ export default function WeerApp() {
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// RADAR — RainViewer-verleden + KNMI pySTEPS-nowcast (2 uur vooruit, per 5
+// min), interactieve Leaflet-kaart met tijdlijn, en een grafiekweergave op
+// basis van Open-Meteo's 15-minuten-neerslagdata.
+// ══════════════════════════════════════════════════════════════════════════
+function RadarTab() {
+  const [positie, setPositie] = useState(null);
+  const [apiData, setApiData] = useState(null); // ruwe RainViewer-respons
+  const [wind, setWind] = useState(null); // { snelheid, richting } via Open-Meteo
+  const [frameIdx, setFrameIdx] = useState(0);
+  const [afspelen, setAfspelen] = useState(false);
+  const [laden, setLaden] = useState(true);
+  const [modus, setModus] = useState("kaart"); // "kaart" | "grafiek"
+  const [grafiekData, setGrafiekData] = useState(null);
+  const [grafiekFout, setGrafiekFout] = useState(null);
+  const [fout, setFout] = useState(null);
+  const [knmiFout, setKnmiFout] = useState(false);
+
+  const mapRef = useRef(null);
+  const mapInstanceRef = useRef(null);
+  const radarLayerRef = useRef(null);
+  const afspeelTimerRef = useRef(null);
+
+  useEffect(() => {
+    navigator.geolocation?.getCurrentPosition(
+      pos => setPositie({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => setPositie({ lat: 52.1, lon: 5.3 }) // val terug op midden-Nederland i.p.v. vastlopen
+    );
+  }, []);
+
+  // ── Neerslag-grafiekdata ophalen — Open-Meteo's 15-minuten-resolutie is
+  //    een betrouwbaardere bron voor "hoeveel regen komt eraan" dan
+  //    RainViewer's nowcast, die in de praktijk vaak leeg blijkt te zijn.
+  useEffect(() => {
+    if (!positie) return;
+    let actief = true;
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${positie.lat}&longitude=${positie.lon}&current=wind_speed_10m,wind_direction_10m&minutely_15=precipitation&hourly=precipitation&forecast_minutely_15=32&forecast_hours=8&timezone=auto`)
+      .then(async r => {
+        const data = await r.json();
+        if (!r.ok || data.error) throw new Error(data.reason || `Open-Meteo gaf een fout (status ${r.status})`);
+        return data;
+      })
+      .then(data => {
+        if (!actief) return;
+        if (data.current) setWind({ snelheid: data.current.wind_speed_10m, richting: data.current.wind_direction_10m });
+
+        if (data.minutely_15?.time?.length > 0) {
+          setGrafiekData(data.minutely_15.time.map((t, i) => ({
+            tijd: new Date(t),
+            neerslag: data.minutely_15.precipitation[i] ?? 0,
+          })));
+        } else if (data.hourly?.time?.length > 0) {
+          setGrafiekData(data.hourly.time.map((t, i) => ({
+            tijd: new Date(t),
+            neerslag: data.hourly.precipitation[i] ?? 0,
+          })));
+          setGrafiekFout("Alleen uurlijkse data beschikbaar voor deze locatie (geen 15-minuten-resolutie).");
+        } else {
+          setGrafiekFout("Geen neerslagvoorspelling beschikbaar voor deze locatie.");
+        }
+      })
+      .catch(e => { if (actief) setGrafiekFout(`Kon de neerslagvoorspelling niet ophalen: ${e.message}`); });
+    return () => { actief = false; };
+  }, [positie]);
+
+  // ── RainViewer-tijdlijn ophalen ───────────────────────────────
+  useEffect(() => {
+    fetch("https://api.rainviewer.com/public/weather-maps.json")
+      .then(r => r.json())
+      .then(data => {
+        setApiData(data);
+        const past = data.radar?.past || [];
+        setFrameIdx(Math.max(0, past.length - 1));
+        setLaden(false);
+      })
+      .catch(() => { setFout("Kon de radardata niet ophalen bij RainViewer."); setLaden(false); });
+  }, []);
+
+  const echteFrames = apiData ? [...(apiData.radar?.past || []), ...(apiData.radar?.nowcast || [])] : [];
+  const laatsteEchteFrame = echteFrames[echteFrames.length - 1];
+  const nu5min = rondAfNaarVijfMinuten(new Date());
+  const knmiFrames = Array.from({ length: 24 }, (_, i) => {
+    const tijd = new Date(nu5min.getTime() + (i + 1) * 5 * 60 * 1000); // +5 t/m +120 min
+    return { time: Math.floor(tijd.getTime() / 1000), knmiNowcast: true, isoTijd: tijd.toISOString().split(".")[0] + "Z" };
+  });
+  const alleFrames = [...echteFrames, ...knmiFrames];
+  const huidigFrame = alleFrames[frameIdx];
+  const aantalPastFrames = apiData?.radar?.past?.length || 0;
+
+  // ── Leaflet-kaart opzetten ───────────────────────────────────
+  useEffect(() => {
+    if (typeof window === "undefined" || !positie) return;
+
+    function initMap() {
+      if (mapInstanceRef.current || !mapRef.current) return;
+      const map = window.L.map(mapRef.current, {
+        zoomControl: true,
+        dragging: true, touchZoom: true, scrollWheelZoom: true, doubleClickZoom: true,
+      }).setView([positie.lat, positie.lon], 8);
+      window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; OpenStreetMap',
+      }).addTo(map);
+      window.L.marker([positie.lat, positie.lon]).addTo(map);
+      mapInstanceRef.current = map;
+    }
+
+    if (!window.L) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+      document.head.appendChild(link);
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+      script.onload = initMap;
+      document.head.appendChild(script);
+    } else {
+      initMap();
+    }
+
+    return () => {
+      if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
+    };
+  }, [positie]);
+
+  // ── Radar-laag bijwerken zodra het geselecteerde frame verandert ───────
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !huidigFrame || !window.L) return;
+    if (radarLayerRef.current) map.removeLayer(radarLayerRef.current);
+
+    if (huidigFrame.knmiNowcast && !knmiFout) {
+      const wmsLaag = window.L.tileLayer.wms(KNMI_WMS_URL, {
+        DATASET: "radar_forecast_2.0",
+        layers: "precipitation_nowcast",
+        styles: "rainrate-blue-to-purple/shaded",
+        format: "image/png",
+        transparent: true,
+        version: "1.3.0",
+        time: huidigFrame.isoTijd,
+        opacity: 0.75, zIndex: 5,
+      });
+      wmsLaag.on("tileerror", () => setKnmiFout(true));
+      wmsLaag.addTo(map);
+      radarLayerRef.current = wmsLaag;
+      return;
+    }
+
+    if (huidigFrame.knmiNowcast && knmiFout) {
+      if (!apiData || !laatsteEchteFrame || !wind) return;
+      const bronLaag = window.L.tileLayer(
+        `${apiData.host}${laatsteEchteFrame.path}/${TILE_SIZE}/{z}/{x}/{y}/2/1_1.png`,
+        { opacity: 0.55, zIndex: 5, maxNativeZoom: 7 }
+      );
+      const offsetMinuten = Math.round((huidigFrame.time - laatsteEchteFrame.time) / 60);
+      const { deltaLat, deltaLon } = windVerschuiving(positie.lat, wind.snelheid, wind.richting, offsetMinuten);
+      const zoom = map.getZoom();
+      const centerPx = map.project(map.getCenter(), zoom);
+      const verschovenPx = map.project(window.L.latLng(map.getCenter().lat + deltaLat, map.getCenter().lng + deltaLon), zoom);
+      const tegelDx = Math.round((verschovenPx.x - centerPx.x) / 256);
+      const tegelDy = Math.round((verschovenPx.y - centerPx.y) / 256);
+      const originaleGetTileUrl = bronLaag.getTileUrl.bind(bronLaag);
+      bronLaag.getTileUrl = coords => originaleGetTileUrl({ x: coords.x - tegelDx, y: coords.y - tegelDy, z: coords.z });
+      bronLaag.addTo(map);
+      radarLayerRef.current = bronLaag;
+      return;
+    }
+
+    if (!apiData) return;
+    const laag = window.L.tileLayer(
+      `${apiData.host}${huidigFrame.path}/${TILE_SIZE}/{z}/{x}/{y}/2/1_1.png`,
+      { opacity: 0.75, zIndex: 5, maxNativeZoom: 7 }
+    );
+    laag.addTo(map);
+    radarLayerRef.current = laag;
+  }, [apiData, huidigFrame, knmiFout, wind, positie, laatsteEchteFrame]);
+
+  // ── Animatie ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!afspelen || alleFrames.length === 0) return;
+    afspeelTimerRef.current = setInterval(() => {
+      setFrameIdx(i => (i + 1) % alleFrames.length);
+    }, 600);
+    return () => clearInterval(afspeelTimerRef.current);
+  }, [afspelen, alleFrames.length]);
+
+  function formatFrameTijd(unixTijd) {
+    return new Date(unixTijd * 1000).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  return (
+    <>
+      <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.06)", borderRadius: 11, padding: 3, margin: "0 20px 12px" }}>
+        <button onClick={() => setModus("grafiek")} style={{ flex: 1, border: "none", borderRadius: 8, padding: "8px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: modus==="grafiek"?C.accent:"transparent", color: modus==="grafiek"?"#0F1B2D":C.muted }}>
+          <BarChart3 size={13} style={{ verticalAlign: "middle", marginRight: 4 }} />Grafiek
+        </button>
+        <button onClick={() => setModus("kaart")} style={{ flex: 1, border: "none", borderRadius: 8, padding: "8px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: modus==="kaart"?C.accent:"transparent", color: modus==="kaart"?"#0F1B2D":C.muted }}>
+          <MapIcon size={13} style={{ verticalAlign: "middle", marginRight: 4 }} />Radar
+        </button>
+      </div>
+
+      {modus === "grafiek" && (
+        <NeerslagGrafiek data={grafiekData} fout={grafiekFout} />
+      )}
+
+      {modus === "kaart" && (
+        <>
+      {fout && <p style={{ textAlign: "center", color: "#E0684F", fontSize: 13, padding: "0 20px" }}>{fout}</p>}
+      {laden && <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 20 }}>Radar laden…</p>}
+
+      <div ref={mapRef} style={{ width: "100%", height: "56vh", background: "#1B2B45" }} />
+
+      {alleFrames.length > 0 && (
+        <div style={{ padding: "16px 20px" }}>
+          <TijdlijnStrip alleFrames={alleFrames} frameIdx={frameIdx} aantalPastFrames={aantalPastFrames}
+            onKies={idx => { setAfspelen(false); setFrameIdx(idx); }} formatFrameTijd={formatFrameTijd} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
+            <button onClick={() => setAfspelen(a => !a)}
+              style={{ background: C.accent, border: "none", borderRadius: 10, width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+              {afspelen ? <Pause size={16} color="#0F1B2D" /> : <Play size={16} color="#0F1B2D" />}
+            </button>
+            <div style={{ textAlign: "center" }}>
+              <p style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>
+                {huidigFrame ? formatFrameTijd(huidigFrame.time) : "—"}
+              </p>
+              <p style={{ margin: "2px 0 0", fontSize: 11, color: frameIdx >= aantalPastFrames ? C.accentDark : C.muted }}>
+                {frameIdx >= aantalPastFrames ? "Verwachting" : frameIdx === aantalPastFrames - 1 ? "Nu" : "Verleden"}
+              </p>
+            </div>
+            <div style={{ width: 40 }} />
+          </div>
+
+          {huidigFrame?.knmiNowcast && !knmiFout && (
+            <div style={{ marginTop: 12, background: "rgba(91,155,213,0.10)", border: "1px solid rgba(91,155,213,0.3)", borderRadius: 12, padding: 12 }}>
+              <p style={{ margin: 0, fontSize: 11.5, color: C.text }}>
+                🔬 Echte voorspelling van <strong>KNMI</strong> (pySTEPS-nowcast, per 5 minuten bijgewerkt). Zoals bij elke buienvoorspelling geldt: hoe verder vooruit, hoe onzekerder — buien kunnen sneller groeien, afzwakken of van richting veranderen dan voorspeld.
+              </p>
+            </div>
+          )}
+          {huidigFrame?.knmiNowcast && knmiFout && (
+            <div style={{ marginTop: 12, background: "rgba(242,169,59,0.12)", border: "1px solid rgba(242,169,59,0.35)", borderRadius: 12, padding: 12 }}>
+              <p style={{ margin: 0, fontSize: 11.5, color: C.text }}>
+                ⚠️ KNMI's voorspellingsdienst is momenteel niet bereikbaar — dit is nu een <strong>ruwe schatting</strong>: het laatste radarbeeld verschoven op basis van windrichting ({Math.round(wind?.richting ?? 0)}°) en -snelheid ({Math.round(wind?.snelheid ?? 0)} km/u). Minder betrouwbaar dan normaal.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <p style={{ textAlign: "center", fontSize: 10.5, color: C.muted, padding: "8px 20px 24px" }}>
+        Verleden: <a href="https://www.rainviewer.com" target="_blank" rel="noreferrer" style={{ color: C.accent }}>RainViewer</a>
+        {" "}· Toekomst: <a href="https://www.knmi.nl" target="_blank" rel="noreferrer" style={{ color: C.accent }}>KNMI</a>
+        {" "}· kaart via OpenStreetMap
+      </p>
+      </>
+      )}
+    </>
+  );
+}
+
+function NeerslagGrafiek({ data, fout }) {
+  if (fout && !data) return <p style={{ textAlign: "center", color: "#E0684F", fontSize: 13, padding: 20 }}>{fout}</p>;
+  if (!data) return <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 20 }}>Grafiek laden…</p>;
+
+  const chartData = data.map(d => ({
+    label: d.tijd.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" }),
+    neerslag: Math.round(d.neerslag * 10) / 10,
+  }));
+  const totaalNeerslag = data.reduce((s, d) => s + d.neerslag, 0);
+  const maxNeerslag = Math.max(...data.map(d => d.neerslag), NEERSLAG_GRENZEN.matig + 1);
+
+  return (
+    <div style={{ padding: "4px 20px 24px" }}>
+      {fout && (
+        <p style={{ margin: "0 0 10px", fontSize: 11.5, color: "#F2A93B", background: "rgba(242,169,59,0.12)", border: "1px solid rgba(242,169,59,0.3)", borderRadius: 10, padding: "8px 12px" }}>
+          ⚠️ {fout}
+        </p>
+      )}
+      <p style={{ margin: "0 0 4px", fontSize: 13, color: C.muted }}>
+        {totaalNeerslag < 0.1 ? "Geen neerslag verwacht de komende uren" : `Totaal ${totaalNeerslag.toFixed(1)} mm verwacht de komende uren`}
+      </p>
+      <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "14px 8px 6px" }}>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={chartData} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" vertical={false} />
+            <XAxis dataKey="label" tick={{ fill: C.muted, fontSize: 9 }} interval={3} axisLine={false} tickLine={false} />
+            <YAxis domain={[0, maxNeerslag]} tick={{ fill: C.muted, fontSize: 10 }} axisLine={false} tickLine={false} width={30} />
+            <Tooltip contentStyle={{ background: "#1B2B45", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, fontSize: 12 }}
+              formatter={v => [`${v} mm/u`, "Neerslag"]} />
+            <ReferenceLine y={NEERSLAG_GRENZEN.licht} stroke="#4C9A2A" strokeDasharray="4 4" label={{ value: "Licht", position: "right", fill: "#4C9A2A", fontSize: 10 }} />
+            <ReferenceLine y={NEERSLAG_GRENZEN.matig} stroke="#C97D0C" strokeDasharray="4 4" label={{ value: "Matig", position: "right", fill: "#C97D0C", fontSize: 10 }} />
+            <Bar dataKey="neerslag" radius={[3,3,0,0]}>
+              {chartData.map((d, idx) => (
+                <Cell key={idx} fill={d.neerslag >= NEERSLAG_GRENZEN.matig ? "#E0684F" : d.neerslag >= NEERSLAG_GRENZEN.licht ? "#F2A93B" : C.accent} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <p style={{ fontSize: 10.5, color: C.muted, textAlign: "center", marginTop: 10 }}>
+        Neerslagvoorspelling in blokjes van 15 minuten, via Open-Meteo.
+      </p>
     </div>
   );
 }
 
+function TijdlijnStrip({ alleFrames, frameIdx, aantalPastFrames, onKies, formatFrameTijd }) {
+  const stripRef = useRef(null);
+  const tikRefs = useRef({});
+
+  useEffect(() => {
+    const tik = tikRefs.current[frameIdx];
+    const strip = stripRef.current;
+    if (!tik || !strip) return;
+    const doelLinks = tik.offsetLeft - strip.clientWidth / 2 + tik.clientWidth / 2;
+    strip.scrollTo({ left: doelLinks, behavior: "smooth" });
+  }, [frameIdx]);
+
+  return (
+    <div ref={stripRef} style={{ display: "flex", gap: 6, overflowX: "auto", scrollSnapType: "x proximity", paddingBottom: 6, WebkitOverflowScrolling: "touch" }}>
+      {alleFrames.map((frame, idx) => {
+        const actief = idx === frameIdx;
+        const isNu = idx === aantalPastFrames - 1;
+        const isVerwachting = idx >= aantalPastFrames;
+        return (
+          <button key={idx} ref={el => { tikRefs.current[idx] = el; }} onClick={() => onKies(idx)}
+            style={{
+              flexShrink: 0, scrollSnapAlign: "center", minWidth: 54, padding: "8px 4px",
+              borderRadius: 10, border: actief ? `1.5px solid ${isVerwachting ? C.accentDark : C.accent}` : "1px solid rgba(255,255,255,0.1)",
+              background: actief ? (isVerwachting ? "rgba(242,169,59,0.18)" : "rgba(91,155,213,0.18)") : "rgba(255,255,255,0.04)",
+              color: actief ? "#FFF" : C.muted, cursor: "pointer", textAlign: "center",
+            }}>
+            <p style={{ margin: 0, fontSize: 12, fontWeight: actief ? 700 : 400 }}>{formatFrameTijd(frame.time)}</p>
+            {isNu && <p style={{ margin: "2px 0 0", fontSize: 9, color: C.accent, fontWeight: 700 }}>NU</p>}
+            {frame.knmiNowcast && <p style={{ margin: "2px 0 0", fontSize: 9, color: C.accentDark, fontWeight: 700 }}>KNMI</p>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ZONKOMPAS — live zonpositie, kompasweergave met dagpad, en een
+// camera/AR-modus die laat zien waar de zon staat t.o.v. waar je telefoon
+// naartoe wijst.
+// ══════════════════════════════════════════════════════════════════════════
+function ZonkompasTab() {
+  const [modus, setModus] = useState("kompas"); // "kompas" | "camera"
+  const [positie, setPositie] = useState(null);
+  const [nu, setNu] = useState(new Date());
+  const [heading, setHeading] = useState(null);
+  const [headingBeschikbaar, setHeadingBeschikbaar] = useState(null); // null=onbekend, true/false
+  const [kalibratieOffset, setKalibratieOffset] = useState(0);
+  const [toonKalibratie, setToonKalibratie] = useState(false);
+  useEffect(() => {
+    try {
+      const opgeslagen = window.localStorage.getItem("huisplatform_weer_kompas_offset");
+      if (opgeslagen) setKalibratieOffset(+opgeslagen);
+    } catch {}
+  }, []);
+  function wijzigKalibratie(nieuweOffset) {
+    setKalibratieOffset(nieuweOffset);
+    try { window.localStorage.setItem("huisplatform_weer_kompas_offset", String(nieuweOffset)); } catch {}
+  }
+  const gecorrigeerdeHeading = heading != null ? (heading + kalibratieOffset + 360) % 360 : null;
+  const [cameraStream, setCameraStream] = useState(null);
+  const [cameraFout, setCameraFout] = useState(null);
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    navigator.geolocation?.getCurrentPosition(
+      pos => setPositie({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => {}
+    );
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => setNu(new Date()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const zonPositie = positie ? berekenZonPositie(positie.lat, positie.lon, nu) : null;
+
+  // ── Kompas-richting (device-oriëntatie) ────────────────────────────────
+  const zetOrientatieListener = useCallback(() => {
+    const handler = e => {
+      if (typeof e.webkitCompassHeading === "number") {
+        setHeading(e.webkitCompassHeading);
+        setHeadingBeschikbaar(true);
+      } else if (e.absolute && e.alpha != null) {
+        setHeading((360 - e.alpha) % 360);
+        setHeadingBeschikbaar(true);
+      }
+    };
+    window.addEventListener("deviceorientationabsolute", handler);
+    window.addEventListener("deviceorientation", handler);
+    setTimeout(() => setHeadingBeschikbaar(h => h === null ? false : h), 2000);
+    return () => {
+      window.removeEventListener("deviceorientationabsolute", handler);
+      window.removeEventListener("deviceorientation", handler);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      setHeadingBeschikbaar("needsPermission");
+      return;
+    }
+    return zetOrientatieListener();
+  }, [zetOrientatieListener]);
+
+  async function vraagKompasToestemming() {
+    try {
+      const result = await DeviceOrientationEvent.requestPermission();
+      if (result === "granted") zetOrientatieListener();
+      else setHeadingBeschikbaar(false);
+    } catch {
+      setHeadingBeschikbaar(false);
+    }
+  }
+
+  async function startCamera() {
+    setCameraFout(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      setCameraStream(stream);
+      setModus("camera");
+    } catch {
+      setCameraFout("Kon geen toegang krijgen tot de camera — check de locatietoestemmingen van de browser in je instellingen.");
+    }
+  }
+  useEffect(() => {
+    if (modus === "camera" && cameraStream && videoRef.current) {
+      videoRef.current.srcObject = cameraStream;
+    }
+  }, [modus, cameraStream]);
+  useEffect(() => {
+    return () => { cameraStream?.getTracks().forEach(t => t.stop()); };
+  }, [cameraStream]);
+
+  const relatieveHoek = zonPositie && gecorrigeerdeHeading != null ? hoekVerschil(zonPositie.azimut, gecorrigeerdeHeading) : null;
+  const CAMERA_FOV = 34; // halve gezichtsveld-hoek in graden, ruwe aanname voor een telefooncamera
+  const zonInBeeld = relatieveHoek != null && Math.abs(relatieveHoek) <= CAMERA_FOV;
+
+  return (
+    <>
+      <div style={{ display: "flex", justifyContent: "center", padding: "0 20px", marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.06)", borderRadius: 11, padding: 3 }}>
+          <button onClick={() => setModus("kompas")} style={{ border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", background: modus==="kompas"?C.accent:"transparent", color: modus==="kompas"?"#0F1B2D":C.muted }}>
+            <Compass size={13} style={{ verticalAlign: "middle", marginRight: 4 }} />Kompas
+          </button>
+          <button onClick={() => cameraStream ? setModus("camera") : startCamera()} style={{ border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", background: modus==="camera"?C.accent:"transparent", color: modus==="camera"?"#0F1B2D":C.muted }}>
+            <CameraIcon size={13} style={{ verticalAlign: "middle", marginRight: 4 }} />Camera
+          </button>
+        </div>
+      </div>
+
+      {!positie && (
+        <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 20 }}>Locatie wordt bepaald…</p>
+      )}
+
+      {headingBeschikbaar === "needsPermission" && (
+        <div style={{ margin: "0 20px 16px", background: "rgba(91,155,213,0.12)", border: "1px solid rgba(91,155,213,0.4)", borderRadius: 12, padding: 14, textAlign: "center" }}>
+          <p style={{ margin: "0 0 10px", fontSize: 12.5 }}>
+            Voor de kompasrichting van je telefoon heeft dit toestel expliciet toestemming nodig.
+          </p>
+          <button onClick={vraagKompasToestemming} style={{ background: C.accent, color: "#0F1B2D", border: "none", borderRadius: 12, padding: "10px 20px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+            🧭 Geef kompastoegang
+          </button>
+        </div>
+      )}
+
+      {headingBeschikbaar === false && (
+        <div style={{ margin: "0 20px 16px", background: "rgba(224,104,79,0.15)", border: "1px solid rgba(224,104,79,0.4)", borderRadius: 12, padding: 14 }}>
+          <p style={{ margin: 0, fontSize: 12.5 }}>
+            ⚠️ Kon geen kompasrichting van je toestel krijgen (toestemming geweigerd, of niet ondersteund door deze browser). De kaart hieronder toont de zonpositie nog wel, maar zonder aan te geven waar je telefoon zelf naartoe wijst.
+          </p>
+        </div>
+      )}
+
+      {modus === "kompas" && positie && zonPositie && (
+        <>
+          {headingBeschikbaar === true && (
+            <div style={{ margin: "0 20px 12px", textAlign: "center" }}>
+              <button onClick={() => setToonKalibratie(v => !v)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>
+                Klopt de richting niet helemaal? Kalibreer hier
+              </button>
+              {toonKalibratie && (
+                <div style={{ marginTop: 10, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14 }}>
+                  <p style={{ margin: "0 0 8px", fontSize: 12 }}>
+                    Sleep tot de zon op de kaart klopt met waar je 'm daadwerkelijk ziet staan.
+                  </p>
+                  <input type="range" min={-30} max={30} step={1} value={kalibratieOffset}
+                    onChange={e => wijzigKalibratie(+e.target.value)}
+                    style={{ width: "100%", accentColor: C.accent }} />
+                  <p style={{ margin: "6px 0 0", fontSize: 12, fontWeight: 700 }}>{kalibratieOffset > 0 ? "+" : ""}{kalibratieOffset}°</p>
+                </div>
+              )}
+            </div>
+          )}
+          <KompasWeergave zonPositie={zonPositie} heading={gecorrigeerdeHeading} positie={positie} nu={nu} />
+        </>
+      )}
+
+      {modus === "camera" && (
+        <CameraWeergave
+          videoRef={videoRef} cameraStream={cameraStream} cameraFout={cameraFout}
+          zonPositie={zonPositie} relatieveHoek={relatieveHoek} zonInBeeld={zonInBeeld}
+          headingBeschikbaar={headingBeschikbaar} onOpnieuw={startCamera}
+          kalibratieOffset={kalibratieOffset} wijzigKalibratie={wijzigKalibratie}
+        />
+      )}
+    </>
+  );
+}
+
+function KompasWeergave({ zonPositie, heading, positie, nu }) {
+  const r = 110, cx = 140, cy = 140;
+  const punt = (graden, straal) => {
+    const rad = (graden - 90) * Math.PI / 180; // 0° = boven (noord)
+    return { x: cx + straal * Math.cos(rad), y: cy + straal * Math.sin(rad) };
+  };
+  const zonPunt = punt(zonPositie.azimut, r * 0.85);
+  const naaldPunt = heading != null ? punt(heading, r * 0.7) : null;
+
+  const pad = [];
+  for (let m = 0; m < 24*60; m += 15) {
+    const t = new Date(nu); t.setHours(0, m, 0, 0);
+    const p = berekenZonPositie(positie.lat, positie.lon, t);
+    if (p.elevatie > 0) pad.push(punt(p.azimut, r * 0.85));
+  }
+
+  return (
+    <div style={{ padding: 20 }}>
+      <svg viewBox="0 0 280 280" style={{ width: "100%", maxWidth: 340, display: "block", margin: "0 auto" }}>
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
+        <circle cx={cx} cy={cy} r={r*0.5} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+        {["N","O","Z","W"].map((l, i) => {
+          const p = punt(i*90, r + 16);
+          return <text key={l} x={p.x} y={p.y} fill={C.muted} fontSize="13" fontWeight="700" textAnchor="middle" dominantBaseline="middle">{l}</text>;
+        })}
+        {pad.length > 1 && (
+          <polyline points={pad.map(p => `${p.x},${p.y}`).join(" ")} fill="none" stroke="rgba(242,169,59,0.35)" strokeWidth="2" />
+        )}
+        {naaldPunt && (
+          <line x1={cx} y1={cy} x2={naaldPunt.x} y2={naaldPunt.y} stroke={C.accent} strokeWidth="2" strokeLinecap="round" />
+        )}
+        {zonPositie.elevatie > 0 ? (
+          <circle cx={zonPunt.x} cy={zonPunt.y} r="10" fill={C.accentDark} />
+        ) : (
+          <circle cx={zonPunt.x} cy={zonPunt.y} r="8" fill="none" stroke={C.accentDark} strokeWidth="2" strokeDasharray="3,2" />
+        )}
+        <circle cx={cx} cy={cy} r="3" fill={C.text} />
+      </svg>
+      <div style={{ textAlign: "center", marginTop: 10 }}>
+        <p style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>
+          ☀️ Azimut {Math.round(zonPositie.azimut)}° · Elevatie {Math.round(zonPositie.elevatie)}°
+        </p>
+        <p style={{ margin: "4px 0 0", fontSize: 12, color: C.muted }}>
+          {zonPositie.elevatie > 0 ? "De zon staat nu boven de horizon" : "De zon staat nu onder de horizon"}
+          {heading != null && ` · jouw telefoon wijst naar ${Math.round(heading)}°`}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function CameraWeergave({ videoRef, cameraStream, cameraFout, zonPositie, relatieveHoek, zonInBeeld, headingBeschikbaar, onOpnieuw, kalibratieOffset, wijzigKalibratie }) {
+  if (cameraFout) {
+    return (
+      <div style={{ padding: 20, textAlign: "center" }}>
+        <p style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>{cameraFout}</p>
+        <button onClick={onOpnieuw} style={{ background: C.accent, color: "#0F1B2D", border: "none", borderRadius: 12, padding: "10px 20px", fontWeight: 700, cursor: "pointer" }}>
+          Opnieuw proberen
+        </button>
+      </div>
+    );
+  }
+  if (!cameraStream) {
+    return <p style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 20 }}>Camera wordt gestart…</p>;
+  }
+  return (
+    <div style={{ position: "relative", width: "100%", height: "calc(100vh - 150px)", overflow: "hidden", background: "#000" }}>
+      <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      <div style={{ position: "absolute", top: 0, bottom: 0, left: "50%", width: 1, background: "rgba(255,255,255,0.25)" }} />
+      {zonInBeeld && (
+        <div style={{
+          position: "absolute", top: "38%", left: `${50 + (relatieveHoek / 34) * 42}%`,
+          transform: "translate(-50%, -50%)", fontSize: 44, textShadow: "0 0 12px rgba(242,169,59,0.9)",
+        }}>☀️</div>
+      )}
+      {!zonInBeeld && relatieveHoek != null && (
+        <div style={{
+          position: "absolute", top: "38%", [relatieveHoek < 0 ? "left" : "right"]: 16,
+          transform: "translateY(-50%)", fontSize: 28, color: C.accentDark,
+        }}>{relatieveHoek < 0 ? "◀" : "▶"}</div>
+      )}
+      <div style={{ position: "absolute", bottom: 24, left: 0, right: 0, textAlign: "center" }}>
+        <p style={{ display: "inline-block", margin: "0 0 8px", background: "rgba(0,0,0,0.55)", color: "#FFF", padding: "8px 16px", borderRadius: 20, fontSize: 12.5 }}>
+          {zonPositie && `☀️ Elevatie ${Math.round(zonPositie.elevatie)}°`}
+          {headingBeschikbaar === false && " · geen kompas beschikbaar op dit toestel"}
+        </p>
+        {headingBeschikbaar === true && (
+          <div style={{ padding: "0 40px" }}>
+            <input type="range" min={-30} max={30} step={1} value={kalibratieOffset}
+              onChange={e => wijzigKalibratie(+e.target.value)}
+              style={{ width: "100%", accentColor: C.accentDark }} />
+            <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "rgba(255,255,255,0.7)" }}>
+              Klopt niet? Sleep tot de zon op de juiste plek staat ({kalibratieOffset > 0 ? "+" : ""}{kalibratieOffset}°)
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
