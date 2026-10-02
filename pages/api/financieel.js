@@ -10,7 +10,18 @@ export default async function handler(req, res) {
 
   if (req.method === "GET") {
     const data = await redis.get(DATA_KEY);
-    if (!data) return res.status(200).json({});
+    // Een kale {} liet eerdere versies van de pagina crashen zodra een
+    // tabblad (Hypotheek/Toeslagen/BV) een geneste eigenschap verwachtte
+    // die er dan niet was — vandaar nu een volledige standaardstructuur,
+    // ook al beschermt elk tabblad zich inmiddels zelf ook defensief.
+    if (!data) {
+      return res.status(200).json({
+        hypotheek: { delen: [{ id: "deel-1", naam: "Hypotheekdeel 1", type: "annuitair", schuld: "", rente: "", resterendeJaren: "" }], extraDeelIdx: 0, extraBedrag: "", verwachtRendement: "6", wozWaarde: "" },
+        kot: { aantalKinderen: 1, urenPerMaandKind1: "", typeKind1: "dagopvang", urenPerMaandKind2: "", typeKind2: "dagopvang" },
+        bv: { verwachteWinstPerJaar: "", dividendplan: "" },
+        vangnet: { heeftAov: null, zzpRegeltZelfPensioen: null, pensioenEigenInlegPerJaar: "", maandelijkseVasteLasten: "", heeftSamenlevingscontract: null, heeftTestament: null, heeftOrvGekoppeldAanHypotheek: null },
+      });
+    }
     return res.status(200).json(typeof data === "string" ? JSON.parse(data) : data);
   }
 

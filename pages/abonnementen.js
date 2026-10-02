@@ -29,10 +29,39 @@ function categorieInfo(id) {
 // open-source trackers die een lijst van bekende diensten aanbieden, zodat
 // je met één tik toevoegt i.p.v. zelf alles te moeten bedenken en uittypen.
 // Puur een hulpmiddel bij het invullen; verder gewoon vrije tekst.
+// kanAltijdOpzeggen: true staat alleen bij diensten waarvan het STANDAARD
+// abonnement in Nederland maandelijks opzegbaar is, zonder minimumtermijn —
+// bewust NIET bij een krant/tijdschrift, sportschool, mobiel abonnement of
+// internet, want die hebben in de praktijk vaak juist wél een vaste
+// looptijd met opzegtermijn (en dat verschilt sterk per aanbieder/contract).
 const VEELVOORKOMENDE_ABONNEMENTEN = {
-  entertainment: ["Netflix", "HBO Max", "Videoland", "Disney+", "Amazon Prime Video", "Spotify", "Apple Music", "YouTube Premium", "Dagblad/krant", "Tijdschrift"],
-  sport_hobby: ["Sportschool", "Zwemles", "Muziekles", "Dansles", "Voetbalclub", "Hockeyclub", "Scouting"],
-  overig: ["ANWB", "Mobiel abonnement", "Internet", "Cloud-opslag (iCloud/Google One)"],
+  entertainment: [
+    { naam: "Netflix", domein: "netflix.com", kanAltijdOpzeggen: true },
+    { naam: "HBO Max", domein: "hbomax.com", kanAltijdOpzeggen: true },
+    { naam: "Videoland", domein: "videoland.com", kanAltijdOpzeggen: true },
+    { naam: "Disney+", domein: "disneyplus.com", kanAltijdOpzeggen: true },
+    { naam: "Amazon Prime Video", domein: "primevideo.com", kanAltijdOpzeggen: true },
+    { naam: "Spotify", domein: "spotify.com", kanAltijdOpzeggen: true },
+    { naam: "Apple Music", domein: "music.apple.com", kanAltijdOpzeggen: true },
+    { naam: "YouTube Premium", domein: "youtube.com", kanAltijdOpzeggen: true },
+    { naam: "Dagblad/krant", domein: null },
+    { naam: "Tijdschrift", domein: null },
+  ],
+  sport_hobby: [
+    { naam: "Sportschool", domein: null },
+    { naam: "Zwemles", domein: null },
+    { naam: "Muziekles", domein: null },
+    { naam: "Dansles", domein: null },
+    { naam: "Voetbalclub", domein: null },
+    { naam: "Hockeyclub", domein: null },
+    { naam: "Scouting", domein: null },
+  ],
+  overig: [
+    { naam: "ANWB", domein: "anwb.nl" },
+    { naam: "Mobiel abonnement", domein: null },
+    { naam: "Internet", domein: null },
+    { naam: "Cloud-opslag (iCloud/Google One)", domein: "google.com", kanAltijdOpzeggen: true },
+  ],
 };
 
 const FREQUENTIES = [
@@ -116,6 +145,23 @@ const S = {
   label: { fontSize: 11.5, color: C.muted, fontWeight: 600, display: "block", marginBottom: 4 },
 };
 
+// Haalt het logo rechtstreeks op bij de eigen website van de dienst (via een
+// publieke favicon-dienst) i.p.v. dat wij zelf merklogo's zouden opslaan —
+// dat laatste zou een auteursrecht-/merkenrechtelijk probleem zijn. Valt
+// terug op het categorie-icoon als er geen domein bekend is, of als het
+// ophalen een keer mislukt.
+function AbonnementLogo({ domein, categorie, grootte = 32 }) {
+  const [fout, setFout] = useState(false);
+  if (!domein || fout) {
+    return <span style={{ fontSize: grootte * 0.6, lineHeight: 1 }}>{categorieInfo(categorie).icon}</span>;
+  }
+  return (
+    <img src={`https://logo.clearbit.com/${domein}`} alt="" width={grootte} height={grootte}
+      style={{ borderRadius: grootte > 20 ? 8 : 5, objectFit: "contain", background: "#FFF", border: `1px solid ${C.border}`, flexShrink: 0 }}
+      onError={() => setFout(true)} />
+  );
+}
+
 function Veld({ label, value, onChange, type = "number", placeholder = "", suffix = "" }) {
   return (
     <div style={{ marginBottom: 10 }}>
@@ -132,6 +178,7 @@ export default function AbonnementenApp() {
   const [abonnementen, setAbonnementen] = useState([]);
   const [laden, setLaden] = useState(true);
   const [bewerkItem, setBewerkItem] = useState(null); // null = gesloten, {} = nieuw, {...} = bewerken
+  const [saveFout, setSaveFout] = useState(false);
   const lastWriteRef = useRef(0);
 
   useEffect(() => {
@@ -148,7 +195,9 @@ export default function AbonnementenApp() {
     fetch("/api/abonnementen", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ abonnementen: nieuweLijst }),
-    }).catch(() => {});
+    })
+      .then(r => { if (!r.ok) throw new Error(); setSaveFout(false); })
+      .catch(() => setSaveFout(true));
   }
 
   function opslaan(item) {
@@ -190,6 +239,12 @@ export default function AbonnementenApp() {
       </header>
 
       <main style={S.main}>
+        {saveFout && (
+          <div style={{ ...S.card, background: "#FBEAEA", border: `1px solid ${C.rood}44`, display: "flex", alignItems: "center", gap: 8 }}>
+            <AlertTriangle size={14} color={C.rood} style={{ flexShrink: 0 }} />
+            <p style={{ margin: 0, fontSize: 11.5, color: C.text }}>Opslaan is niet gelukt — controleer je verbinding. Je laatste wijziging staat mogelijk nog niet vast.</p>
+          </div>
+        )}
         <div style={{ ...S.card, background: C.accent, color: "#FFF", display: "flex", justifyContent: "space-around", textAlign: "center" }}>
           <div>
             <p style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>{euroRond(totaalPerMaand)}</p>
@@ -219,14 +274,15 @@ export default function AbonnementenApp() {
               <AlertTriangle size={14} color={C.oranje} /> Binnenkort opzeggen of verlengen
             </p>
             {aankomend.map(a => (
-              <div key={a.id} onClick={() => setBewerkItem(a)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: `1px solid ${C.border}`, cursor: "pointer" }}>
-                <div>
-                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700 }}>{categorieInfo(a.categorie).icon} {a.naam}</p>
+              <div key={a.id} onClick={() => setBewerkItem(a)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: `1px solid ${C.border}`, cursor: "pointer", gap: 10 }}>
+                <AbonnementLogo domein={a.domein} categorie={a.categorie} grootte={26} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700 }}>{a.naam}</p>
                   <p style={{ margin: "2px 0 0", fontSize: 11, color: a._dagenTot < 0 ? C.rood : a._dagenTot <= 14 ? C.oranje : C.muted }}>
                     {a._dagenTot < 0 ? `Opzegmoment was ${Math.abs(a._dagenTot)} dagen geleden` : a._dagenTot === 0 ? "Vandaag uiterlijk opzeggen" : `Nog ${a._dagenTot} dagen om op te zeggen`}
                   </p>
                 </div>
-                <span style={{ fontSize: 11, color: C.muted }}>verlengt {new Date(a.volgendeVerlengdatum).toLocaleDateString("nl-NL")}</span>
+                <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>verlengt {new Date(a.volgendeVerlengdatum).toLocaleDateString("nl-NL")}</span>
               </div>
             ))}
           </div>
@@ -237,16 +293,20 @@ export default function AbonnementenApp() {
             <p style={{ margin: "0 0 10px", fontSize: 12.5, fontWeight: 800, color: C.accent }}>{cat.icon} {cat.label}</p>
             {groepen[cat.id].map(a => (
               <div key={a.id} onClick={() => setBewerkItem(a)}
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderTop: `1px solid ${C.border}`, cursor: "pointer", opacity: a.actief === false ? 0.45 : 1 }}>
-                <div>
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderTop: `1px solid ${C.border}`, cursor: "pointer", opacity: a.actief === false ? 0.45 : 1, gap: 10 }}>
+                <AbonnementLogo domein={a.domein} categorie={a.categorie} grootte={32} />
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ margin: 0, fontSize: 13.5, fontWeight: 700 }}>{a.naam}{a.actief === false ? " (inactief)" : ""}</p>
                   <p style={{ margin: "2px 0 0", fontSize: 11, color: C.muted }}>
-                    {a.voorWie ? `${a.voorWie} · ` : ""}{a.betaaldDoor ? `betaald door ${a.betaaldDoor}` : ""}
+                    {a.voorWie ? `${a.voorWie} · ` : ""}{a.betaaldDoor ? `betaald door ${a.betaaldDoor}` : ""}{a.kanAltijdOpzeggen ? " · vrij opzegbaar" : ""}
                   </p>
                 </div>
-                <div style={{ textAlign: "right" }}>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
                   <p style={{ margin: 0, fontSize: 13, fontWeight: 700 }}>{euro(a.bedrag)}</p>
                   <p style={{ margin: "2px 0 0", fontSize: 10.5, color: C.muted }}>{frequentieLabel(a.frequentie)}</p>
+                  {a.frequentie !== "jaarlijks" && (
+                    <p style={{ margin: "2px 0 0", fontSize: 10, color: C.accentLicht }}>{euroRond(berekenJaarbedrag(a.bedrag, a.frequentie))} / jaar</p>
+                  )}
                 </div>
               </div>
             ))}
@@ -272,9 +332,10 @@ export default function AbonnementenApp() {
 
 function AbonnementModal({ item, onOpslaan, onVerwijder, onSluiten }) {
   const [form, setForm] = useState({
-    naam: item.naam || "", categorie: item.categorie || "overig",
+    naam: item.naam || "", categorie: item.categorie || "overig", domein: item.domein || "",
     bedrag: item.bedrag ?? "", frequentie: item.frequentie || "maandelijks",
     voorWie: item.voorWie || "", betaaldDoor: item.betaaldDoor || "",
+    kanAltijdOpzeggen: item.kanAltijdOpzeggen || false,
     volgendeVerlengdatum: item.volgendeVerlengdatum || "", opzegtermijnDagen: item.opzegtermijnDagen ?? "",
     notities: item.notities || "", actief: item.actief !== false,
     id: item.id || null,
@@ -296,7 +357,15 @@ function AbonnementModal({ item, onOpslaan, onVerwijder, onSluiten }) {
           <button onClick={onSluiten} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
         </div>
 
-        <Veld label="Naam" type="text" value={form.naam} onChange={v => update({ naam: v })} placeholder="bv. ANWB, Voetbalclub, Netflix" />
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+          <div style={{ flex: 1 }}>
+            <Veld label="Naam" type="text" value={form.naam} onChange={v => update({ naam: v })} placeholder="bv. ANWB, Voetbalclub, Netflix" />
+          </div>
+          {form.domein && (
+            <div style={{ marginBottom: 10 }}><AbonnementLogo domein={form.domein} categorie={form.categorie} grootte={40} /></div>
+          )}
+        </div>
+        <Veld label="Website (optioneel — voor een logo bij deze dienst)" type="text" value={form.domein} onChange={v => update({ domein: v })} placeholder="bv. netflix.com" />
 
         <label style={S.label}>Categorie</label>
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
@@ -312,10 +381,11 @@ function AbonnementModal({ item, onOpslaan, onVerwijder, onSluiten }) {
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>Veelvoorkomend in deze categorie — tik om de naam over te nemen</label>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {VEELVOORKOMENDE_ABONNEMENTEN[form.categorie].map(naam => (
-                <button key={naam} onClick={() => update({ naam })}
-                  style={{ padding: "5px 10px", borderRadius: 20, border: `1px solid ${C.border}`, background: form.naam === naam ? C.accentLicht : C.surf, color: form.naam === naam ? "#FFF" : C.text, fontSize: 11.5, cursor: "pointer" }}>
-                  {naam}
+              {VEELVOORKOMENDE_ABONNEMENTEN[form.categorie].map(optie => (
+                <button key={optie.naam} onClick={() => update({ naam: optie.naam, domein: optie.domein || "", kanAltijdOpzeggen: !!optie.kanAltijdOpzeggen, ...(optie.kanAltijdOpzeggen ? { volgendeVerlengdatum: "", opzegtermijnDagen: "" } : {}) })}
+                  style={{ padding: "5px 10px", borderRadius: 20, border: `1px solid ${C.border}`, background: form.naam === optie.naam ? C.accentLicht : C.surf, color: form.naam === optie.naam ? "#FFF" : C.text, fontSize: 11.5, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+                  {optie.domein && <AbonnementLogo domein={optie.domein} categorie={form.categorie} grootte={14} />}
+                  {optie.naam}
                 </button>
               ))}
             </div>
@@ -331,18 +401,35 @@ function AbonnementModal({ item, onOpslaan, onVerwijder, onSluiten }) {
             </select>
           </div>
         </div>
+        {+form.bedrag > 0 && form.frequentie !== "jaarlijks" && (
+          <p style={{ margin: "-6px 0 12px", fontSize: 11.5, color: C.accentLicht }}>→ Dat is {euroRond(berekenJaarbedrag(form.bedrag, form.frequentie))} per jaar</p>
+        )}
 
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ flex: 1 }}><Veld label="Voor wie" type="text" value={form.voorWie} onChange={v => update({ voorWie: v })} placeholder="bv. Pepijn, kind, gezin" /></div>
           <div style={{ flex: 1 }}><Veld label="Betaald door" type="text" value={form.betaaldDoor} onChange={v => update({ betaaldDoor: v })} placeholder="bv. Pepijn" /></div>
         </div>
 
-        <label style={S.label}>Volgende verlengdatum (optioneel)</label>
-        <input type="date" style={{ ...S.inp, marginBottom: 10 }} value={form.volgendeVerlengdatum} onChange={e => update({ volgendeVerlengdatum: e.target.value })} />
-        <Veld label="Opzegtermijn (hoeveel dagen vóór de verlengdatum moet je opzeggen?)" value={form.opzegtermijnDagen} onChange={v => update({ opzegtermijnDagen: v })} suffix="dagen" />
-        {opzegmoment && (
-          <p style={{ margin: "-4px 0 10px", fontSize: 11.5, color: C.accentLicht }}>
-            → Uiterlijk opzeggen vóór <strong>{opzegmoment.toLocaleDateString("nl-NL")}</strong>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 12, background: C.card, borderRadius: 10, padding: "10px 12px" }}>
+          <input type="checkbox" checked={form.kanAltijdOpzeggen} onChange={e => update({ kanAltijdOpzeggen: e.target.checked, volgendeVerlengdatum: e.target.checked ? "" : form.volgendeVerlengdatum, opzegtermijnDagen: e.target.checked ? "" : form.opzegtermijnDagen })} />
+          Kan ten alle tijden worden opgezegd (geen vaste looptijd of opzegtermijn)
+        </label>
+
+        {!form.kanAltijdOpzeggen && (
+          <>
+            <label style={S.label}>Volgende verlengdatum (optioneel)</label>
+            <input type="date" style={{ ...S.inp, marginBottom: 10 }} value={form.volgendeVerlengdatum} onChange={e => update({ volgendeVerlengdatum: e.target.value })} />
+            <Veld label="Opzegtermijn (hoeveel dagen vóór de verlengdatum moet je opzeggen?)" value={form.opzegtermijnDagen} onChange={v => update({ opzegtermijnDagen: v })} suffix="dagen" />
+            {opzegmoment && (
+              <p style={{ margin: "-4px 0 10px", fontSize: 11.5, color: C.accentLicht }}>
+                → Uiterlijk opzeggen vóór <strong>{opzegmoment.toLocaleDateString("nl-NL")}</strong>
+              </p>
+            )}
+          </>
+        )}
+        {form.kanAltijdOpzeggen && (
+          <p style={{ margin: "-4px 0 14px", fontSize: 11.5, color: C.groen }}>
+            ✅ Dit abonnement verschijnt niet in "Binnenkort opzeggen" — je kunt het immers altijd stopzetten wanneer je wilt.
           </p>
         )}
 

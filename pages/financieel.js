@@ -451,6 +451,7 @@ export default function FinancieelApp() {
   const [data, setData] = useState(null);
   const [laden, setLaden] = useState(true);
   const [showChat, setShowChat] = useState(false);
+  const [saveFout, setSaveFout] = useState(false);
   const lastWriteRef = useRef(0);
 
   useEffect(() => {
@@ -463,7 +464,9 @@ export default function FinancieelApp() {
     lastWriteRef.current = Date.now();
     setData(d => {
       const next = { ...d, ...patch };
-      fetch("/api/financieel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) }).catch(() => {});
+      fetch("/api/financieel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) })
+        .then(r => { if (!r.ok) throw new Error(); setSaveFout(false); })
+        .catch(() => setSaveFout(true));
       return next;
     });
   }, []);
@@ -487,6 +490,13 @@ export default function FinancieelApp() {
           💬 Vraag het
         </button>
       </header>
+
+      {saveFout && (
+        <div style={{ margin: "0 20px 8px", background: "#FBEAEA", border: `1px solid ${C.rood}44`, borderRadius: 10, padding: "9px 12px", display: "flex", alignItems: "center", gap: 8 }}>
+          <AlertTriangle size={14} color={C.rood} style={{ flexShrink: 0 }} />
+          <p style={{ margin: 0, fontSize: 11.5, color: C.text }}>Opslaan is niet gelukt — controleer je verbinding. Je laatste wijziging staat mogelijk nog niet vast.</p>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 4, background: C.card, borderRadius: 11, padding: 3, margin: "12px 20px 4px", overflowX: "auto" }}>
         <button style={{ ...S.tab(tab==="overzicht"), flexShrink: 0 }} onClick={() => setTab("overzicht")}>Overzicht</button>
@@ -692,7 +702,7 @@ function Rij({ label, waarde, dik, groen, muted, wit }) {
 }
 
 function KinderopvangTab({ data, persist }) {
-  const kot = data.kot;
+  const kot = data.kot || { aantalKinderen: 1, urenPerMaandKind1: "", typeKind1: "dagopvang", urenPerMaandKind2: "", typeKind2: "dagopvang" };
   const loondienst = +data.inkomenLoondienst || 0;
   const { belastbareWinst } = berekenBelastbareWinstZzp(+data.winstZzp || 0, { voldoetUrencriterium: data.voldoetUrencriterium, isStarter: data.isStarter });
   const toetsingsinkomen = loondienst + belastbareWinst;
@@ -876,7 +886,7 @@ function haalHypotheekDelenOp(hypotheek) {
 }
 
 function HypotheekTab({ data, persist }) {
-  const h = data.hypotheek;
+  const h = data.hypotheek || { delen: null, extraDeelIdx: 0, extraBedrag: "", verwachtRendement: "6", wozWaarde: "" };
   const delen = haalHypotheekDelenOp(h);
   function updateH(patch) { persist({ hypotheek: { ...h, delen, ...patch } }); }
   function updateDeel(idx, patch) {
@@ -1066,7 +1076,7 @@ function HypotheekTab({ data, persist }) {
 }
 
 function BvTab({ data, persist }) {
-  const bv = data.bv;
+  const bv = data.bv || { verwachteWinstPerJaar: "", dividendplan: "" };
   function updateBv(patch) { persist({ bv: { ...bv, ...patch } }); }
   const winst = +bv.verwachteWinstPerJaar || 0;
   const dividend = +bv.dividendplan || 0;
