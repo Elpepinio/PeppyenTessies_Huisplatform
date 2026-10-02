@@ -5,7 +5,7 @@ const { sectie, test, samenvatting } = require("./testhulp");
 const BESTAND = path.join(__dirname, "..", "pages", "abonnementen.js");
 
 const {
-  categorieInfo, frequentieLabel,
+  categorieInfo, frequentieLabel, VEELVOORKOMENDE_ABONNEMENTEN,
   berekenMaandbedrag, berekenJaarbedrag,
   berekenLaatsteOpzegmoment, berekenDagenTot,
   berekenTotalenPerPersoon, groepeerPerCategorie,
@@ -14,6 +14,7 @@ const {
   /function categorieInfo\(id\)/,
   /const FREQUENTIES = /,
   /function frequentieLabel\(id\)/,
+  /const VEELVOORKOMENDE_ABONNEMENTEN = /,
   /function berekenMaandbedrag\(bedrag, frequentie\)/,
   /function berekenJaarbedrag\(bedrag, frequentie\)/,
   /function berekenLaatsteOpzegmoment\(volgendeVerlengdatum, opzegtermijnDagen\)/,
@@ -68,5 +69,18 @@ const groepen = groepeerPerCategorie(voorbeeldAbonnementen);
 test("groeperen zet elk abonnement in de juiste categorie", groepen.sport_hobby.length === 3 && groepen.overig.length === 1);
 test("een categorie zonder abonnementen bestaat als lege lijst, geen undefined", Array.isArray(groepen.hypotheek) && groepen.hypotheek.length === 0);
 test("groeperen op een lege lijst crasht niet", Object.keys(groepeerPerCategorie([])).length === 5);
+
+sectie("Snelkeuzelijst — kanAltijdOpzeggen alleen bij diensten die dat ook echt standaard zijn");
+const vindOptie = (categorie, naam) => VEELVOORKOMENDE_ABONNEMENTEN[categorie].find(o => o.naam === naam);
+test("Netflix staat gemarkeerd als altijd opzegbaar", vindOptie("entertainment", "Netflix").kanAltijdOpzeggen === true);
+test("Spotify staat gemarkeerd als altijd opzegbaar", vindOptie("entertainment", "Spotify").kanAltijdOpzeggen === true);
+test("Dagblad/krant staat NIET gemarkeerd als altijd opzegbaar — looptijd/opzegtermijn verschilt sterk per abonnement",
+  !vindOptie("entertainment", "Dagblad/krant").kanAltijdOpzeggen);
+test("Sportschool staat NIET gemarkeerd als altijd opzegbaar — gymlidmaatschappen hebben vaak een minimumtermijn",
+  !vindOptie("sport_hobby", "Sportschool").kanAltijdOpzeggen);
+test("ANWB staat NIET gemarkeerd als altijd opzegbaar — kent een jaarlijks lidmaatschap met opzegtermijn",
+  !vindOptie("overig", "ANWB").kanAltijdOpzeggen);
+test("Internet staat NIET gemarkeerd als altijd opzegbaar — internetabonnementen hebben doorgaans een vaste looptijd",
+  !vindOptie("overig", "Internet").kanAltijdOpzeggen);
 
 samenvatting();
