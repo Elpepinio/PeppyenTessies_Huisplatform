@@ -65,6 +65,20 @@ const TOOLS = [
     color: "#C86E4A",
   },
   {
+    href: "/financieel",
+    label: "Financieel overzicht",
+    description: "Inkomen, toeslagen, hypotheek en BV — inzicht, geen bindend advies",
+    emoji: "💶",
+    color: "#2D4A3E",
+  },
+  {
+    href: "/abonnementen",
+    label: "Abonnementen",
+    description: "Alle vaste lasten, sport/hobby, goede doelen en opzegmomenten",
+    emoji: "📋",
+    color: "#4A7A6C",
+  },
+  {
     href: "/planten",
     label: "Planten & Tuin",
     description: "Verzorging, seizoensadvies en AI-analyse",
