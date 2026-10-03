@@ -9,13 +9,11 @@ const { berekenVolgendeItems, itemsGekochtDezeRonde } = laadFuncties(BESTAND, [
   /function berekenVolgendeItems\(items, modus\)/,
 ]);
 
-sectie("Boodschappenlijst — 'Klaar met boodschappen'-opties (bewaren/leegmaken/afgevinkt verwijderen)");
+sectie("Boodschappenlijst — 'Klaar met boodschappen'-opties (bewaren/leegmaken)");
 
 // Realistisch pakken-modus-scenario: ALLE items hebben checked:true — dat is
 // nu eenmaal de voorwaarde om in pakken-modus te verschijnen. Het onderscheid
-// "al gepakt of niet" zit uitsluitend in inCart. Dit exacte punt was de bug
-// die gemeld werd: alles verdween, inclusief het ene item dat nog niet was
-// gepakt, omdat er destijds op checked i.p.v. inCart werd gefilterd.
+// "al gepakt of niet" zit uitsluitend in inCart.
 const pakkenLijst = [
   { name: "Rode paprika", checked: true, inCart: true },
   { name: "Roma tomaten", checked: true, inCart: true },
@@ -23,40 +21,34 @@ const pakkenLijst = [
   { name: "Brood", checked: true, inCart: false },
 ];
 
-const resAfgevinkt = berekenVolgendeItems(pakkenLijst, "afgevinktVerwijderen");
-test("afgevinktVerwijderen laat alleen de nog niet gepakte items (inCart:false) over, ondanks dat ALLE items checked:true hebben",
-  resAfgevinkt.length === 2 && resAfgevinkt.every(i => !i.inCart));
-test("afgevinktVerwijderen laat de juiste (nog niet gepakte) items met naam over",
-  resAfgevinkt.map(i => i.name).sort().join(",") === "Brood,Melk");
-test("afgevinktVerwijderen wijzigt de overgebleven items verder niet (checked blijft gewoon true)",
-  resAfgevinkt.every(i => i.checked === true && i.inCart === false));
-
 test("leegmaken geeft altijd een lege lijst", berekenVolgendeItems(pakkenLijst, "leegmaken").length === 0);
 
 const resBewaren = berekenVolgendeItems(pakkenLijst, "bewaren");
-test("bewaren behoudt alle items", resBewaren.length === 4);
-test("bewaren ontvinkt alle items én haalt ze uit de kar (checked én inCart terug naar false)",
+test("bewaren behoudt alle items — ook de al gepakte (gekochte) items blijven gewoon op de lijst staan",
+  resBewaren.length === 4);
+test("bewaren ontvinkt alle items én haalt ze uit de kar (checked én inCart terug naar false), zodat je ze de volgende keer weer kunt aanvinken",
   resBewaren.every(i => i.checked === false && i.inCart === false));
 
-const allesGepakt = [{ name: "A", checked: true, inCart: true }, { name: "B", checked: true, inCart: true }];
-test("als alles al gepakt is, gedraagt afgevinktVerwijderen zich hetzelfde als leegmaken",
-  berekenVolgendeItems(allesGepakt, "afgevinktVerwijderen").length === 0);
-
-const nietsGepakt = [{ name: "A", checked: true, inCart: false }];
-test("als niets nog gepakt is, blijft bij afgevinktVerwijderen de hele lijst gewoon staan",
-  berekenVolgendeItems(nietsGepakt, "afgevinktVerwijderen").length === 1);
+// Regressietest voor de gemelde situatie: een losse "afgevinkte items
+// verwijderen"-modus bestond eerder, en haalde gekochte items (inCart:true)
+// definitief van de lijst — ook uit het aanvink-scherm waar je ze de
+// volgende keer weer had willen selecteren. Op expliciet verzoek
+// weggehaald: elke modus die niet "leegmaken" is, gedraagt zich nu als
+// "bewaren" en behoudt dus ALTIJD alle items.
+test("regressie: ALLE items blijven behouden, ongeacht welke modus-tekst wordt doorgegeven (zolang het geen 'leegmaken' is) — de vroegere verwijder-modus bestaat niet meer",
+  berekenVolgendeItems(pakkenLijst, "afgevinktVerwijderen").length === 4 &&
+  berekenVolgendeItems(pakkenLijst, "iets-anders").length === 4);
 
 test("een lege lijst crasht niet, voor geen enkele modus",
-  berekenVolgendeItems([], "afgevinktVerwijderen").length === 0 &&
   berekenVolgendeItems([], "leegmaken").length === 0 &&
   berekenVolgendeItems([], "bewaren").length === 0);
 
-sectie("Bevestiging: een niet-gepakt item wordt nooit stilletjes verwijderd of als 'gekocht' geteld");
-const itemMetVolledigeData = { id: "x1", name: "Melk", category: "zuivel", amount: 2, unit: "L", checked: true, inCart: false };
-const resVolledig = berekenVolgendeItems([itemMetVolledigeData], "afgevinktVerwijderen");
-test("het overgebleven item is het exact hetzelfde object — niets wordt herbouwd of gewist", resVolledig[0] === itemMetVolledigeData);
-test("het overgebleven item behoudt al zijn velden (hoeveelheid, eenheid, categorie)",
-  resVolledig[0].amount === 2 && resVolledig[0].unit === "L" && resVolledig[0].category === "zuivel");
+sectie("Bevestiging: een gekocht item wordt nooit stilletjes verwijderd of gewist — alleen de vinkjes resetten");
+const itemMetVolledigeData = { id: "x1", name: "Melk", category: "zuivel", amount: 2, unit: "L", checked: true, inCart: true };
+const resVolledig = berekenVolgendeItems([itemMetVolledigeData], "bewaren");
+test("het item blijft in de lijst staan (wordt niet verwijderd)", resVolledig.length === 1);
+test("het item behoudt al zijn velden (hoeveelheid, eenheid, categorie) — alleen checked/inCart resetten",
+  resVolledig[0].amount === 2 && resVolledig[0].unit === "L" && resVolledig[0].category === "zuivel" && resVolledig[0].name === "Melk");
 
 const rondeMetGemengdeStatus = [
   { name: "Rode paprika", inCart: true },

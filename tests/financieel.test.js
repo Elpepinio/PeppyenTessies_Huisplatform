@@ -11,9 +11,12 @@ const {
   berekenBox2Belasting, berekenBox3Belasting,
   berekenVpb, berekenKinderopvangtoeslagPerKind, interpoleerPercentage,
   berekenRenteAflossingsvrij, berekenMaandlastDeel, simuleerHypotheek, haalHypotheekDelenOp,
+  berekenBoetevrijeRuimte, berekenAflossenMeerdereDelen,
   berekenEigenwoningforfait, berekenWetHillenAftrek, berekenJaarlijksePensioenopbouw,
   berekenNoodbufferStatus, berekenErfbelastingPartner, berekenZorgtoeslagPerMaand, berekenKindgebondenBudgetPerJaar,
+  bouwAandachtspunten, euro,
 } = laadFuncties(BESTAND, [
+  /const euro = /,
   /const BOX1_SCHIJVEN_2026 = /,
   /function berekenBox1Belasting\(inkomen\)/,
   /function berekenAlgemeneHeffingskorting\(inkomen\)/,
@@ -50,6 +53,7 @@ const {
   /function berekenErfbelastingPartner\(erfdeel, heeftSamenlevingscontract\)/,
   /function berekenZorgtoeslagPerMaand\(toetsingsinkomen, heeftToeslagpartner\)/,
   /function berekenKindgebondenBudgetPerJaar\(aantalKinderen, toetsingsinkomen, heeftToeslagpartner\)/,
+  /function bouwAandachtspunten\(data\)/,
   /const KOT_MAX_UURPRIJS_2026 = /,
   /const KOT_MAX_UREN_PER_MAAND = /,
   /const KOT_IJKPUNTEN_EERSTE_KIND = /,
@@ -57,6 +61,9 @@ const {
   /function interpoleerPercentage\(inkomen, ijkpunten\)/,
   /function berekenKinderopvangtoeslagPerKind\(/,
   /function berekenRenteAflossingsvrij\(schuld, renteJaar, resterendeJaren\)/,
+  /function berekenBoetevrijeRuimte\(oorspronkelijkBedrag, percentage\)/,
+  /const MAX_AFTREKTARIEF_2026 = /,
+  /function berekenAflossenMeerdereDelen\(delen, verwachtRendementPct\)/,
   /function berekenMaandlastDeel\(deel\)/,
   /function simuleerHypotheek\(/,
   /function haalHypotheekDelenOp\(hypotheek\)/,
@@ -281,5 +288,84 @@ test("een oude, enkelvoudige hypotheekvorm (vóór de meerdere-delen-update) wor
   haalHypotheekDelenOp({ bedrag: "250000", rente: "4.1", resterendeJaren: "20" })[0].schuld === "250000");
 test("bestaande, al opgeslagen delen blijven gewoon ongewijzigd doorgegeven (geen her-migratie van al-correcte data)",
   haalHypotheekDelenOp({ delen: [{ id: "x", schuld: "100000" }] })[0].id === "x");
+
+sectie("Samenvatting — bouwAandachtspunten verzamelt inzichten uit alle tabbladen");
+test("lege data crasht niet (geeft een array terug, eventueel met de generieke vangnet-punten die los staan van ingevulde cijfers)",
+  Array.isArray(bouwAandachtspunten({})));
+
+const zzpZonderVangnet = bouwAandachtspunten({ winstZzp: "40000", vangnet: { heeftAov: false } });
+test("zzp-winst zonder AOV levert een risico-punt op", zzpZonderVangnet.some(p => p.id === "aov" && p.prioriteit === "risico"));
+
+const zzpMetAov = bouwAandachtspunten({ winstZzp: "40000", vangnet: { heeftAov: true } });
+test("zzp-winst MET AOV levert geen AOV-risicopunt op", !zzpMetAov.some(p => p.id === "aov"));
+
+const zonderZzp = bouwAandachtspunten({ winstZzp: "0", vangnet: { heeftAov: false } });
+test("zonder zzp-winst wordt AOV niet als punt getoond (niet relevant zonder zzp-inkomen)", !zonderZzp.some(p => p.id === "aov"));
+
+const geenContract = bouwAandachtspunten({ vangnet: { heeftSamenlevingscontract: false } });
+test("geen samenlevingscontract levert altijd een risico-punt op, los van de rest", geenContract.some(p => p.id === "samenlevingscontract" && p.prioriteit === "risico"));
+
+const welContract = bouwAandachtspunten({ vangnet: { heeftSamenlevingscontract: true } });
+test("wél een samenlevingscontract levert geen punt daarover op", !welContract.some(p => p.id === "samenlevingscontract"));
+
+const metHypotheekGeenOrv = bouwAandachtspunten({ hypotheek: { delen: [{ schuld: "200000" }] }, vangnet: {} });
+test("een hypotheekschuld zonder ORV levert een risico-punt op", metHypotheekGeenOrv.some(p => p.id === "orv"));
+const geenHypotheek = bouwAandachtspunten({ hypotheek: { delen: [{ schuld: "" }] }, vangnet: {} });
+test("geen hypotheekschuld betekent geen ORV-punt (niets om te verzekeren)", !geenHypotheek.some(p => p.id === "orv"));
+
+test("risico-punten staan altijd vóór info-punten in de gesorteerde lijst", (() => {
+  const gemengd = bouwAandachtspunten({
+    winstZzp: "40000",
+    hypotheek: { delen: [{ schuld: "200000", wozWaarde: "" }] },
+    vangnet: { heeftAov: null, heeftSamenlevingscontract: false },
+  });
+  const prioriteiten = gemengd.map(p => p.prioriteit);
+  const laatsteRisicoIdx = prioriteiten.lastIndexOf("risico");
+  const eersteInfoIdx = prioriteiten.indexOf("info");
+  return eersteInfoIdx === -1 || laatsteRisicoIdx < eersteInfoIdx;
+})());
+
+test("elk aandachtspunt verwijst naar een bestaand tabblad (voor de klik-door-functie)", (() => {
+  const geldigeTabs = ["overzicht", "kinderopvang", "hypotheek", "vangnet", "bv"];
+  const alles = bouwAandachtspunten({
+    winstZzp: "40000", inkomenLoondienst: "50000",
+    hypotheek: { delen: [{ schuld: "200000", extraBedrag: "10000", rente: "4", wozWaarde: "" }], verwachtRendement: "6" },
+    kot: { aantalKinderen: 1, urenPerMaandKind1: "100" },
+    vangnet: { heeftAov: false, zzpRegeltZelfPensioen: false, maandelijkseVasteLasten: "2000", heeftSamenlevingscontract: false, heeftTestament: false, heeftOrvGekoppeldAanHypotheek: false },
+  });
+  return alles.every(p => geldigeTabs.includes(p.tab));
+})());
+
+sectie("Boetevrije ruimte (Rabobank-regels) — gebaseerd op het OORSPRONKELIJKE bedrag, niet de restschuld");
+test("20% (Plusvoorwaarden) van €93.500 origineel geeft €18.700", berekenBoetevrijeRuimte(93500, 20) === 18700);
+test("10% (Basisvoorwaarden) van €109.000 origineel geeft €10.900", berekenBoetevrijeRuimte(109000, 10) === 10900);
+test("geen oorspronkelijk bedrag ingevuld geeft 0, geen crash", berekenBoetevrijeRuimte("", 20) === 0);
+test("geen percentage ingevuld geeft 0, geen crash", berekenBoetevrijeRuimte(100000, "") === 0);
+
+sectie("Extra aflossen op meerdere hypotheekdelen tegelijk — elk deel met zijn EIGEN rente");
+const delenMetBedragen = [
+  { naam: "Annuïteit", rente: "4.25", extraBedrag: "10000" },
+  { naam: "Opbouw", rente: "4.65", extraBedrag: "15000" },
+];
+const alleDelenResultaat = berekenAflossenMeerdereDelen(delenMetBedragen, "6");
+test("het totale bedrag is de som van beide delen (10.000 + 15.000)", alleDelenResultaat.totaalExtraBedrag === 25000);
+test("deel 1 gebruikt zijn EIGEN rente (4,25%) voor het netto voordeel", alleDelenResultaat.perDeel[0].nettoVoordeel === Math.round(10000 * 0.0425 * (1 - 0.3756)));
+test("deel 2 gebruikt zijn EIGEN, hogere rente (4,65%) voor het netto voordeel — niet per ongeluk die van deel 1",
+  alleDelenResultaat.perDeel[1].nettoVoordeel === Math.round(15000 * 0.0465 * (1 - 0.3756)));
+test("het totale netto aflossen-voordeel is de som van beide delen apart", alleDelenResultaat.totaalNettoAflossen === alleDelenResultaat.perDeel[0].nettoVoordeel + alleDelenResultaat.perDeel[1].nettoVoordeel);
+test("het beleggen-alternatief rekent met het VOLLEDIGE gecombineerde bedrag, niet per deel apart",
+  alleDelenResultaat.totaalNettoBeleggen === Math.round(25000 * 0.06 - 25000 * 0.06 * 0.36));
+
+const slechtsEenDeelIngevuld = berekenAflossenMeerdereDelen([
+  { naam: "Annuïteit", rente: "4.25", extraBedrag: "10000" },
+  { naam: "Opbouw", rente: "4.65", extraBedrag: "" },
+], "6");
+test("een deel zonder ingevuld bedrag telt niet mee in de lijst", slechtsEenDeelIngevuld.perDeel.length === 1);
+test("een deel zonder ingevuld bedrag beïnvloedt het totaal niet", slechtsEenDeelIngevuld.totaalExtraBedrag === 10000);
+
+test("geen enkel deel heeft een bedrag ingevuld: alles blijft op 0, geen crash",
+  berekenAflossenMeerdereDelen([{ naam: "X", rente: "4", extraBedrag: "" }], "6").totaalExtraBedrag === 0);
+test("een lege delen-lijst crasht niet", berekenAflossenMeerdereDelen([], "6").perDeel.length === 0);
+test("ontbrekende delen (undefined) crasht niet", berekenAflossenMeerdereDelen(undefined, "6").totaalExtraBedrag === 0);
 
 samenvatting();
