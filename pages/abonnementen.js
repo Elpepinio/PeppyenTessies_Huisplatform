@@ -242,7 +242,7 @@ export default function AbonnementenApp() {
       if (permissie !== "granted") { setMeldingenStatus(permissie === "denied" ? "geweigerd" : "uit"); return; }
       const reg = await navigator.serviceWorker.ready;
       const sleutel = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      if (!sleutel) { window.alert("Pushmeldingen zijn nog niet geconfigureerd door de beheerder (VAPID-sleutel ontbreekt)."); setMeldingenStatus("uit"); return; }
+      if (!sleutel) { window.alert("Pushmeldingen zijn nog niet actief op deze deployment.\n\nControleer in Vercel → je project → Settings → Environment Variables of NEXT_PUBLIC_VAPID_PUBLIC_KEY en VAPID_PRIVATE_KEY daar staan, en deploy daarna opnieuw — deze sleutel wordt pas bij het bouwen vastgelegd, dus alleen toevoegen is niet genoeg."); setMeldingenStatus("uit"); return; }
       const subscription = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64ToUint8Array(sleutel) });
       await fetch("/api/push-subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subscription }) });
       setMeldingenStatus("aan");

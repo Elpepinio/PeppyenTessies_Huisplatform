@@ -422,12 +422,11 @@ function itemsGekochtDezeRonde(items) {
 
 function berekenVolgendeItems(items, modus) {
   if (modus === "leegmaken") return [];
-  // Let op: dit draait binnen pakken-modus, waar ALLE zichtbare items al
-  // checked:true hebben (dat is precies de reden dat ze hier staan) — de
-  // "heb ik 'm al gepakt"-status zit in inCart, niet in checked. Filteren
-  // op checked zou hier vrijwel alles verwijderen, ongeacht wat je al
-  // daadwerkelijk gepakt had.
-  if (modus === "afgevinktVerwijderen") return items.filter(i => !i.inCart);
+  // Er was eerder ook een modus "afgevinktVerwijderen" die gepakte items
+  // (inCart:true) definitief van de lijst verwijderde. Op expliciet verzoek
+  // weggehaald: items die je koopt horen gewoon op de lijst te blijven
+  // staan (ongevinkt), zodat je ze de volgende keer weer kunt aanvinken
+  // zonder ze opnieuw te moeten toevoegen — nu identiek aan "bewaren".
   return items.map(i => ({ ...i, checked: false, inCart: false })); // "bewaren"
 }
 
@@ -867,7 +866,7 @@ export default function LijstenApp() {
   }
 
   // ── Pakken afronden: keuze bewaren of leegmaken ──────
-  function finishPacking(modus) { // "bewaren" | "leegmaken" | "afgevinktVerwijderen"
+  function finishPacking(modus) { // "bewaren" | "leegmaken"
     updateList(activeListId, l => {
       // Alleen wat daadwerkelijk gepakt is (inCart) hoort in de "wat heb ik
       // deze ronde gekocht"-registratie thuis — checked zegt alleen dat het
@@ -896,7 +895,6 @@ export default function LijstenApp() {
     setShowPakkenKeuze(false);
     const meldingen = {
       leegmaken: "✅ Lijst geleegd — alles opgeslagen",
-      afgevinktVerwijderen: "✅ Afgevinkte items verwijderd — de rest staat nog klaar",
       bewaren: "✅ Klaar! Vinkjes gereset voor volgende keer",
     };
     showToast(meldingen[modus]);
@@ -993,13 +991,6 @@ export default function LijstenApp() {
                 🔄 Vinkjes resetten — lijst bewaren
                 <span style={{ display: "block", fontSize: 12, fontWeight: 400, opacity: 0.8, marginTop: 3 }}>Handig voor volgende vakantie of week</span>
               </button>
-              {teNemen.some(i => !i.inCart) && (
-                <button style={{ ...S.btn("#4A7A6C"), width: "100%", marginBottom: 10, padding: "15px 0", borderRadius: 14 }}
-                  onClick={() => finishPacking("afgevinktVerwijderen")}>
-                  ✅ Afgevinkte items verwijderen
-                  <span style={{ display: "block", fontSize: 12, fontWeight: 400, opacity: 0.8, marginTop: 3 }}>Wat nog niet gepakt is blijft gewoon staan</span>
-                </button>
-              )}
               <button style={{ ...S.btn("#C86E4A"), width: "100%", padding: "15px 0", borderRadius: 14, marginBottom: 12 }}
                 onClick={() => finishPacking("leegmaken")}>
                 🗑 Lijst leegmaken

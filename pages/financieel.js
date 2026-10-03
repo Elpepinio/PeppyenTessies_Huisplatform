@@ -406,7 +406,7 @@ function FinancieelChatPaneel({ context, onSluiten }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           bron: "financieel-chat",
-          systemPrompt: `Je legt begrippen en berekeningen uit binnen een financieel-overzicht-tool voor een Nederlands gezin (een partner in loondienst, een partner zzp'er, een BV die zakelijk belegt, en samen één kind). De tool behandelt: inkomen/belasting (box 1/2/3, zelfstandigenaftrek, Zvw), kinderopvangtoeslag/zorgtoeslag/kindgebonden budget, hypotheek (meerdere delen, eigenwoningforfait/Wet Hillen, aflossen vs. beleggen), de BV (Vpb, dividend), én een "Vangnet"-tabblad met arbeidsongeschiktheid (AOV), pensioenopbouw-gat, een noodbuffer, en wat er gebeurt bij overlijden (erfbelasting, samenlevingscontract, testament, overlijdensrisicoverzekering). Hieronder staan de cijfers die ze zelf in de tool hebben ingevuld.
+          systemPrompt: `Je legt begrippen en berekeningen uit binnen een financieel-overzicht-tool voor een Nederlands gezin (een partner in loondienst, een partner zzp'er, een BV die zakelijk belegt, en samen één kind). De tool behandelt: inkomen/belasting (box 1/2/3, zelfstandigenaftrek, Zvw), kinderopvangtoeslag/zorgtoeslag/kindgebonden budget, hypotheek (meerdere delen, eigenwoningforfait/Wet Hillen, aflossen vs. beleggen op één deel of op alle delen tegelijk, en Rabobank's boetevrije-aflosruimte), de BV (Vpb, dividend), én een "Vangnet"-tabblad met arbeidsongeschiktheid (AOV), pensioenopbouw-gat, een noodbuffer, en wat er gebeurt bij overlijden (erfbelasting, samenlevingscontract, testament, overlijdensrisicoverzekering), en een "Samenvatting"-tabblad dat automatisch aandachtspunten/inzichten uit alle andere tabbladen samenbrengt. Hieronder staan de cijfers die ze zelf in de tool hebben ingevuld.
 
 Belangrijk: jij bent GEEN vergunninghoudend financieel adviseur. Hypotheek- en beleggingsadvies aan consumenten is in Nederland een gereguleerde activiteit onder de Wft, waarvoor een AFM-vergunning nodig is. Leg daarom begrippen, belastingregels en de berekeningen in de tool helder uit in doodgewone taal — reken gerust voorbeelden door met hún eigen cijfers — maar geef geen bindende persoonlijke aanbevelingen zoals "jullie moeten aflossen" of "beleg in X". Als iemand daar wel naar vraagt, leg dan de relevante afwegingen en factoren uit, en zeg dat een erkend financieel adviseur of accountant nodig is voor een bindend advies.
 
@@ -533,6 +533,7 @@ export default function FinancieelApp() {
         <button style={{ ...S.tab(tab==="hypotheek"), flexShrink: 0 }} onClick={() => setTab("hypotheek")}>Hypotheek</button>
         <button style={{ ...S.tab(tab==="vangnet"), flexShrink: 0 }} onClick={() => setTab("vangnet")}>Vangnet</button>
         <button style={{ ...S.tab(tab==="bv"), flexShrink: 0 }} onClick={() => setTab("bv")}>BV</button>
+        <button style={{ ...S.tab(tab==="samenvatting"), flexShrink: 0 }} onClick={() => setTab("samenvatting")}>📋 Samenvatting</button>
       </div>
 
       <main style={S.main}>
@@ -541,6 +542,7 @@ export default function FinancieelApp() {
         {tab === "hypotheek" && <HypotheekTab data={data} persist={persist} />}
         {tab === "vangnet" && <VangnetTab data={data} persist={persist} />}
         {tab === "bv" && <BvTab data={data} persist={persist} />}
+        {tab === "samenvatting" && <SamenvattingTab data={data} setTab={setTab} />}
       </main>
 
       {showChat && (
@@ -553,6 +555,109 @@ export default function FinancieelApp() {
 // Vat de door het gezin zelf ingevulde cijfers samen tot leesbare context
 // voor de AI-chat — zodat een vraag als "wat betekent dit voor ons?" ook
 // echt met hún eigen getallen beantwoord kan worden, niet in algemeenheden.
+// ── Samenvatting: wat valt op in de ingevulde cijfers? ───────────────────
+// Bewust GEEN "dit moet je doen"-aanbevelingen (zie de disclaimer: dat zou
+// vergunningplichtig financieel advies zijn) — wel een geprioriteerd
+// overzicht van waar de cijfers zelf om aandacht vragen, zodat je niet
+// elk tabblad apart hoeft na te lopen om te zien wat relevant is.
+function bouwAandachtspunten(data) {
+  const punten = [];
+  const loondienst = +data.inkomenLoondienst || 0;
+  const winstZzp = +data.winstZzp || 0;
+  const spaargeld = +data.spaargeld || 0;
+  const v = data.vangnet || {};
+  const delen = (data.hypotheek?.delen || []).filter(d => +d.schuld > 0);
+  const heeftHypotheekschuld = delen.length > 0;
+
+  // ── Risico's: ontbrekend vangnet ──────────────────────────────────────
+  if (winstZzp > 0 && v.heeftAov === false) {
+    punten.push({ id: "aov", prioriteit: "risico", tab: "vangnet",
+      titel: "Geen arbeidsongeschiktheidsverzekering",
+      tekst: "Bij langdurige ziekte valt het volledige zzp-inkomen weg, zonder vangnet zoals een werknemer dat via de WIA heeft." });
+  } else if (winstZzp > 0 && v.heeftAov == null) {
+    punten.push({ id: "aov-onbekend", prioriteit: "info", tab: "vangnet",
+      titel: "Nog niet aangegeven: AOV",
+      tekst: "Je hebt op het Vangnet-tabblad nog niet aangegeven of er een arbeidsongeschiktheidsverzekering is." });
+  }
+
+  if (winstZzp > 0 && v.zzpRegeltZelfPensioen === false) {
+    const pensioenopbouwLoondienst = berekenJaarlijksePensioenopbouw(loondienst);
+    punten.push({ id: "pensioen", prioriteit: "risico", tab: "vangnet",
+      titel: "Pensioenopbouw-gat",
+      tekst: loondienst > 0
+        ? `De zzp-partner bouwt nog niets op voor later, terwijl de werknemer-partner ongeveer ${euro(pensioenopbouwLoondienst)} per jaar opbouwt.`
+        : "De zzp-partner bouwt nog niets op voor later (geen lijfrente, banksparen of vergelijkbaars)." });
+  }
+
+  if (+v.maandelijkseVasteLasten > 0) {
+    const buffer = berekenNoodbufferStatus(+v.maandelijkseVasteLasten, spaargeld);
+    if (buffer && !buffer.voldoendeMinimum) {
+      punten.push({ id: "buffer", prioriteit: "risico", tab: "vangnet",
+        titel: "Noodbuffer onder het aanbevolen minimum",
+        tekst: `Nog ${euro(buffer.tekortTotMinimum)} tot de aanbevolen 3 maanden vaste lasten — de gangbare vuistregel vóór aflossen of beleggen relevant wordt.` });
+    }
+  }
+
+  if (v.heeftSamenlevingscontract !== true) {
+    punten.push({ id: "samenlevingscontract", prioriteit: "risico", tab: "vangnet",
+      titel: "Geen notarieel samenlevingscontract",
+      tekst: "Zonder samenlevingscontract geldt bij overlijden niet de partnervrijstelling voor erfbelasting (€828.035), maar de vrijstelling voor 'overige verkrijgers' (€2.769) — een verschil van meestal tonnen." });
+  }
+  if (v.heeftTestament !== true) {
+    punten.push({ id: "testament", prioriteit: "risico", tab: "vangnet",
+      titel: "Geen testament",
+      tekst: "Zonder testament erft de partner bij ongehuwd samenwonen wettelijk niets automatisch." });
+  }
+  if (heeftHypotheekschuld && v.heeftOrvGekoppeldAanHypotheek !== true) {
+    punten.push({ id: "orv", prioriteit: "risico", tab: "vangnet",
+      titel: "Geen overlijdensrisicoverzekering gekoppeld aan de hypotheek",
+      tekst: "Bij overlijden moet de achterblijvende partner de hypotheeklast dan alleen kunnen dragen." });
+  }
+
+  // ── Compleetheid: ontbrekende invoer die het beeld scherper zou maken ──
+  if (heeftHypotheekschuld && !(+data.hypotheek?.wozWaarde > 0)) {
+    punten.push({ id: "woz", prioriteit: "info", tab: "hypotheek",
+      titel: "WOZ-waarde nog niet ingevuld",
+      tekst: "Zonder WOZ-waarde ontbreekt het eigenwoningforfait in het beeld — dat beïnvloedt hoe gunstig de hypotheekrenteaftrek in de praktijk uitpakt." });
+  }
+
+  // ── Inzichten/kansen: wat de cijfers zelf al laten zien ────────────────
+  delen.forEach(deel => {
+    const extraBedrag = +deel.extraBedrag || 0;
+    if (extraBedrag > 0) {
+      const verwachtRendement = (+data.hypotheek?.verwachtRendement || 0) / 100;
+      const deelRenteJaar = (+deel.rente || 0) / 100;
+      const nettoAflossen = Math.round(extraBedrag * deelRenteJaar * (1 - 0.3756));
+      const nettoBeleggen = Math.round(extraBedrag * verwachtRendement - extraBedrag * 0.06 * 0.36);
+      punten.push({ id: `aflossen-${deel.id}`, prioriteit: "kans", tab: "hypotheek",
+        titel: `Aflossen of beleggen — "${deel.naam}"`,
+        tekst: `Bij het ingevulde bedrag en rendement komt ${nettoBeleggen > nettoAflossen ? "beleggen" : "aflossen"} rekenkundig als hoger netto voordeel uit (${euro(Math.max(nettoAflossen, nettoBeleggen))} tegenover ${euro(Math.min(nettoAflossen, nettoBeleggen))} per jaar) — maar aflossen is gegarandeerd, beleggen niet.` });
+    }
+  });
+
+  if (winstZzp > 0) {
+    const marginaleDruk = berekenMarginaleDruk(winstZzp, { voldoetUrencriterium: data.voldoetUrencriterium, isStarter: data.isStarter });
+    if (marginaleDruk && marginaleDruk.percentageBehouden < 55) {
+      punten.push({ id: "marginale-druk", prioriteit: "info", tab: "overzicht",
+        titel: "Relatief lage marginale opbrengst van extra winst",
+        tekst: `Van een volgende extra verdiende €1.000 winst houdt de zzp-partner naar schatting maar ${euro(marginaleDruk.nettoVanExtra)} netto over (${marginaleDruk.percentageBehouden}%) — door de gelijktijdige afbouw van heffingskortingen.` });
+    }
+  }
+
+  const toetsingsinkomenRuw = loondienst + (berekenBelastbareWinstZzp(winstZzp, { voldoetUrencriterium: data.voldoetUrencriterium, isStarter: data.isStarter }).belastbareWinst || 0);
+  if (data.kot?.aantalKinderen >= 1 && (+data.kot?.urenPerMaandKind1 > 0 || +data.kot?.urenPerMaandKind2 > 0)) {
+    const zorgtoeslag = berekenZorgtoeslagPerMaand(toetsingsinkomenRuw, true);
+    if (zorgtoeslag > 0) {
+      punten.push({ id: "zorgtoeslag", prioriteit: "kans", tab: "kinderopvang",
+        titel: "Mogelijk recht op zorgtoeslag",
+        tekst: `Bij het ingevulde toetsingsinkomen is er naar schatting recht op ${euro(zorgtoeslag)} zorgtoeslag per maand.` });
+    }
+  }
+
+  const volgorde = { risico: 0, kans: 1, info: 2 };
+  return punten.sort((a, b) => volgorde[a.prioriteit] - volgorde[b.prioriteit]);
+}
+
 function bouwFinancieelContext(data) {
   const regels = [];
   if (+data.inkomenLoondienst > 0) regels.push(`Bruto loondienstinkomen (persoon 1): ${euro(+data.inkomenLoondienst)} per jaar`);
@@ -585,8 +690,9 @@ function LEEG_DATA() {
     inkomenLoondienst: "", winstZzp: "", voldoetUrencriterium: true, isStarter: false,
     spaargeld: "", beleggingenPrive: "", beleggingenBv: "", schulden: "",
     hypotheek: {
-      delen: [{ id: uid(), naam: "Hypotheekdeel 1", type: "annuitair", schuld: "", rente: "", resterendeJaren: "" }],
+      delen: [{ id: uid(), naam: "Hypotheekdeel 1", type: "annuitair", schuld: "", rente: "", resterendeJaren: "", oorspronkelijkBedrag: "" }],
       extraDeelIdx: 0, extraBedrag: "", verwachtRendement: "6", wozWaarde: "",
+      aflossenModus: "een-deel", boetevrijPercentage: 20,
     },
     kot: { aantalKinderen: 1, urenPerMaandKind1: "", typeKind1: "dagopvang", urenPerMaandKind2: "", typeKind2: "dagopvang" },
     bv: { verwachteWinstPerJaar: "", dividendplan: "" },
@@ -869,6 +975,42 @@ function berekenRenteAflossingsvrij(schuld, renteJaar, resterendeJaren) {
 
 // Maandlast van één hypotheekdeel — voor annuïtair de rente/aflossing-split
 // van de eerste maand, voor aflossingsvrij alleen de (vaste) maandrente.
+// ── Boetevrije ruimte bij extra aflossen (Rabobank-regels, 2026) ─────────
+// Vrijwel elke hypotheekverstrekker staat toe jaarlijks een percentage van
+// het OORSPRONKELIJKE leningbedrag (niet de restschuld!) boetevrij extra af
+// te lossen, PER LENINGDEEL. Bij Rabobank is dat 10% met Basisvoorwaarden
+// of 20% met Plusvoorwaarden. Ga je er met een deel overheen, dan kán er
+// boeterente gelden — maar alleen als je huidige rente lager is dan de
+// actuele marktrente voor een vergelijkbare resterende periode. Het exacte
+// boetebedrag is niet door deze tool te berekenen: dat hangt af van
+// Rabobank's actuele rentetabellen op het moment van aflossen.
+function berekenBoetevrijeRuimte(oorspronkelijkBedrag, percentage) {
+  return Math.round((+oorspronkelijkBedrag || 0) * (+percentage || 0) / 100);
+}
+
+// ── Extra aflossen op meerdere hypotheekdelen tegelijk ───────────────────
+// Elk deel met een ingevuld bedrag telt mee; elk deel gebruikt daarbij wél
+// zijn EIGEN rentepercentage (dat bepaalt het rekenkundige voordeel per
+// deel), en het totaal wordt vergeleken met beleggen van hetzelfde
+// gecombineerde bedrag.
+const MAX_AFTREKTARIEF_2026 = 0.3756;
+function berekenAflossenMeerdereDelen(delen, verwachtRendementPct) {
+  const verwachtRendement = (+verwachtRendementPct || 0) / 100;
+  const BOX3_FORFAIT = 0.06, BOX3_TARIEF = 0.36;
+  const actieveDelen = (delen || []).filter(d => +d.extraBedrag > 0);
+  let totaalExtraBedrag = 0, totaalNettoAflossen = 0;
+  const perDeel = actieveDelen.map(d => {
+    const bedrag = +d.extraBedrag || 0;
+    const renteJaar = (+d.rente || 0) / 100;
+    const nettoVoordeel = Math.round(bedrag * renteJaar * (1 - MAX_AFTREKTARIEF_2026));
+    totaalExtraBedrag += bedrag;
+    totaalNettoAflossen += nettoVoordeel;
+    return { naam: d.naam, bedrag, nettoVoordeel };
+  });
+  const totaalNettoBeleggen = Math.round(totaalExtraBedrag * verwachtRendement - totaalExtraBedrag * BOX3_FORFAIT * BOX3_TARIEF);
+  return { totaalExtraBedrag, totaalNettoAflossen, totaalNettoBeleggen, perDeel };
+}
+
 function berekenMaandlastDeel(deel) {
   const schuld = +deel.schuld || 0, renteJaar = (+deel.rente || 0) / 100, looptijd = +deel.resterendeJaren || 0;
   if (!schuld || !renteJaar) return { rente: 0, aflossing: 0, totaal: 0 };
@@ -926,7 +1068,7 @@ function haalHypotheekDelenOp(hypotheek) {
 }
 
 function HypotheekTab({ data, persist }) {
-  const h = data.hypotheek || { delen: null, extraDeelIdx: 0, extraBedrag: "", verwachtRendement: "6", wozWaarde: "" };
+  const h = data.hypotheek || { delen: null, extraDeelIdx: 0, extraBedrag: "", verwachtRendement: "6", wozWaarde: "", aflossenModus: "een-deel", boetevrijPercentage: 20 };
   const delen = haalHypotheekDelenOp(h);
   function updateH(patch) { persist({ hypotheek: { ...h, delen, ...patch } }); }
   function updateDeel(idx, patch) {
@@ -962,7 +1104,6 @@ function HypotheekTab({ data, persist }) {
   // je voor elk deel juist een ander bedrag wilt kunnen doorrekenen.
   const extraBedrag = +gekozenDeel?.extraBedrag || 0;
   const verwachtRendement = (+h.verwachtRendement || 0) / 100;
-  const MAX_AFTREKTARIEF_2026 = 0.3756; // hypotheekrenteaftrek is sinds enkele jaren beperkt tot het tarief van de 2e schijf, ongeacht je eigen marginale tarief
   const BOX3_FORFAIT_BELEGGEN = 0.06, BOX3_TARIEF = 0.36;
 
   const deelSchuld = +gekozenDeel?.schuld || 0, deelRenteJaar = (+gekozenDeel?.rente || 0) / 100, deelLooptijd = +gekozenDeel?.resterendeJaren || 0;
@@ -982,6 +1123,10 @@ function HypotheekTab({ data, persist }) {
   const nettoRentebesparingAflossen = Math.round(extraBedrag * deelRenteJaar * (1 - MAX_AFTREKTARIEF_2026)); // per jaar, op het extra afgeloste bedrag
 
   const nettoRendementBeleggenPerJaar = Math.round(extraBedrag * verwachtRendement - extraBedrag * BOX3_FORFAIT_BELEGGEN * BOX3_TARIEF);
+
+  const aflossenModus = h.aflossenModus || "een-deel";
+  const alleDelenResultaat = berekenAflossenMeerdereDelen(delen, h.verwachtRendement);
+  const boetevrijPercentage = h.boetevrijPercentage || 20;
 
   return (
     <>
@@ -1023,9 +1168,10 @@ function HypotheekTab({ data, persist }) {
                   ? "Bij dit type betaal je elke maand alleen rente — de schuld zelf wordt niet lager. Vaak hoort hier een aparte spaarrekening bij die apart groeit, om de lening aan het einde in één keer af te lossen."
                   : "Bij dit type betaal je elke maand rente én een stukje aflossing — de schuld wordt dus geleidelijk kleiner, en je maandlast blijft (bij een vaste rente) gelijk."}
               </p>
+              <Veld label={<>Oorspronkelijk geleend bedrag (optioneel)<Uitleg>Bepaalt hoeveel je per jaar boetevrij extra mag aflossen — dat percentage geldt bij vrijwel elke hypotheekverstrekker over het bedrag dat je bij het AFSLUITEN van dit leningdeel hebt geleend, niet over de huidige restschuld. Staat in je hypotheekofferte of -akte.</Uitleg></>} value={deel.oorspronkelijkBedrag || ""} onChange={v => updateDeel(idx, { oorspronkelijkBedrag: v })} suffix="€" />
               <Veld label="Resterende schuld" value={deel.schuld} onChange={v => updateDeel(idx, { schuld: v })} suffix="€" />
               <Veld label="Rentepercentage" value={deel.rente} onChange={v => updateDeel(idx, { rente: v })} suffix="% per jaar" />
-              <Veld label="Resterende looptijd" value={deel.resterendeJaren} onChange={v => updateDeel(idx, { resterendeJaren: v })} suffix="jaar" />
+              <Veld label={<>Resterende looptijd<Uitleg>Dit is het aantal jaren tot de hypotheek VOLLEDIG is afbetaald — niet hetzelfde als "rente staat vast tot [datum]"! Die rentevaste periode is vaak maar een deel van de totale looptijd: na afloop loopt de hypotheek gewoon door, alleen tegen een nieuw (dan nog onbekend) rentepercentage. Vul je hier per ongeluk de rentevaste periode in terwijl de werkelijke looptijd langer is, dan berekent de tool een veel te hoge maandlast. Check bij twijfel de oorspronkelijke hypotheekofferte of je bank-app op "totale looptijd" of "einddatum lening" — niet op "rente vast tot".</Uitleg></>} value={deel.resterendeJaren} onChange={v => updateDeel(idx, { resterendeJaren: v })} suffix="jaar" />
               {deel.type === "aflossingsvrij" && (
                 <Veld label="Gekoppeld opgebouwd spaarbedrag (optioneel, puur informatief)" value={deel.gekoppeldSpaargeld || ""} onChange={v => updateDeel(idx, { gekoppeldSpaargeld: v })} suffix="€" />
               )}
@@ -1075,41 +1221,124 @@ function HypotheekTab({ data, persist }) {
 
       <div style={S.card}>
         <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 800, color: C.accent }}>🤔 Aflossen of beleggen?</h3>
-        <p style={{ margin: "0 0 12px", fontSize: 11.5, color: C.muted }}>Kies op welk deel je eventueel extra zou aflossen — elk deel heeft zijn eigen rente, dus dat bepaalt het rekenkundige voordeel.</p>
+        <p style={{ margin: "0 0 12px", fontSize: 11.5, color: C.muted }}>Elk deel heeft zijn eigen rente, dus dat bepaalt het rekenkundige voordeel.</p>
 
         {delen.length > 1 && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            <button onClick={() => updateH({ aflossenModus: "een-deel" })}
+              style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: `1px solid ${C.border}`, background: aflossenModus === "een-deel" ? C.accent : C.card, color: aflossenModus === "een-deel" ? "#FFF" : C.text, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Eén deel</button>
+            <button onClick={() => updateH({ aflossenModus: "alle-delen" })}
+              style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: `1px solid ${C.border}`, background: aflossenModus === "alle-delen" ? C.accent : C.card, color: aflossenModus === "alle-delen" ? "#FFF" : C.text, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Alle delen</button>
+          </div>
+        )}
+
+        {aflossenModus === "een-deel" && (
           <>
-            <label style={S.label}>Welk hypotheekdeel?</label>
-            <select style={{ ...S.inp, marginBottom: 10 }} value={extraDeelIdx} onChange={e => updateH({ extraDeelIdx: +e.target.value })}>
-              {delen.map((d, idx) => <option key={d.id} value={idx}>{d.naam} ({d.rente || "?"}%)</option>)}
-            </select>
+            {delen.length > 1 && (
+              <>
+                <label style={S.label}>Welk hypotheekdeel?</label>
+                <select style={{ ...S.inp, marginBottom: 10 }} value={extraDeelIdx} onChange={e => updateH({ extraDeelIdx: +e.target.value })}>
+                  {delen.map((d, idx) => <option key={d.id} value={idx}>{d.naam} ({d.rente || "?"}%)</option>)}
+                </select>
+              </>
+            )}
+            <Veld label="Beschikbaar bedrag" value={gekozenDeel?.extraBedrag || ""} onChange={v => updateDeel(extraDeelIdx, { extraBedrag: v })} suffix="€" />
+            <Veld label="Verwacht bruto beleggingsrendement (jouw eigen inschatting)" value={h.verwachtRendement} onChange={v => updateH({ verwachtRendement: v })} suffix="% per jaar" />
+
+            {deelSchuld > 0 && deelRenteJaar > 0 && deelLooptijd > 0 && extraBedrag > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
+                <div style={{ background: C.card, borderRadius: 12, padding: 14 }}>
+                  <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800 }}>📉 Scenario: extra aflossen op "{gekozenDeel.naam}"</p>
+                  <Rij label="Bruto rentebesparing (resterende looptijd)" waarde={euro(bruteRentebesparing)} />
+                  <Rij label={<>Netto voordeel per jaar<Uitleg>Hypotheekrente mag je aftrekken van je belastbaar inkomen (de "hypotheekrenteaftrek"), waardoor je minder belasting betaalt. Los je extra af, dan betaal je minder rente — maar je loopt ook een stukje van dat belastingvoordeel mis. Het "netto voordeel" hier is wat er na dat effect overblijft.</Uitleg></>} waarde={euro(nettoRentebesparingAflossen)} dik />
+                  {!isAflossingsvrij && <Rij label="Hypotheek eerder afgelost na" waarde={`${zonderExtra.jarenTotAfbetaald - metExtra.jarenTotAfbetaald} jaar`} muted />}
+                  {isAflossingsvrij && <Rij label="Let op" waarde="aflossingsvrij — geen aflosschema, dus geen 'eerder klaar'" muted />}
+                  <p style={{ fontSize: 10.5, color: C.muted, margin: "6px 0 0" }}>Gegarandeerd rendement — geen risico, geen verrassingen.</p>
+                </div>
+                <div style={{ background: C.card, borderRadius: 12, padding: 14 }}>
+                  <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800 }}>📈 Scenario: beleggen</p>
+                  <Rij label="Bruto verwacht rendement per jaar" waarde={euro(extraBedrag * verwachtRendement)} />
+                  <Rij label={<>Geschatte box 3-belasting per jaar<Uitleg>Ook als je werkelijke rendement dit jaar lager uitvalt (of zelfs negatief is), rekent de Belastingdienst toch met een vast, aangenomen ("forfaitair") rendement voor beleggingen. Deze belasting betaal je dus hoe dan ook, los van wat je écht verdient.</Uitleg></>} waarde={`− ${euro(extraBedrag * BOX3_FORFAIT_BELEGGEN * BOX3_TARIEF)}`} />
+                  <Rij label="Netto verwacht voordeel per jaar" waarde={euro(nettoRendementBeleggenPerJaar)} dik />
+                  <p style={{ fontSize: 10.5, color: C.rood, margin: "6px 0 0" }}>⚠️ Onzeker — een werkelijk rendement van 0% of negatief is net zo goed mogelijk als het ingevulde percentage. Box 3-belasting betaal je over het forfait, ook als je werkelijke rendement lager uitvalt.</p>
+                </div>
+                <div style={{ background: nettoRendementBeleggenPerJaar > nettoRentebesparingAflossen ? "#EAF3EE" : "#FBF0E4", border: `1px solid ${nettoRendementBeleggenPerJaar > nettoRentebesparingAflossen ? C.groen : C.oranje}44`, borderRadius: 12, padding: 14 }}>
+                  <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.6 }}>
+                    Bij dít ingevulde verwachte rendement komt <strong>{nettoRendementBeleggenPerJaar > nettoRentebesparingAflossen ? "beleggen" : "aflossen"}</strong> rekenkundig als hoger netto voordeel uit — maar aflossen is <em>gegarandeerd</em>, beleggen niet. Dat is een afweging van risico versus verwacht rendement, geen rekensom met één juist antwoord.
+                  </p>
+                </div>
+              </div>
+            )}
           </>
         )}
-        <Veld label="Beschikbaar bedrag" value={gekozenDeel?.extraBedrag || ""} onChange={v => updateDeel(extraDeelIdx, { extraBedrag: v })} suffix="€" />
-        <Veld label="Verwacht bruto beleggingsrendement (jouw eigen inschatting)" value={h.verwachtRendement} onChange={v => updateH({ verwachtRendement: v })} suffix="% per jaar" />
 
-        {deelSchuld > 0 && deelRenteJaar > 0 && deelLooptijd > 0 && extraBedrag > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
-            <div style={{ background: C.card, borderRadius: 12, padding: 14 }}>
-              <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800 }}>📉 Scenario: extra aflossen op "{gekozenDeel.naam}"</p>
-              <Rij label="Bruto rentebesparing (resterende looptijd)" waarde={euro(bruteRentebesparing)} />
-              <Rij label={<>Netto voordeel per jaar<Uitleg>Hypotheekrente mag je aftrekken van je belastbaar inkomen (de "hypotheekrenteaftrek"), waardoor je minder belasting betaalt. Los je extra af, dan betaal je minder rente — maar je loopt ook een stukje van dat belastingvoordeel mis. Het "netto voordeel" hier is wat er na dat effect overblijft.</Uitleg></>} waarde={euro(nettoRentebesparingAflossen)} dik />
-              {!isAflossingsvrij && <Rij label="Hypotheek eerder afgelost na" waarde={`${zonderExtra.jarenTotAfbetaald - metExtra.jarenTotAfbetaald} jaar`} muted />}
-              {isAflossingsvrij && <Rij label="Let op" waarde="aflossingsvrij — geen aflosschema, dus geen 'eerder klaar'" muted />}
-              <p style={{ fontSize: 10.5, color: C.muted, margin: "6px 0 0" }}>Gegarandeerd rendement — geen risico, geen verrassingen.</p>
+        {aflossenModus === "alle-delen" && (
+          <>
+            <p style={{ margin: "0 0 10px", fontSize: 11.5, color: C.muted }}>Vul per deel in hoeveel je daarop extra zou aflossen — elk deel telt mee tegen zijn eigen rente.</p>
+            {delen.map((deel, idx) => (
+              <Veld key={deel.id} label={`Beschikbaar bedrag — "${deel.naam}" (${deel.rente || "?"}%)`} value={deel.extraBedrag || ""} onChange={v => updateDeel(idx, { extraBedrag: v })} suffix="€" />
+            ))}
+            <Veld label="Verwacht bruto beleggingsrendement (jouw eigen inschatting)" value={h.verwachtRendement} onChange={v => updateH({ verwachtRendement: v })} suffix="% per jaar" />
+
+            {alleDelenResultaat.totaalExtraBedrag > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
+                <div style={{ background: C.card, borderRadius: 12, padding: 14 }}>
+                  <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800 }}>📉 Scenario: beide/alle delen extra aflossen</p>
+                  {alleDelenResultaat.perDeel.map(d => (
+                    <Rij key={d.naam} label={`Netto voordeel per jaar — "${d.naam}"`} waarde={euro(d.nettoVoordeel)} />
+                  ))}
+                  <Rij label="Totaal netto voordeel per jaar" waarde={euro(alleDelenResultaat.totaalNettoAflossen)} dik />
+                  <p style={{ fontSize: 10.5, color: C.muted, margin: "6px 0 0" }}>Gegarandeerd rendement — geen risico, geen verrassingen.</p>
+                </div>
+                <div style={{ background: C.card, borderRadius: 12, padding: 14 }}>
+                  <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800 }}>📈 Scenario: hetzelfde totaalbedrag beleggen</p>
+                  <Rij label="Gecombineerd bedrag" waarde={euro(alleDelenResultaat.totaalExtraBedrag)} />
+                  <Rij label="Netto verwacht voordeel per jaar" waarde={euro(alleDelenResultaat.totaalNettoBeleggen)} dik />
+                  <p style={{ fontSize: 10.5, color: C.rood, margin: "6px 0 0" }}>⚠️ Onzeker — een werkelijk rendement van 0% of negatief is net zo goed mogelijk als het ingevulde percentage.</p>
+                </div>
+                <div style={{ background: alleDelenResultaat.totaalNettoBeleggen > alleDelenResultaat.totaalNettoAflossen ? "#EAF3EE" : "#FBF0E4", border: `1px solid ${alleDelenResultaat.totaalNettoBeleggen > alleDelenResultaat.totaalNettoAflossen ? C.groen : C.oranje}44`, borderRadius: 12, padding: 14 }}>
+                  <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.6 }}>
+                    Bij dít ingevulde verwachte rendement komt <strong>{alleDelenResultaat.totaalNettoBeleggen > alleDelenResultaat.totaalNettoAflossen ? "beleggen" : "aflossen van beide/alle delen"}</strong> rekenkundig als hoger netto voordeel uit. Heb je niet genoeg voor alle delen tegelijk? Dan levert extra aflossen op het deel met de hoogste rente per euro het meeste op.
+                  </p>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Boetevrije ruimte — relevant ongeacht de gekozen modus hierboven */}
+        {delen.some(d => +d.oorspronkelijkBedrag > 0) && (
+          <div style={{ background: "#FBF0E4", border: `1px solid ${C.oranje}33`, borderRadius: 12, padding: 14, marginTop: 14 }}>
+            <p style={{ margin: "0 0 6px", fontSize: 13, fontWeight: 800 }}>
+              💶 Boetevrije ruimte bij Rabobank
+              <Uitleg>Vrijwel elke hypotheekverstrekker staat toe jaarlijks een percentage van het OORSPRONKELIJKE leningbedrag (niet de restschuld) boetevrij extra af te lossen, per leningdeel. Ga je daar met een deel overheen, dan kán Rabobank boeterente rekenen — maar alleen als je huidige rente lager is dan de actuele marktrente voor een vergelijkbare resterende periode. Is de marktrente nu hoger dan jouw rente? Dan is extra aflossen vaak alsnog volledig boetevrij, ook boven dit percentage.</Uitleg>
+            </p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button onClick={() => updateH({ boetevrijPercentage: 10 })}
+                style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${C.border}`, background: boetevrijPercentage === 10 ? C.accent : C.surf, color: boetevrijPercentage === 10 ? "#FFF" : C.text, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>Basisvoorwaarden (10%)</button>
+              <button onClick={() => updateH({ boetevrijPercentage: 20 })}
+                style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${C.border}`, background: boetevrijPercentage === 20 ? C.accent : C.surf, color: boetevrijPercentage === 20 ? "#FFF" : C.text, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>Plusvoorwaarden (20%)</button>
             </div>
-            <div style={{ background: C.card, borderRadius: 12, padding: 14 }}>
-              <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800 }}>📈 Scenario: beleggen</p>
-              <Rij label="Bruto verwacht rendement per jaar" waarde={euro(extraBedrag * verwachtRendement)} />
-              <Rij label={<>Geschatte box 3-belasting per jaar<Uitleg>Ook als je werkelijke rendement dit jaar lager uitvalt (of zelfs negatief is), rekent de Belastingdienst toch met een vast, aangenomen ("forfaitair") rendement voor beleggingen. Deze belasting betaal je dus hoe dan ook, los van wat je écht verdient.</Uitleg></>} waarde={`− ${euro(extraBedrag * BOX3_FORFAIT_BELEGGEN * BOX3_TARIEF)}`} />
-              <Rij label="Netto verwacht voordeel per jaar" waarde={euro(nettoRendementBeleggenPerJaar)} dik />
-              <p style={{ fontSize: 10.5, color: C.rood, margin: "6px 0 0" }}>⚠️ Onzeker — een werkelijk rendement van 0% of negatief is net zo goed mogelijk als het ingevulde percentage. Box 3-belasting betaal je over het forfait, ook als je werkelijke rendement lager uitvalt.</p>
-            </div>
-            <div style={{ background: nettoRendementBeleggenPerJaar > nettoRentebesparingAflossen ? "#EAF3EE" : "#FBF0E4", border: `1px solid ${nettoRendementBeleggenPerJaar > nettoRentebesparingAflossen ? C.groen : C.oranje}44`, borderRadius: 12, padding: 14 }}>
-              <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.6 }}>
-                Bij dít ingevulde verwachte rendement komt <strong>{nettoRendementBeleggenPerJaar > nettoRentebesparingAflossen ? "beleggen" : "aflossen"}</strong> rekenkundig als hoger netto voordeel uit — maar aflossen is <em>gegarandeerd</em>, beleggen niet. Dat is een afweging van risico versus verwacht rendement, geen rekensom met één juist antwoord.
-              </p>
-            </div>
+            {delen.filter(d => +d.oorspronkelijkBedrag > 0).map(deel => {
+              const ruimte = berekenBoetevrijeRuimte(deel.oorspronkelijkBedrag, boetevrijPercentage);
+              const ingevuld = +deel.extraBedrag || 0;
+              const overschreden = ingevuld > ruimte;
+              return (
+                <div key={deel.id} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
+                  <Rij label={`Boetevrije ruimte dit jaar — "${deel.naam}"`} waarde={euro(ruimte)} />
+                  {ingevuld > 0 && (
+                    <p style={{ margin: "2px 0 0", fontSize: 11, color: overschreden ? C.rood : C.groen }}>
+                      {overschreden
+                        ? `⚠️ Het ingevulde bedrag (${euro(ingevuld)}) gaat hier met ${euro(ingevuld - ruimte)} overheen — mogelijk boeterente, check dit vooraf bij Rabobank.`
+                        : `✅ Het ingevulde bedrag (${euro(ingevuld)}) blijft binnen de boetevrije ruimte.`}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+            <p style={{ fontSize: 10.5, color: C.muted, margin: "4px 0 0" }}>
+              Het exacte boetebedrag kan deze tool niet berekenen — dat hangt af van Rabobank's actuele rentetabellen op het moment van aflossen. Check dit vooraf via de Rabo-app of met een adviseur.
+            </p>
           </div>
         )}
       </div>
@@ -1318,6 +1547,73 @@ function VangnetTab({ data, persist }) {
           </div>
         )}
       </div>
+      <Disclaimer />
+    </>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// SAMENVATTING — alle tabbladen bij elkaar: wat valt op in de ingevulde
+// cijfers? Bewust als "aandachtspunten om te bespreken" geframed, niet als
+// bindende aanbevelingen (zie de disclaimer die ook hier onderaan staat).
+// ══════════════════════════════════════════════════════════════════════════
+const PRIORITEIT_INFO = {
+  risico: { label: "Vraagt aandacht", kleur: C.rood, achtergrond: "#FBEAEA", icoon: "⚠️" },
+  kans: { label: "Kans/inzicht", kleur: C.groen, achtergrond: "#EAF3EE", icoon: "💡" },
+  info: { label: "Compleetheid", kleur: C.oranje, achtergrond: "#FBF0E4", icoon: "ℹ️" },
+};
+const TAB_LABELS = { overzicht: "Overzicht", kinderopvang: "Toeslagen", hypotheek: "Hypotheek", vangnet: "Vangnet", bv: "BV" };
+
+function SamenvattingTab({ data, setTab }) {
+  const punten = bouwAandachtspunten(data);
+  const risicos = punten.filter(p => p.prioriteit === "risico");
+  const heeftIetsIngevuld = +data.inkomenLoondienst > 0 || +data.winstZzp > 0 || (data.hypotheek?.delen || []).some(d => +d.schuld > 0);
+
+  return (
+    <>
+      <div style={S.card}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 800, color: C.accent }}>📋 Wat valt op in jullie cijfers</h3>
+        <p style={{ margin: 0, fontSize: 11.5, color: C.muted }}>
+          Een overzicht van alle tabbladen samen — geen bindend advies, maar een geprioriteerde lijst van wat de ingevulde cijfers zelf laten zien.
+        </p>
+      </div>
+
+      {!heeftIetsIngevuld && (
+        <div style={S.card}>
+          <p style={{ margin: 0, fontSize: 13, color: C.muted, textAlign: "center", padding: "10px 0" }}>
+            Vul eerst een paar tabbladen in (te beginnen bij Overzicht) — dan verschijnt hier een samenvatting.
+          </p>
+        </div>
+      )}
+
+      {heeftIetsIngevuld && punten.length === 0 && (
+        <div style={{ ...S.card, background: "#EAF3EE", border: `1px solid ${C.groen}33` }}>
+          <p style={{ margin: 0, fontSize: 13 }}>✅ Op basis van wat er nu is ingevuld, springt er niets uit als duidelijk aandachtspunt. Vul gerust meer tabbladen in voor een vollediger beeld.</p>
+        </div>
+      )}
+
+      {heeftIetsIngevuld && risicos.length > 0 && (
+        <div style={{ ...S.card, background: "#FBEAEA", border: `1px solid ${C.rood}33` }}>
+          <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700 }}>
+            {risicos.length} {risicos.length === 1 ? "punt vraagt" : "punten vragen"} aandacht — vaak zijn dit de dingen die het eerst de moeite waard zijn om te regelen, vóór optimalisaties zoals aflossen of beleggen.
+          </p>
+        </div>
+      )}
+
+      {punten.map(p => {
+        const info = PRIORITEIT_INFO[p.prioriteit];
+        return (
+          <div key={p.id} onClick={() => setTab(p.tab)}
+            style={{ ...S.card, background: info.achtergrond, border: `1px solid ${info.kleur}33`, cursor: "pointer" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 800 }}>{info.icoon} {p.titel}</p>
+              <span style={{ fontSize: 10, color: C.muted, flexShrink: 0, whiteSpace: "nowrap" }}>{TAB_LABELS[p.tab]} →</span>
+            </div>
+            <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: C.text }}>{p.tekst}</p>
+          </div>
+        );
+      })}
+
       <Disclaimer />
     </>
   );
