@@ -5,21 +5,23 @@ const { sectie, test, samenvatting } = require("./testhulp");
 const BESTAND = path.join(__dirname, "..", "pages", "abonnementen.js");
 
 const {
-  categorieInfo, frequentieLabel, VEELVOORKOMENDE_ABONNEMENTEN,
+  categorieInfo, frequentieLabel, VEELVOORKOMENDE_ABONNEMENTEN, BETAALD_DOOR_OPTIES,
   berekenMaandbedrag, berekenJaarbedrag,
   berekenLaatsteOpzegmoment, berekenDagenTot,
-  berekenTotalenPerPersoon, groepeerPerCategorie,
+  berekenTotalenPerPersoon, berekenTotalenPerCategorie, groepeerPerCategorie,
 } = laadFuncties(BESTAND, [
   /const CATEGORIEEN = /,
   /function categorieInfo\(id\)/,
-  /const FREQUENTIES = /,
-  /function frequentieLabel\(id\)/,
   /const VEELVOORKOMENDE_ABONNEMENTEN = /,
+  /const FREQUENTIES = /,
+  /const BETAALD_DOOR_OPTIES = /,
+  /function frequentieLabel\(id\)/,
   /function berekenMaandbedrag\(bedrag, frequentie\)/,
   /function berekenJaarbedrag\(bedrag, frequentie\)/,
   /function berekenLaatsteOpzegmoment\(volgendeVerlengdatum, opzegtermijnDagen\)/,
   /function berekenDagenTot\(datum, vandaag = new Date\(\)\)/,
   /function berekenTotalenPerPersoon\(abonnementen\)/,
+  /function berekenTotalenPerCategorie\(abonnementen\)/,
   /function groepeerPerCategorie\(abonnementen\)/,
 ]);
 
@@ -82,5 +84,26 @@ test("ANWB staat NIET gemarkeerd als altijd opzegbaar — kent een jaarlijks lid
   !vindOptie("overig", "ANWB").kanAltijdOpzeggen);
 test("Internet staat NIET gemarkeerd als altijd opzegbaar — internetabonnementen hebben doorgaans een vaste looptijd",
   !vindOptie("overig", "Internet").kanAltijdOpzeggen);
+
+sectie("Kosten per categorie — zodat hypotheek/verzekeringen niet onzichtbaar opgaan in het totaal met Netflix e.d.");
+const gemengdeAbonnementen = [
+  { naam: "Hypotheek", categorie: "hypotheek", bedrag: 1200, frequentie: "maandelijks", actief: true },
+  { naam: "Netflix", categorie: "entertainment", bedrag: 12.99, frequentie: "maandelijks", actief: true },
+  { naam: "HBO Max", categorie: "entertainment", bedrag: 90, frequentie: "jaarlijks", actief: true },
+  { naam: "Oude krant", categorie: "entertainment", bedrag: 20, frequentie: "maandelijks", actief: false },
+];
+const perCat = berekenTotalenPerCategorie(gemengdeAbonnementen);
+test("de hypotheek-categorie staat volledig los van entertainment (geen vermenging)", Math.abs(perCat.hypotheek.maand - 1200) < 0.01);
+test("entertainment telt Netflix (maandelijks) en HBO Max (jaarlijks, omgerekend) correct bij elkaar op",
+  Math.abs(perCat.entertainment.maand - (12.99 + 90/12)) < 0.01);
+test("een inactief abonnement (oude krant) telt niet mee in het categorietotaal", Math.abs(perCat.entertainment.maand - (12.99 + 90/12)) < 0.01);
+test("een categorie zonder enig abonnement bestaat met 0, geen undefined (bv. sport_hobby hier)", perCat.sport_hobby.maand === 0 && perCat.sport_hobby.jaar === 0);
+test("jaartotaal van de hypotheek-categorie klopt (1200 × 12)", Math.abs(perCat.hypotheek.jaar - 14400) < 0.01);
+test("een lege lijst crasht niet en geeft overal 0", berekenTotalenPerCategorie([]).overig.maand === 0);
+
+sectie("Wie betaalt — vaste keuzelijst i.p.v. vrije tekst");
+test("er zijn precies de 3 verwachte opties", BETAALD_DOOR_OPTIES.length === 3);
+test("Pepijn, Tessa en Gezamenlijke rekening staan er alle drie in",
+  ["Pepijn", "Tessa", "Gezamenlijke rekening"].every(naam => BETAALD_DOOR_OPTIES.includes(naam)));
 
 samenvatting();

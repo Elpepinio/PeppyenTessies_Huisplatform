@@ -77,3 +77,34 @@ self.addEventListener("fetch", (event) => {
       )
   );
 });
+
+// ── Pushmeldingen — bv. "nog 14 dagen om je sportschool-abonnement op te
+//    zeggen". De payload komt van de server (zie /api/cron/abonnementen-
+//    check.js) en bevat titel/tekst/een link naar waar de melding bij hoort.
+self.addEventListener("push", (event) => {
+  let data = { title: "Ons Huishouden", body: "Je hebt een nieuwe melding." };
+  try { if (event.data) data = { ...data, ...event.data.json() }; } catch {}
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      data: { url: data.url || "/" },
+      tag: data.tag, // zelfde tag = latere melding vervangt de vorige i.p.v. te stapelen
+    })
+  );
+});
+
+// Een tik op de melding opent (of focust) de app op de relevante pagina.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || "/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if (client.url.includes(url) && "focus" in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(url);
+    })
+  );
+});

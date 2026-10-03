@@ -87,11 +87,21 @@ function laadFuncties(bestandspad, patronen, context = {}) {
 
 function extraheerFunctieNaam(bestandspad, startPatroon) {
   const inhoud = fs.readFileSync(bestandspad, "utf-8");
-  const startIdx = inhoud.search(startPatroon);
-  const stuk = inhoud.slice(startIdx, startIdx + 200);
-  const match = stuk.match(/function\s+(\w+)/) || stuk.match(/const\s+(\w+)\s*=/);
-  if (!match) throw new Error(`Kon functienaam niet bepalen bij patroon in ${bestandspad}`);
-  return match[1];
+  // De naam halen we uitsluitend uit wat het patroon ZELF matcht — elk
+  // patroon in dit project is van de vorm `/const NAAM = /` of
+  // `/function naam\(/`, dus de naam staat altijd al in de match. Eerder
+  // werd hiervoor een vast venster van 200 tekens ná de match doorzocht;
+  // bij een korte, eenregelige declaratie (bv. een array die snel sluit)
+  // kon dat venster doorlopen tot in de ERNA volgende declaratie, en dan
+  // per ongeluk DIE naam opleveren in plaats van de juiste.
+  const match = inhoud.match(startPatroon);
+  if (!match) throw new Error(`Patroon niet gevonden in ${bestandspad}: ${startPatroon}`);
+  // Geen "=" vereisen na "const NAAM" — sommige patronen in dit project
+  // stoppen bewust direct na de naam (bv. `/^const X/m`) zonder het "="
+  // zelf mee te matchen.
+  const naamMatch = match[0].match(/function\s+(\w+)/) || match[0].match(/const\s+(\w+)/);
+  if (!naamMatch) throw new Error(`Kon functienaam niet bepalen bij patroon in ${bestandspad}`);
+  return naamMatch[1];
 }
 
 module.exports = { extraheerBlok, laadFuncties };

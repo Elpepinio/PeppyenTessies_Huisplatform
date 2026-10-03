@@ -7,9 +7,10 @@ const BESTAND = path.join(__dirname, "..", "pages", "financieel.js");
 const {
   berekenBox1Belasting, berekenAlgemeneHeffingskorting, berekenArbeidskorting,
   berekenBelastbareWinstZzp, berekenZvwBijdrageZzp, berekenNettoZzpInkomen, berekenMarginaleDruk,
+  begrensHeffingskortingen, berekenNettoLoondienstInkomen,
   berekenBox2Belasting, berekenBox3Belasting,
   berekenVpb, berekenKinderopvangtoeslagPerKind, interpoleerPercentage,
-  berekenRenteAflossingsvrij, berekenMaandlastDeel, simuleerHypotheek,
+  berekenRenteAflossingsvrij, berekenMaandlastDeel, simuleerHypotheek, haalHypotheekDelenOp,
   berekenEigenwoningforfait, berekenWetHillenAftrek, berekenJaarlijksePensioenopbouw,
   berekenNoodbufferStatus, berekenErfbelastingPartner, berekenZorgtoeslagPerMaand, berekenKindgebondenBudgetPerJaar,
 } = laadFuncties(BESTAND, [
@@ -24,6 +25,8 @@ const {
   /const ZVW_PERCENTAGE_ZZP_2026 = /,
   /const ZVW_MAX_BIJDRAGE_INKOMEN_2026 = /,
   /function berekenZvwBijdrageZzp\(belastbareWinst\)/,
+  /function begrensHeffingskortingen\(heffingskortingen, belasting\)/,
+  /function berekenNettoLoondienstInkomen\(loondienst\)/,
   /function berekenNettoZzpInkomen\(winstVoorAftrek, \{ voldoetUrencriterium = true, isStarter = false \} = \{\}\)/,
   /function berekenMarginaleDruk\(winstVoorAftrek, opties = \{\}\)/,
   /const BOX2_GRENS_2026 = /,
@@ -56,6 +59,7 @@ const {
   /function berekenRenteAflossingsvrij\(schuld, renteJaar, resterendeJaren\)/,
   /function berekenMaandlastDeel\(deel\)/,
   /function simuleerHypotheek\(/,
+  /function haalHypotheekDelenOp\(hypotheek\)/,
 ]);
 
 sectie("Box 1 — inkomstenbelasting 2026 (geverifieerd tegen officiële rekenvoorbeelden)");
@@ -110,6 +114,42 @@ test("bij een laag inkomen (buiten de afbouwzones) houd je verreweg het grootste
 test("in het middeninkomen (gelijktijdige afbouw van AHK en arbeidskorting) houd je merkbaar minder over dan bij een laag inkomen",
   md60k.percentageBehouden < berekenMarginaleDruk(20000).percentageBehouden);
 test("geen of negatieve winst geeft geen crash (null, geen inzicht te tonen)", berekenMarginaleDruk(0) === null && berekenMarginaleDruk(-500) === null);
+
+sectie("Heffingskortingen begrenzen tot de belasting — bewaakt een echte, gevonden bug (391% 'marginale druk' bij lage winst)");
+test("begrensHeffingskortingen laat een korting die al onder de belasting zit ongemoeid", begrensHeffingskortingen(2000, 5000) === 2000);
+test("begrensHeffingskortingen kapt een korting die boven de belasting uitkomt af tot de belasting zelf", begrensHeffingskortingen(5000, 2000) === 2000);
+test("bij €0 belasting wordt ook de begrensde korting €0 — dit elimineert de sprong die eerder 391% 'marginale druk' veroorzaakte",
+  begrensHeffingskortingen(3115, 0) === 0);
+
+test("regressie: GEEN enkele winst tussen €100 en €250.000 (in stappen van €100) geeft nog een onmogelijke marginale druk (<0% of >100%)", (() => {
+  for (let w = 100; w <= 250000; w += 100) {
+    const resultaat = berekenMarginaleDruk(w);
+    if (resultaat && (resultaat.percentageBehouden < 0 || resultaat.percentageBehouden > 100)) return false;
+  }
+  return true;
+})());
+test("de exacte winst waarbij de bug zich voordeed (€1.000) geeft nu een normale, plausibele waarde", (() => {
+  const r = berekenMarginaleDruk(1000);
+  return r.percentageBehouden >= 0 && r.percentageBehouden <= 100;
+})());
+
+test("netto ZZP-inkomen is bij een zeer lage winst nooit hoger dan de winst zelf (zonder partner-overdracht kan dat niet)",
+  berekenNettoZzpInkomen(1000).netto <= 1000 && berekenNettoZzpInkomen(5000).netto <= 5000);
+test("bij een normale, realistische winst verandert de begrenzing niets (belasting is daar altijd ruim hoger dan de korting)",
+  berekenNettoZzpInkomen(60000).netto === berekenNettoZzpInkomen(60000).netto); // triviaal, zie de losse vergelijking hieronder
+const zzp60k = berekenNettoZzpInkomen(60000);
+test("bij winst=60.000 is de volledige heffingskorting nog steeds benutbaar (geen begrenzing nodig)",
+  zzp60k.benutbareKorting === zzp60k.algemeneHeffingskorting + zzp60k.arbeidskorting);
+
+sectie("Netto loondienst-inkomen — eigen, geteste functie i.p.v. eerder ongeteste inline logica in de component");
+test("loon=500: netto is nooit hoger dan het bruto loon zelf (vóór de fix was dit €3.478 — ruim 6x het bruto)",
+  berekenNettoLoondienstInkomen(500).netto <= 500);
+test("loon=5.000: netto blijft binnen het bruto", berekenNettoLoondienstInkomen(5000).netto <= 5000);
+test("bij een normaal loon (€60.000) is de volledige heffingskorting nog gewoon benutbaar", (() => {
+  const r = berekenNettoLoondienstInkomen(60000);
+  return r.benutbareKorting === r.algemeneHeffingskorting + r.arbeidskorting;
+})());
+test("geen of negatief loon crasht niet", berekenNettoLoondienstInkomen(0).netto === 0);
 
 sectie("Netto ZZP-inkomen — bewaakt een eerder gevonden fout (bruto vs. belastbare winst verwisseld)");
 const nettoCheck = berekenNettoZzpInkomen(60000, { voldoetUrencriterium: true, isStarter: false });
@@ -230,5 +270,16 @@ test("2 kinderen onder de afbouwgrens geeft het dubbele basisbedrag (€5.160)",
 test("een inkomen boven de afbouwgrens geeft een lager bedrag dan het basisbedrag, niet negatief",
   berekenKindgebondenBudgetPerJaar(1, 60000, true) < 2580 && berekenKindgebondenBudgetPerJaar(1, 60000, true) >= 0);
 test("geen kinderen geeft geen kindgebonden budget", berekenKindgebondenBudgetPerJaar(0, 35000, true) === 0);
+
+sectie("Hypotheekdelen ophalen — bewaakt twee gevonden bugs: onstabiele id's, en (elders) gedeeld i.p.v. per-deel bedrag");
+test("bij nog helemaal geen ingevulde hypotheek krijg je één leeg standaarddeel", haalHypotheekDelenOp({}).length === 1);
+test("de standaard-id is VAST ('deel-1'), niet willekeurig — anders verandert de React-key bij elke render zolang er nog niets is opgeslagen, wat de invoer kan laten haperen",
+  haalHypotheekDelenOp({})[0].id === "deel-1");
+test("twee aparte aanroepen (zoals twee renders na elkaar) geven exact dezelfde id — vóór de fix was dit bij elke aanroep een nieuwe, willekeurige id",
+  haalHypotheekDelenOp({})[0].id === haalHypotheekDelenOp({})[0].id && haalHypotheekDelenOp({})[0].id === haalHypotheekDelenOp({})[0].id);
+test("een oude, enkelvoudige hypotheekvorm (vóór de meerdere-delen-update) wordt correct gemigreerd naar één deel met de juiste gegevens",
+  haalHypotheekDelenOp({ bedrag: "250000", rente: "4.1", resterendeJaren: "20" })[0].schuld === "250000");
+test("bestaande, al opgeslagen delen blijven gewoon ongewijzigd doorgegeven (geen her-migratie van al-correcte data)",
+  haalHypotheekDelenOp({ delen: [{ id: "x", schuld: "100000" }] })[0].id === "x");
 
 samenvatting();
