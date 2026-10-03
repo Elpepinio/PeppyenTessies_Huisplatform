@@ -70,6 +70,11 @@ const FREQUENTIES = [
   { id: "jaarlijks",     label: "Per jaar" },
   { id: "eenmalig",      label: "Eenmalig" },
 ];
+
+// Vaste keuze i.p.v. vrije tekst — zo kun je "wie betaalt wat" (zie
+// berekenTotalenPerPersoon) betrouwbaar optellen, zonder dat bv. "pepijn"
+// en "Pepijn" als twee verschillende mensen worden geteld.
+const BETAALD_DOOR_OPTIES = ["Pepijn", "Tessa", "Gezamenlijke rekening"];
 function frequentieLabel(id) {
   return FREQUENTIES.find(f => f.id === id)?.label || id;
 }
@@ -121,6 +126,20 @@ function berekenTotalenPerPersoon(abonnementen) {
   });
   return totalen;
 }
+// Eén totaalbedrag kan overweldigend lijken zodra de hypotheek of
+// verzekeringen op dezelfde hoop liggen als Netflix — dit splitst het per
+// categorie uit, zodat "abonnementen in de dagelijkse zin" (entertainment,
+// sport) apart zichtbaar blijven van grote vaste lasten (hypotheek).
+function berekenTotalenPerCategorie(abonnementen) {
+  const totalen = {};
+  CATEGORIEEN.forEach(c => { totalen[c.id] = { maand: 0, jaar: 0 }; });
+  abonnementen.filter(a => a.actief !== false).forEach(a => {
+    if (!totalen[a.categorie]) totalen[a.categorie] = { maand: 0, jaar: 0 };
+    totalen[a.categorie].maand += berekenMaandbedrag(a.bedrag, a.frequentie);
+    totalen[a.categorie].jaar += berekenJaarbedrag(a.bedrag, a.frequentie);
+  });
+  return totalen;
+}
 function groepeerPerCategorie(abonnementen) {
   const groepen = {};
   CATEGORIEEN.forEach(c => { groepen[c.id] = []; });
@@ -150,13 +169,20 @@ const S = {
 // dat laatste zou een auteursrecht-/merkenrechtelijk probleem zijn. Valt
 // terug op het categorie-icoon als er geen domein bekend is, of als het
 // ophalen een keer mislukt.
+//
+// Gebruikt Google's favicon-dienst, niet Clearbit: Clearbit's logo-API is
+// definitief gestopt per 8 december 2025 (na de overname door HubSpot) —
+// exact de reden dat er tot nu toe alleen kale categorie-icoontjes
+// verschenen. Google's dienst is gratis, vereist geen account/token (in
+// tegenstelling tot Clearbit's aanbevolen opvolger logo.dev) en draait al
+// jarenlang stabiel.
 function AbonnementLogo({ domein, categorie, grootte = 32 }) {
   const [fout, setFout] = useState(false);
   if (!domein || fout) {
     return <span style={{ fontSize: grootte * 0.6, lineHeight: 1 }}>{categorieInfo(categorie).icon}</span>;
   }
   return (
-    <img src={`https://logo.clearbit.com/${domein}`} alt="" width={grootte} height={grootte}
+    <img src={`https://www.google.com/s2/favicons?domain=${domein}&sz=${grootte * 2}`} alt="" width={grootte} height={grootte}
       style={{ borderRadius: grootte > 20 ? 8 : 5, objectFit: "contain", background: "#FFF", border: `1px solid ${C.border}`, flexShrink: 0 }}
       onError={() => setFout(true)} />
   );
@@ -179,6 +205,7 @@ export default function AbonnementenApp() {
   const [laden, setLaden] = useState(true);
   const [bewerkItem, setBewerkItem] = useState(null); // null = gesloten, {} = nieuw, {...} = bewerken
   const [saveFout, setSaveFout] = useState(false);
+  const [meldingenStatus, setMeldingenStatus] = useState("onbekend"); // onbekend | niet-ondersteund | uit | aan | bezig | geweigerd
   const lastWriteRef = useRef(0);
 
   useEffect(() => {
@@ -188,6 +215,57 @@ export default function AbonnementenApp() {
     }).catch(() => {}).finally(() => { if (actief) setLaden(false); });
     return () => { actief = false; };
   }, []);
+
+  // Checkt bij het openen van de pagina of meldingen al aanstaan op dít
+  // toestel (een losse aan/uit-stand per toestel/browser, zoals gebruikelijk
+  // bij pushmeldingen — niet iets wat je voor het hele huishouden in één
+  // keer regelt).
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) { setMeldingenStatus("niet-ondersteund"); return; }
+    if (Notification.permission === "denied") { setMeldingenStatus("geweigerd"); return; }
+    navigator.serviceWorker.ready.then(reg => reg.pushManager.getSubscription()).then(sub => {
+      setMeldingenStatus(sub ? "aan" : "uit");
+    }).catch(() => setMeldingenStatus("uit"));
+  }, []);
+
+  function base64ToUint8Array(base64) {
+    const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+    const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const ruw = window.atob(b64);
+    return Uint8Array.from([...ruw].map(c => c.charCodeAt(0)));
+  }
+
+  async function zetMeldingenAan() {
+    setMeldingenStatus("bezig");
+    try {
+      const permissie = await Notification.requestPermission();
+      if (permissie !== "granted") { setMeldingenStatus(permissie === "denied" ? "geweigerd" : "uit"); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const sleutel = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!sleutel) { window.alert("Pushmeldingen zijn nog niet geconfigureerd door de beheerder (VAPID-sleutel ontbreekt)."); setMeldingenStatus("uit"); return; }
+      const subscription = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64ToUint8Array(sleutel) });
+      await fetch("/api/push-subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subscription }) });
+      setMeldingenStatus("aan");
+    } catch {
+      setMeldingenStatus("uit");
+      window.alert("Het aanzetten van meldingen is niet gelukt. Probeer het nog eens.");
+    }
+  }
+
+  async function zetMeldingenUit() {
+    setMeldingenStatus("bezig");
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await fetch("/api/push-subscribe", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) });
+        await sub.unsubscribe();
+      }
+      setMeldingenStatus("uit");
+    } catch {
+      setMeldingenStatus("aan");
+    }
+  }
 
   function persist(nieuweLijst) {
     lastWriteRef.current = Date.now();
@@ -202,9 +280,14 @@ export default function AbonnementenApp() {
 
   function opslaan(item) {
     if (item.id) {
-      persist(abonnementen.map(a => a.id === item.id ? item : a));
+      const bestaand = abonnementen.find(a => a.id === item.id);
+      // Een gewijzigde verlengdatum betekent een nieuwe cyclus — eerdere
+      // "al gemeld"-markeringen horen dan niet meer, anders zou dit
+      // abonnement de vólgende keer stilzwijgend géén melding meer krijgen.
+      const datumGewijzigd = bestaand && bestaand.volgendeVerlengdatum !== item.volgendeVerlengdatum;
+      persist(abonnementen.map(a => a.id === item.id ? { ...item, gemeldeDagen: datumGewijzigd ? [] : (bestaand?.gemeldeDagen || []) } : a));
     } else {
-      persist([...abonnementen, { ...item, id: uid() }]);
+      persist([...abonnementen, { ...item, id: uid(), gemeldeDagen: [] }]);
     }
     setBewerkItem(null);
   }
@@ -219,6 +302,7 @@ export default function AbonnementenApp() {
   const totaalPerMaand = actieve.reduce((s, a) => s + berekenMaandbedrag(a.bedrag, a.frequentie), 0);
   const totaalPerJaar = actieve.reduce((s, a) => s + berekenJaarbedrag(a.bedrag, a.frequentie), 0);
   const perPersoon = berekenTotalenPerPersoon(abonnementen);
+  const perCategorie = berekenTotalenPerCategorie(abonnementen);
   const groepen = groepeerPerCategorie(abonnementen);
 
   // Aankomende opzeg-/verlengmomenten — gesorteerd op urgentie, alleen wat
@@ -239,6 +323,34 @@ export default function AbonnementenApp() {
       </header>
 
       <main style={S.main}>
+        {meldingenStatus === "uit" && (
+          <div style={{ ...S.card, background: C.accent, color: "#FFF", display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontSize: 24 }}>🔔</span>
+            <div style={{ flex: 1 }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 700 }}>Zet meldingen aan</p>
+              <p style={{ margin: "2px 0 0", fontSize: 11, color: "rgba(255,255,255,0.8)" }}>Krijg een melding op dit toestel 14 en 3 dagen vóór een opzegmoment</p>
+            </div>
+            <button onClick={zetMeldingenAan} style={{ background: "#FFF", color: C.accent, border: "none", borderRadius: 10, padding: "8px 14px", fontWeight: 700, fontSize: 12.5, cursor: "pointer", flexShrink: 0 }}>Aanzetten</button>
+          </div>
+        )}
+        {meldingenStatus === "aan" && (
+          <div style={{ ...S.card, display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 18 }}>🔔</span>
+            <p style={{ flex: 1, margin: 0, fontSize: 12, color: C.text }}>Meldingen staan aan op dit toestel</p>
+            <button onClick={zetMeldingenUit} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 9, padding: "6px 12px", fontSize: 11.5, color: C.muted, cursor: "pointer" }}>Uitzetten</button>
+          </div>
+        )}
+        {meldingenStatus === "geweigerd" && (
+          <div style={{ ...S.card, background: "#FBF0E4", border: `1px solid ${C.oranje}33` }}>
+            <p style={{ margin: 0, fontSize: 11.5, color: C.text }}>🔕 Meldingen zijn geblokkeerd voor deze app. Zet ze aan via de instellingen van je browser/toestel om opzeg-herinneringen te ontvangen.</p>
+          </div>
+        )}
+        {meldingenStatus === "niet-ondersteund" && (
+          <div style={{ ...S.card, background: "#FBF0E4", border: `1px solid ${C.oranje}33` }}>
+            <p style={{ margin: 0, fontSize: 11.5, color: C.text }}>🔕 Dit toestel/browser ondersteunt geen pushmeldingen. Op iPhone: voeg de app eerst toe aan je beginscherm via "Zet op beginscherm", open 'm vandaaruit, en probeer het dan opnieuw.</p>
+          </div>
+        )}
+
         {saveFout && (
           <div style={{ ...S.card, background: "#FBEAEA", border: `1px solid ${C.rood}44`, display: "flex", alignItems: "center", gap: 8 }}>
             <AlertTriangle size={14} color={C.rood} style={{ flexShrink: 0 }} />
@@ -263,6 +375,23 @@ export default function AbonnementenApp() {
               <div key={naam} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 13 }}>
                 <span>{naam}</span>
                 <span style={{ fontWeight: 700 }}>{euro(bedrag)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {CATEGORIEEN.some(c => perCategorie[c.id]?.maand > 0) && (
+          <div style={S.card}>
+            <p style={{ margin: "0 0 2px", fontSize: 12.5, fontWeight: 800, color: C.accent }}>Kosten per categorie</p>
+            <p style={{ margin: "0 0 10px", fontSize: 10.5, color: C.muted }}>Zo blijft zichtbaar wat "losse abonnementen" kosten, los van grote vaste lasten zoals de hypotheek.</p>
+            {CATEGORIEEN.filter(c => perCategorie[c.id]?.maand > 0).map(c => (
+              <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderTop: `1px solid ${C.border}` }}>
+                <span style={{ fontSize: 13 }}>{c.icon} {c.label}</span>
+                <span style={{ textAlign: "right" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{euro(perCategorie[c.id].maand)}</span>
+                  <span style={{ fontSize: 10.5, color: C.muted }}> /mnd</span>
+                  <span style={{ display: "block", fontSize: 10.5, color: C.accentLicht }}>{euroRond(perCategorie[c.id].jaar)} /jaar</span>
+                </span>
               </div>
             ))}
           </div>
@@ -407,7 +536,13 @@ function AbonnementModal({ item, onOpslaan, onVerwijder, onSluiten }) {
 
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ flex: 1 }}><Veld label="Voor wie" type="text" value={form.voorWie} onChange={v => update({ voorWie: v })} placeholder="bv. Pepijn, kind, gezin" /></div>
-          <div style={{ flex: 1 }}><Veld label="Betaald door" type="text" value={form.betaaldDoor} onChange={v => update({ betaaldDoor: v })} placeholder="bv. Pepijn" /></div>
+          <div style={{ flex: 1 }}>
+            <label style={S.label}>Betaald door</label>
+            <select style={{ ...S.inp, marginBottom: 10 }} value={form.betaaldDoor} onChange={e => update({ betaaldDoor: e.target.value })}>
+              <option value="">Kies…</option>
+              {BETAALD_DOOR_OPTIES.map(naam => <option key={naam} value={naam}>{naam}</option>)}
+            </select>
+          </div>
         </div>
 
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 12, background: C.card, borderRadius: 10, padding: "10px 12px" }}>

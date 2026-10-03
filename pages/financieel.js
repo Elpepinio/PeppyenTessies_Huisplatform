@@ -92,14 +92,43 @@ function berekenZvwBijdrageZzp(belastbareWinst) {
 // waarover belasting wordt geheven. Bewust als eigen functie: het
 // verwisselen van bruto en belastbare winst hier leverde in een eerdere
 // versie een verschil van duizenden euro's op.
+// Heffingskortingen zijn niet-verzilverbaar BOVEN de belasting die je zelf
+// verschuldigd bent — zonder fiscaal partnerschap kun je er niet méér netto
+// mee overhouden dan je bruto hebt verdiend. Deze tool modelleert bewust
+// geen overdracht van onbenutte korting naar een partner (dat is nog een
+// aparte, complexe regeling) — vandaar deze begrenzing, de voorzichtigste
+// aanname. Zonder deze begrenzing ontstond bij een zeer lage (zzp-)winst
+// een onmogelijke marginale druk van well boven de 100%, doordat de
+// algemene heffingskorting in één klap van €0 naar het volledige maximum
+// sprong zodra de belastbare winst (na zelfstandigenaftrek) van exact €0
+// naar een fractie daarboven ging.
+function begrensHeffingskortingen(heffingskortingen, belasting) {
+  return Math.min(heffingskortingen, belasting);
+}
+
+// Zelfde redenering als bij het ZZP-inkomen: zonder deze begrenzing zou een
+// heel laag loondienstinkomen een netto tonen dat HOGER is dan het bruto
+// zelf (de heffingskortingen zouden dan meer "terugbetalen" dan er aan
+// belasting tegenover staat) — onrealistisch zonder een partner die het
+// onbenutte deel kan overnemen, wat deze tool bewust niet modelleert.
+function berekenNettoLoondienstInkomen(loondienst) {
+  const belasting = berekenBox1Belasting(loondienst);
+  const algemeneHeffingskorting = berekenAlgemeneHeffingskorting(loondienst);
+  const arbeidskorting = berekenArbeidskorting(loondienst);
+  const benutbareKorting = begrensHeffingskortingen(algemeneHeffingskorting + arbeidskorting, belasting);
+  const netto = Math.max(0, loondienst || 0) - belasting + benutbareKorting;
+  return { netto, belasting, algemeneHeffingskorting, arbeidskorting, benutbareKorting };
+}
+
 function berekenNettoZzpInkomen(winstVoorAftrek, { voldoetUrencriterium = true, isStarter = false } = {}) {
   const { belastbareWinst } = berekenBelastbareWinstZzp(winstVoorAftrek, { voldoetUrencriterium, isStarter });
   const belasting = berekenBox1Belasting(belastbareWinst);
   const algemeneHeffingskorting = berekenAlgemeneHeffingskorting(belastbareWinst);
   const arbeidskorting = berekenArbeidskorting(winstVoorAftrek); // over het arbeidsinkomen vóór ondernemersaftrek
   const zvwBijdrage = berekenZvwBijdrageZzp(belastbareWinst);
-  const netto = Math.max(0, winstVoorAftrek) - belasting - zvwBijdrage + algemeneHeffingskorting + arbeidskorting;
-  return { netto, belastbareWinst, belasting, algemeneHeffingskorting, arbeidskorting, zvwBijdrage };
+  const benutbareKorting = begrensHeffingskortingen(algemeneHeffingskorting + arbeidskorting, belasting);
+  const netto = Math.max(0, winstVoorAftrek) - belasting - zvwBijdrage + benutbareKorting;
+  return { netto, belastbareWinst, belasting, algemeneHeffingskorting, arbeidskorting, benutbareKorting, zvwBijdrage };
 }
 
 // ── Box 2 — aanmerkelijk belang/dividend uit de BV (2026) ────────────────
@@ -588,12 +617,9 @@ function OverzichtTab({ data, persist }) {
   const winstZzpVoorAftrek = +data.winstZzp || 0;
   const { belastbareWinst, zelfstandigenaftrek, startersaftrek, mkbVrijstelling } = berekenBelastbareWinstZzp(winstZzpVoorAftrek, { voldoetUrencriterium: data.voldoetUrencriterium, isStarter: data.isStarter });
 
-  const belastingLoondienst = berekenBox1Belasting(loondienst);
-  const ahkLoondienst = berekenAlgemeneHeffingskorting(loondienst);
-  const akLoondienst = berekenArbeidskorting(loondienst);
-  const nettoLoondienst = loondienst - belastingLoondienst + ahkLoondienst + akLoondienst;
+  const { netto: nettoLoondienst, belasting: belastingLoondienst, algemeneHeffingskorting: ahkLoondienst, arbeidskorting: akLoondienst, benutbareKorting: benutbareKortingLoondienst } = berekenNettoLoondienstInkomen(loondienst);
 
-  const { netto: nettoZzp, belasting: belastingZzp, algemeneHeffingskorting: ahkZzp, arbeidskorting: akZzp, zvwBijdrage } =
+  const { netto: nettoZzp, belasting: belastingZzp, algemeneHeffingskorting: ahkZzp, arbeidskorting: akZzp, benutbareKorting: benutbareKortingZzp, zvwBijdrage } =
     berekenNettoZzpInkomen(winstZzpVoorAftrek, { voldoetUrencriterium: data.voldoetUrencriterium, isStarter: data.isStarter });
   const marginaleDruk = winstZzpVoorAftrek > 0 ? berekenMarginaleDruk(winstZzpVoorAftrek, { voldoetUrencriterium: data.voldoetUrencriterium, isStarter: data.isStarter }) : null;
 
@@ -613,8 +639,12 @@ function OverzichtTab({ data, persist }) {
         {loondienst > 0 && (
           <div style={{ background: C.card, borderRadius: 10, padding: 12, marginTop: 4 }}>
             <Rij label="Inkomstenbelasting box 1" waarde={euro(belastingLoondienst)} />
-            <Rij label={<>Algemene heffingskorting<Uitleg>Een korting die iedereen krijgt op de te betalen belasting — hoe meer je verdient, hoe kleiner deze korting wordt. Bij een hoog inkomen (vanaf ongeveer €78.000) is de korting helemaal nul.</Uitleg></>} waarde={`+ ${euro(ahkLoondienst)}`} groen />
-            <Rij label={<>Arbeidskorting<Uitleg>Een extra korting, alleen voor mensen die werken (loon of winst uit onderneming). Deze loopt eerst op naarmate je meer verdient, bereikt een maximum rond €45.000, en wordt daarna juist weer kleiner.</Uitleg></>} waarde={`+ ${euro(akLoondienst)}`} groen />
+            <Rij label={<>Heffingskortingen<Uitleg>De "algemene heffingskorting" (iedereen) en de "arbeidskorting" (alleen voor werkenden) samen — beide worden kleiner naarmate je meer verdient. Een heffingskorting kan nooit groter zijn dan de belasting die je zelf verschuldigd bent — bij een laag inkomen wordt het recht daarom soms niet volledig benut.</Uitleg></>} waarde={`+ ${euro(benutbareKortingLoondienst)}`} groen />
+            {benutbareKortingLoondienst < ahkLoondienst + akLoondienst && (
+              <p style={{ fontSize: 10, color: C.muted, margin: "2px 0 0" }}>
+                (Het volledige recht is {euro(ahkLoondienst + akLoondienst)}, maar bij dit inkomen is er niet genoeg belasting om dat helemaal tegen af te zetten.)
+              </p>
+            )}
             <Rij label="Geschat netto per jaar" waarde={euro(nettoLoondienst)} dik />
             <Rij label="Geschat netto per maand" waarde={euro(nettoLoondienst / 12)} muted />
           </div>
@@ -649,7 +679,12 @@ function OverzichtTab({ data, persist }) {
             <p style={{ fontSize: 10.5, color: C.muted, margin: "4px 0 0", lineHeight: 1.5 }}>
               💡 De zelfstandigenaftrek en MKB-winstvrijstelling zijn geen geld dat je misloopt — ze zorgen er alleen voor dat je over een kleiner deel van je winst belasting betaalt. De Zvw-bijdrage is een verplichte zorgpremie die zzp'ers zelf via een aparte aanslag betalen (werknemers hebben dit niet, dat betaalt bij hen de werkgever).
             </p>
-            <Rij label={<>Heffingskortingen<Uitleg>Een heffingskorting is een korting op de belasting die je moet betalen — iedereen krijgt de "algemene heffingskorting", en iedereen die werkt (in loondienst of als zelfstandige) krijgt daarbovenop de "arbeidskorting". Beide worden kleiner naarmate je meer verdient, en kunnen bij een hoger inkomen zelfs helemaal verdwijnen.</Uitleg></>} waarde={`+ ${euro(ahkZzp + akZzp)}`} groen />
+            <Rij label={<>Heffingskortingen<Uitleg>Een heffingskorting is een korting op de belasting die je moet betalen — iedereen krijgt de "algemene heffingskorting", en iedereen die werkt (in loondienst of als zelfstandige) krijgt daarbovenop de "arbeidskorting". Beide worden kleiner naarmate je meer verdient, en kunnen bij een hoger inkomen zelfs helemaal verdwijnen. Een heffingskorting kan nooit groter zijn dan de belasting die je zelf verschuldigd bent — bij een lage winst wordt het recht daarom soms niet volledig benut.</Uitleg></>} waarde={`+ ${euro(benutbareKortingZzp)}`} groen />
+            {benutbareKortingZzp < ahkZzp + akZzp && (
+              <p style={{ fontSize: 10, color: C.muted, margin: "2px 0 0" }}>
+                (Het volledige recht is {euro(ahkZzp + akZzp)}, maar bij deze winst is er niet genoeg belasting om dat helemaal tegen af te zetten — zonder een werkende fiscale partner die het restant kan overnemen, vervalt het teveel.)
+              </p>
+            )}
             <Rij label="Geschat netto per jaar" waarde={euro(nettoZzp)} dik />
             <Rij label="Geschat netto per maand" waarde={euro(nettoZzp / 12)} muted />
           </div>
@@ -882,7 +917,12 @@ function haalHypotheekDelenOp(hypotheek) {
   if (hypotheek.bedrag) {
     return [{ id: "gemigreerd", naam: "Hypotheekdeel 1", type: "annuitair", schuld: hypotheek.bedrag, rente: hypotheek.rente || "", resterendeJaren: hypotheek.resterendeJaren || "" }];
   }
-  return [{ id: uid(), naam: "Hypotheekdeel 1", type: "annuitair", schuld: "", rente: "", resterendeJaren: "" }];
+  // Let op: deze functie wordt op ELKE render van HypotheekTab opnieuw
+  // aangeroepen (geen memoisatie) — een willekeurige id via uid() zou dan
+  // bij elke render veranderen zolang er nog niets is opgeslagen, wat een
+  // instabiele React-key oplevert. Een vaste id (zelfde patroon als het
+  // standaard-antwoord van de server in /api/financieel.js) voorkomt dat.
+  return [{ id: "deel-1", naam: "Hypotheekdeel 1", type: "annuitair", schuld: "", rente: "", resterendeJaren: "" }];
 }
 
 function HypotheekTab({ data, persist }) {
@@ -917,7 +957,10 @@ function HypotheekTab({ data, persist }) {
 
   const extraDeelIdx = h.extraDeelIdx || 0;
   const gekozenDeel = delen[extraDeelIdx] || delen[0];
-  const extraBedrag = +h.extraBedrag || 0;
+  // Bewust per deel opgeslagen (op het deel zelf, niet op h) — anders zou
+  // hetzelfde bedrag blijven staan bij het wisselen tussen delen, terwijl
+  // je voor elk deel juist een ander bedrag wilt kunnen doorrekenen.
+  const extraBedrag = +gekozenDeel?.extraBedrag || 0;
   const verwachtRendement = (+h.verwachtRendement || 0) / 100;
   const MAX_AFTREKTARIEF_2026 = 0.3756; // hypotheekrenteaftrek is sinds enkele jaren beperkt tot het tarief van de 2e schijf, ongeacht je eigen marginale tarief
   const BOX3_FORFAIT_BELEGGEN = 0.06, BOX3_TARIEF = 0.36;
@@ -1042,7 +1085,7 @@ function HypotheekTab({ data, persist }) {
             </select>
           </>
         )}
-        <Veld label="Beschikbaar bedrag" value={h.extraBedrag} onChange={v => updateH({ extraBedrag: v })} suffix="€" />
+        <Veld label="Beschikbaar bedrag" value={gekozenDeel?.extraBedrag || ""} onChange={v => updateDeel(extraDeelIdx, { extraBedrag: v })} suffix="€" />
         <Veld label="Verwacht bruto beleggingsrendement (jouw eigen inschatting)" value={h.verwachtRendement} onChange={v => updateH({ verwachtRendement: v })} suffix="% per jaar" />
 
         {deelSchuld > 0 && deelRenteJaar > 0 && deelLooptijd > 0 && extraBedrag > 0 && (
