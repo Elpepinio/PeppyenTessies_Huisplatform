@@ -165,8 +165,22 @@ export default function BeleggingenApp() {
 
   useEffect(() => {
     let actief = true;
-    fetch("/api/beleggingen").then(r => r.json()).then(d => { if (actief) setData(d); })
-      .catch(() => setData(LEEG_DATA())).finally(() => { if (actief) setLaden(false); });
+    fetch("/api/beleggingen").then(r => r.json()).then(d => {
+      if (!actief) return;
+      // De server geeft bij een nog-nooit-opgeslagen stand een lege
+      // structuur terug (correct 200 OK, geen netwerkfout) — dat is dus
+      // GEEN moment om de .catch-fallback te raken. Een lege stand hier
+      // betekent: eerste keer openen, dus de rijke startdata gebruiken
+      // én meteen opslaan, zodat dit maar één keer hoeft te gebeuren.
+      const isLeeg = (!d.posities || d.posities.length === 0) && (!d.watchlist || d.watchlist.length === 0) && (!d.cryptoPosities || d.cryptoPosities.length === 0);
+      if (isLeeg) {
+        const seed = LEEG_DATA();
+        setData(seed);
+        fetch("/api/beleggingen", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(seed) }).catch(() => {});
+      } else {
+        setData(d);
+      }
+    }).catch(() => setData(LEEG_DATA())).finally(() => { if (actief) setLaden(false); });
     return () => { actief = false; };
   }, []);
 
