@@ -406,7 +406,7 @@ function FinancieelChatPaneel({ context, onSluiten }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           bron: "financieel-chat",
-          systemPrompt: `Je legt begrippen en berekeningen uit binnen een financieel-overzicht-tool voor een Nederlands gezin (een partner in loondienst, een partner zzp'er, een BV die zakelijk belegt, en samen één kind). De tool behandelt: inkomen/belasting (box 1/2/3, zelfstandigenaftrek, Zvw), kinderopvangtoeslag/zorgtoeslag/kindgebonden budget, hypotheek (meerdere delen, eigenwoningforfait/Wet Hillen, aflossen vs. beleggen op één deel of op alle delen tegelijk, en Rabobank's boetevrije-aflosruimte), de BV (Vpb, dividend), én een "Vangnet"-tabblad met arbeidsongeschiktheid (AOV), pensioenopbouw-gat, een noodbuffer, en wat er gebeurt bij overlijden (erfbelasting, samenlevingscontract, testament, overlijdensrisicoverzekering), en een "Samenvatting"-tabblad dat automatisch aandachtspunten/inzichten uit alle andere tabbladen samenbrengt. Hieronder staan de cijfers die ze zelf in de tool hebben ingevuld.
+          systemPrompt: `Je legt begrippen en berekeningen uit binnen een financieel-overzicht-tool voor een Nederlands gezin (een partner in loondienst, een partner zzp'er, een BV die zakelijk belegt, en samen één kind). De tool behandelt: inkomen/belasting (box 1/2/3, zelfstandigenaftrek, Zvw), kinderopvangtoeslag/zorgtoeslag/kindgebonden budget, hypotheek (meerdere delen, eigenwoningforfait/Wet Hillen, aflossen vs. beleggen op één deel of op alle delen tegelijk, en Rabobank's boetevrije-aflosruimte), de BV (Vpb, dividend), én een "Vangnet"-tabblad met arbeidsongeschiktheid (AOV), pensioenopbouw-gat, een noodbuffer, en wat er gebeurt bij overlijden (erfbelasting, samenlevingscontract, testament, overlijdensrisicoverzekering), en een "Samenvatting"-tabblad dat automatisch aandachtspunten/inzichten uit alle andere tabbladen samenbrengt, en een "Mogelijkheden"-tabblad met legale privé- en zakelijke regelingen (lijfrente-jaarruimte, groene beleggingen, schenkingsvrijstelling, fiscaal partnerschap, lijfrente via de BV, dividend-timing, verliesverrekening in de BV, box 3-vermogen optimaal verdelen tussen partners, periodieke gift aan een goed doel) — expliciet als bespreekpunten geframed, geen bindend advies. Hieronder staan de cijfers die ze zelf in de tool hebben ingevuld.
 
 Belangrijk: jij bent GEEN vergunninghoudend financieel adviseur. Hypotheek- en beleggingsadvies aan consumenten is in Nederland een gereguleerde activiteit onder de Wft, waarvoor een AFM-vergunning nodig is. Leg daarom begrippen, belastingregels en de berekeningen in de tool helder uit in doodgewone taal — reken gerust voorbeelden door met hún eigen cijfers — maar geef geen bindende persoonlijke aanbevelingen zoals "jullie moeten aflossen" of "beleg in X". Als iemand daar wel naar vraagt, leg dan de relevante afwegingen en factoren uit, en zeg dat een erkend financieel adviseur of accountant nodig is voor een bindend advies.
 
@@ -534,6 +534,7 @@ export default function FinancieelApp() {
         <button style={{ ...S.tab(tab==="vangnet"), flexShrink: 0 }} onClick={() => setTab("vangnet")}>Vangnet</button>
         <button style={{ ...S.tab(tab==="bv"), flexShrink: 0 }} onClick={() => setTab("bv")}>BV</button>
         <button style={{ ...S.tab(tab==="samenvatting"), flexShrink: 0 }} onClick={() => setTab("samenvatting")}>📋 Samenvatting</button>
+        <button style={{ ...S.tab(tab==="mogelijkheden"), flexShrink: 0 }} onClick={() => setTab("mogelijkheden")}>💡 Mogelijkheden</button>
       </div>
 
       <main style={S.main}>
@@ -543,6 +544,7 @@ export default function FinancieelApp() {
         {tab === "vangnet" && <VangnetTab data={data} persist={persist} />}
         {tab === "bv" && <BvTab data={data} persist={persist} />}
         {tab === "samenvatting" && <SamenvattingTab data={data} setTab={setTab} />}
+        {tab === "mogelijkheden" && <MogelijkhedenTab data={data} persist={persist} />}
       </main>
 
       {showChat && (
@@ -560,6 +562,76 @@ export default function FinancieelApp() {
 // vergunningplichtig financieel advies zijn) — wel een geprioriteerd
 // overzicht van waar de cijfers zelf om aandacht vragen, zodat je niet
 // elk tabblad apart hoeft na te lopen om te zien wat relevant is.
+// ── Lijfrente-jaarruimte 2026 ─────────────────────────────────────────────
+// Het bedrag dat je dit jaar fiscaal aftrekbaar mag inleggen voor je
+// pensioen (lijfrente, banksparen) — met name relevant voor de zzp-partner,
+// die geen pensioen opbouwt via een werkgever. Gebaseerd op het inkomen van
+// VORIG jaar; hier benaderd met het huidige ingevulde inkomen.
+const JAARRUIMTE_PCT_2026 = 0.30;
+const JAARRUIMTE_MAX_2026 = 35589;
+const JAARRUIMTE_MAX_INKOMEN_2026 = 137800;
+function berekenJaarruimteLijfrente(inkomen, pensioenaangroeiWerkgever = 0) {
+  if (!inkomen || inkomen <= 0) return 0;
+  const grondslag = Math.min(inkomen, JAARRUIMTE_MAX_INKOMEN_2026) - AOW_FRANCHISE_2026;
+  if (grondslag <= 0) return 0;
+  const ruimte = grondslag * JAARRUIMTE_PCT_2026 - 6.27 * (pensioenaangroeiWerkgever || 0);
+  return Math.round(Math.min(JAARRUIMTE_MAX_2026, Math.max(0, ruimte)));
+}
+
+// ── Groene beleggingen — extra vrijstelling in box 3 (2026) ──────────────
+// Bovenop het algemene heffingsvrij vermogen geldt een aparte vrijstelling
+// voor erkende groene beleggingen/spaartegoeden, plus een kleine
+// heffingskorting over het vrijgestelde bedrag.
+const GROENE_BELEGGINGEN_VRIJSTELLING_2026 = 26715; // per persoon; x2 voor fiscale partners
+const GROENE_BELEGGINGEN_HEFFINGSKORTING_PCT = 0.001;
+function berekenGroeneBeleggingenVoordeel(huidigeGroeneBeleggingen, aantalPersonen = 2) {
+  const vrijstelling = GROENE_BELEGGINGEN_VRIJSTELLING_2026 * aantalPersonen;
+  const benut = Math.min(+huidigeGroeneBeleggingen || 0, vrijstelling);
+  const heffingskorting = Math.round(benut * GROENE_BELEGGINGEN_HEFFINGSKORTING_PCT);
+  return { vrijstelling, benut, heffingskorting, nogRuimte: Math.max(0, vrijstelling - benut) };
+}
+
+// ── Verliesverrekening in de BV (2026) ────────────────────────────────────
+// Verliezen zijn sinds 2022 onbeperkt voorwaarts te verrekenen, maar met een
+// plafond: tot €1 miljoen winst volledig verrekenbaar, daarboven nog maar
+// 50% van het meerdere — zodat ook bij oude verliezen altijd een bodem aan
+// Vpb verschuldigd blijft bij een grote winst.
+const VERLIESVERREKENING_DREMPEL_2026 = 1000000;
+function berekenVerliesverrekening(winst, compensabelVerlies) {
+  const w = +winst || 0, v = +compensabelVerlies || 0;
+  if (w <= 0 || v <= 0) return { verrekend: 0, restWinstNaVerrekening: Math.max(0, w), restVerlies: Math.max(0, v) };
+  const volledigVerrekenbaar = Math.min(w, VERLIESVERREKENING_DREMPEL_2026);
+  const verrekendOnderDrempel = Math.min(v, volledigVerrekenbaar);
+  const restVerliesNaDrempel = v - verrekendOnderDrempel;
+  const restWinstBovenDrempel = Math.max(0, w - VERLIESVERREKENING_DREMPEL_2026);
+  const maxVerrekenBovenDrempel = restWinstBovenDrempel * 0.5;
+  const verrekendBovenDrempel = Math.min(restVerliesNaDrempel, maxVerrekenBovenDrempel);
+  const totaalVerrekend = verrekendOnderDrempel + verrekendBovenDrempel;
+  return {
+    verrekend: Math.round(totaalVerrekend),
+    restWinstNaVerrekening: Math.round(w - totaalVerrekend),
+    restVerlies: Math.round(v - totaalVerrekend),
+  };
+}
+
+// ── Box 3: voordeel van optimaal verdelen tussen fiscale partners ────────
+// Fiscale partners mogen de GEZAMENLIJKE grondslag en vrijstelling vrij
+// verdelen over beide aangiftes — vergelijkt wat er gebeurt als ieders
+// eigen vermogen apart (tegen de individuele vrijstelling) wordt
+// aangegeven versus optimaal gecombineerd.
+function berekenBox3VoordeelVerdelen(vermogenPartner1, vermogenPartner2) {
+  const nietOptimaal =
+    berekenBox3Belasting({ ...vermogenPartner1, aantalPersonen: 1 }) +
+    berekenBox3Belasting({ ...vermogenPartner2, aantalPersonen: 1 });
+  const optimaal = berekenBox3Belasting({
+    spaargeld: (+vermogenPartner1.spaargeld || 0) + (+vermogenPartner2.spaargeld || 0),
+    beleggingen: (+vermogenPartner1.beleggingen || 0) + (+vermogenPartner2.beleggingen || 0),
+    schulden: (+vermogenPartner1.schulden || 0) + (+vermogenPartner2.schulden || 0),
+    aantalPersonen: 2,
+  });
+  return { nietOptimaal, optimaal, besparing: nietOptimaal - optimaal };
+}
+
 function bouwAandachtspunten(data) {
   const punten = [];
   const loondienst = +data.inkomenLoondienst || 0;
@@ -695,7 +767,11 @@ function LEEG_DATA() {
       aflossenModus: "een-deel", boetevrijPercentage: 20,
     },
     kot: { aantalKinderen: 1, urenPerMaandKind1: "", typeKind1: "dagopvang", urenPerMaandKind2: "", typeKind2: "dagopvang" },
-    bv: { verwachteWinstPerJaar: "", dividendplan: "" },
+    bv: { verwachteWinstPerJaar: "", dividendplan: "", compensabelVerlies: "" },
+    vermogenVerdeling: {
+      partner1: { naam: "Pepijn", spaargeld: "", beleggingen: "", schulden: "" },
+      partner2: { naam: "Tessa", spaargeld: "", beleggingen: "", schulden: "" },
+    },
     vangnet: {
       heeftAov: null, // null = nog niet aangegeven, true/false
       zzpRegeltZelfPensioen: null, pensioenEigenInlegPerJaar: "",
@@ -1348,11 +1424,14 @@ function HypotheekTab({ data, persist }) {
 }
 
 function BvTab({ data, persist }) {
-  const bv = data.bv || { verwachteWinstPerJaar: "", dividendplan: "" };
+  const bv = data.bv || { verwachteWinstPerJaar: "", dividendplan: "", compensabelVerlies: "" };
   function updateBv(patch) { persist({ bv: { ...bv, ...patch } }); }
   const winst = +bv.verwachteWinstPerJaar || 0;
   const dividend = +bv.dividendplan || 0;
-  const vpb = berekenVpb(winst);
+  const compensabelVerlies = +bv.compensabelVerlies || 0;
+  const verliesverrekening = berekenVerliesverrekening(winst, compensabelVerlies);
+  const belastbareWinstNaVerrekening = compensabelVerlies > 0 ? verliesverrekening.restWinstNaVerrekening : winst;
+  const vpb = berekenVpb(belastbareWinstNaVerrekening);
   const winstNaVpb = winst - vpb;
   const box2 = berekenBox2Belasting(dividend);
   const beleggingenBv = +data.beleggingenBv || 0;
@@ -1364,11 +1443,21 @@ function BvTab({ data, persist }) {
         <p style={{ margin: "0 0 12px", fontSize: 11.5, color: C.muted }}>
           Beleggingsresultaten binnen de BV vallen onder de vennootschapsbelasting (Vpb), niet onder box 3 — pas bij een dividenduitkering aan jezelf privé komt box 2 om de hoek kijken.
         </p>
-        <Veld label="Verwachte winst (incl. beleggingsresultaat) in de BV per jaar" value={bv.verwachteWinstPerJaar} onChange={v => updateBv({ verwachteWinstPerJaar: v })} suffix="€" />
+        <Veld label={<>Verwachte winst (incl. beleggingsresultaat) in de BV per jaar<Uitleg>Beleg je RECHTSTREEKS in individuele aandelen/obligaties (niet via fondsen)? Dan mag je op basis van "goed koopmansgebruik" koerswinst pas tot de winst rekenen zodra je verkoopt (de kostprijsmethode) — tel hier dus alleen ontvangen dividend/rente plus eventuele GEREALISEERDE verkoopwinst van dit jaar bij op, niet de ongerealiseerde koersstijging van wat je nog in bezit hebt. Beleg je via beleggingsfondsen (zeker met VBI-status)? Dan geldt vaak een verplichte jaarlijkse waardering op marktwaarde, en hoort de ongerealiseerde waardeverandering er wél bij.</Uitleg></>} value={bv.verwachteWinstPerJaar} onChange={v => updateBv({ verwachteWinstPerJaar: v })} suffix="€" />
         <Veld label="Huidige beleggingen binnen de BV" value={data.beleggingenBv} onChange={v => persist({ beleggingenBv: v })} suffix="€" />
+        <Veld label={<>Nog te verrekenen verlies uit eerdere jaren (optioneel)<Uitleg>Had de BV in een eerder jaar verlies? Dat compensabele verlies mag onbeperkt in de tijd worden verrekend met toekomstige winst (sinds 2022), tot €1 miljoen winst volledig, daarboven nog maar voor 50% van het meerdere. Vul hier in wat er nog aan verlies "openstaat" — vraag dit na bij je boekhouder/de laatste Vpb-aangifte als je het niet precies weet.</Uitleg></>} value={bv.compensabelVerlies} onChange={v => updateBv({ compensabelVerlies: v })} suffix="€" />
 
         {winst > 0 && (
           <div style={{ background: C.card, borderRadius: 10, padding: 12, marginTop: 4 }}>
+            {compensabelVerlies > 0 && (
+              <>
+                <Rij label="Verrekend met oud verlies" waarde={`− ${euro(verliesverrekening.verrekend)}`} />
+                <Rij label="Belastbare winst na verliesverrekening" waarde={euro(belastbareWinstNaVerrekening)} />
+                {verliesverrekening.restVerlies > 0 && (
+                  <p style={{ fontSize: 10.5, color: C.muted, margin: "2px 0 8px" }}>Nog {euro(verliesverrekening.restVerlies)} verlies over voor latere jaren.</p>
+                )}
+              </>
+            )}
             <Rij label={<>Vennootschapsbelasting<Uitleg>De vennootschapsbelasting ("Vpb") is de belasting die je BV zelf betaalt over haar winst — inclusief wat ze verdient met beleggen. Dit is een aparte belasting van je persoonlijke inkomstenbelasting. Zolang de winst in de BV blijft zitten (en niet als dividend naar jou gaat), blijft het hierbij.</Uitleg></>} waarde={euro(vpb)} />
             <Rij label="Winst na Vpb, blijft in de BV" waarde={euro(winstNaVpb)} dik />
           </div>
@@ -1613,6 +1702,147 @@ function SamenvattingTab({ data, setTab }) {
           </div>
         );
       })}
+
+      <Disclaimer />
+    </>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// MOGELIJKHEDEN — legale regelingen en overwegingen die bij jullie situatie
+// passen (privé én zakelijk). Nadrukkelijk GEEN persoonlijk financieel
+// advies (dat is in Nederland vergunningplichtig) — wel een overzicht van
+// wat er bestaat, zodat je weloverwogen met een adviseur/fiscalist kunt
+// bepalen wat voor jullie zinvol is.
+// ══════════════════════════════════════════════════════════════════════════
+function MogelijkhedenTab({ data, persist }) {
+  const winstZzp = +data.winstZzp || 0;
+  const beleggingenPrive = +data.beleggingenPrive || 0;
+  const v = data.vangnet || {};
+
+  const jaarruimte = berekenJaarruimteLijfrente(winstZzp);
+  const groen = berekenGroeneBeleggingenVoordeel(0, 2); // 0 = nog niets in groen; toont de volledige beschikbare ruimte
+
+  const vv = data.vermogenVerdeling || { partner1: { naam: "Partner 1", spaargeld: "", beleggingen: "", schulden: "" }, partner2: { naam: "Partner 2", spaargeld: "", beleggingen: "", schulden: "" } };
+  function updateVermogen(wie, patch) { persist({ vermogenVerdeling: { ...vv, [wie]: { ...vv[wie], ...patch } } }); }
+  const heeftVermogenIngevuld = [vv.partner1, vv.partner2].some(p => +p.spaargeld > 0 || +p.beleggingen > 0 || +p.schulden > 0);
+  const box3Verdelen = berekenBox3VoordeelVerdelen(vv.partner1, vv.partner2);
+
+  return (
+    <>
+      <div style={S.card}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 800, color: C.accent }}>💡 Mogelijkheden</h3>
+        <p style={{ margin: 0, fontSize: 11.5, color: C.muted }}>
+          Legale regelingen en overwegingen die bij jullie situatie passen — géén persoonlijk financieel advies (dat is in Nederland vergunningplichtig), wel een startpunt om te bespreken met een adviseur of fiscalist.
+        </p>
+      </div>
+
+      <div style={S.card}>
+        <h3 style={{ margin: "0 0 10px", fontSize: 13.5, fontWeight: 800, color: C.accent }}>🏠 Privé</h3>
+
+        <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${C.border}` }}>
+          <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>
+            Lijfrente-jaarruimte (zzp-partner)
+            <Uitleg>Als zzp'er bouw je geen pensioen op via een werkgever — de "jaarruimte" is het bedrag dat je dit jaar fiscaal aftrekbaar mag inleggen in een lijfrente of bankspaarrekening, als compensatie. Dit is 30% van je winst boven de AOW-franchise (€19.172), met een maximum van €35.589 in 2026. Niet benutte jaarruimte van de afgelopen 10 jaar mag je ook nog inhalen ("reserveringsruimte", max €42.753).</Uitleg>
+          </p>
+          {winstZzp > 0 ? (
+            <>
+              <Rij label="Geschatte jaarruimte 2026" waarde={euro(jaarruimte)} dik />
+              <p style={{ fontSize: 11, color: C.muted, margin: "4px 0 0" }}>Direct gekoppeld aan het pensioenopbouw-gat dat op het Vangnet-tabblad al wordt gesignaleerd.</p>
+            </>
+          ) : (
+            <p style={{ fontSize: 12, color: C.muted, margin: 0 }}>Vul eerst de zzp-winst in op Overzicht om een schatting te zien.</p>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${C.border}` }}>
+          <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>
+            Groene beleggingen
+            <Uitleg>Bovenop het algemene heffingsvrij vermogen in box 3 geldt een aparte vrijstelling voor erkende groene beleggingen/spaartegoeden: €26.715 per persoon in 2026 (€53.430 samen als fiscale partners), plus een kleine heffingskorting (0,1%) over het vrijgestelde bedrag. Fiscaal gezien dus een manier om een deel van je vermogen belastingvrij(er) te laten renderen, als groen beleggen sowieso bij je past.</Uitleg>
+          </p>
+          <Rij label="Beschikbare vrijstelling (samen, nog ongebruikt)" waarde={euro(groen.vrijstelling)} dik />
+          {beleggingenPrive > 0 && (
+            <p style={{ fontSize: 11, color: C.muted, margin: "4px 0 0" }}>Van je ingevulde €{Math.round(beleggingenPrive).toLocaleString("nl-NL")} aan privébeleggingen zou een deel hier eventueel voor in aanmerking kunnen komen, afhankelijk van in welke producten je belegt.</p>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${C.border}` }}>
+          <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>
+            Schenkingsvrijstelling richting jullie kind
+            <Uitleg>Als (groot)ouders mogen jullie eigen ouders jaarlijks €6.908 (2026) belastingvrij aan jullie kind schenken, ongeacht diens leeftijd — bijvoorbeeld om alvast te sparen voor later. Dit is geen regeling die jullie zelf toepassen, maar kan relevant zijn om te bespreken met grootouders die willen bijdragen.</Uitleg>
+          </p>
+          <p style={{ fontSize: 12, color: C.muted, margin: 0 }}>Jaarlijkse vrijstelling 2026: {euro(6908)} per kind, van (groot)ouders.</p>
+        </div>
+
+        <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${C.border}` }}>
+          <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>
+            Fiscaal partnerschap — aftrekposten verdelen
+            <Uitleg>Als fiscale partners mogen jullie gezamenlijke aftrekposten (zoals hypotheekrente) vrij verdelen over beide aangiftes — in de verhouding die voor jullie samen de laagste totale belasting oplevert. Dit kost niets om te doen, en de meeste aangifte-software (of een boekhouder) optimaliseert dit automatisch, maar het is goed om te weten dat deze keuzevrijheid bestaat.</Uitleg>
+          </p>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 13.5, fontWeight: 800, color: C.accent }}>
+          ⚖️ Box 3-vermogen optimaal verdelen
+          <Uitleg>Als fiscale partners (wat jullie als ongehuwd samenwonenden met een kind automatisch zijn) mogen jullie het gezamenlijke box 3-vermogen én de gezamenlijke (verdubbelde) vrijstelling vrij verdelen over beide aangiftes. Staat het vermogen scheef verdeeld (bijvoorbeeld bijna alles op naam van één van jullie) en wordt dat niet actief gecorrigeerd bij de aangifte, dan loopt de ander zijn deel van de vrijstelling (€59.357 in 2026) mis. Vul ieders eigen spaargeld/beleggingen/schulden in om te zien of herverdelen voordeel oplevert.</Uitleg>
+        </h3>
+        <p style={{ margin: "0 0 12px", fontSize: 11.5, color: C.muted }}>Dit raakt alleen hoe je het op de aangifte verdeelt — niet waar het geld daadwerkelijk staat.</p>
+
+        {[["partner1", vv.partner1], ["partner2", vv.partner2]].map(([key, p]) => (
+          <div key={key} style={{ marginBottom: 12 }}>
+            <p style={{ margin: "0 0 6px", fontSize: 12.5, fontWeight: 700 }}>{p.naam}</p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ flex: 1 }}><Veld label="Spaargeld" value={p.spaargeld} onChange={val => updateVermogen(key, { spaargeld: val })} suffix="€" /></div>
+              <div style={{ flex: 1 }}><Veld label="Beleggingen" value={p.beleggingen} onChange={val => updateVermogen(key, { beleggingen: val })} suffix="€" /></div>
+            </div>
+          </div>
+        ))}
+
+        {heeftVermogenIngevuld && (
+          <div style={{ background: box3Verdelen.besparing > 0 ? "#EAF3EE" : C.card, border: box3Verdelen.besparing > 0 ? `1px solid ${C.groen}33` : "none", borderRadius: 10, padding: 12 }}>
+            <Rij label="Belasting als ieder zijn eigen deel apart aangeeft" waarde={euro(box3Verdelen.nietOptimaal)} />
+            <Rij label="Belasting bij optimaal verdelen" waarde={euro(box3Verdelen.optimaal)} dik />
+            {box3Verdelen.besparing > 0 ? (
+              <p style={{ margin: "6px 0 0", fontSize: 12, color: C.groen, fontWeight: 600 }}>✅ Optimaal verdelen scheelt {euro(box3Verdelen.besparing)} per jaar.</p>
+            ) : (
+              <p style={{ margin: "6px 0 0", fontSize: 12, color: C.muted }}>Bij deze bedragen maakt de verdeling niets uit — jullie vermogen is al in balans of te laag voor het verschil om op te vallen.</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={S.card}>
+        <h3 style={{ margin: "0 0 10px", fontSize: 13.5, fontWeight: 800, color: C.accent }}>🏠 Nog meer privé</h3>
+        <div>
+          <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>
+            Periodieke gift aan een goed doel
+            <Uitleg>Een gewone, jaarlijkse gift is pas aftrekbaar boven een drempel van 1% van je inkomen — bij een bescheiden, regelmatig bedrag levert dat vaak HELEMAAL GEEN aftrek op. Leg je dezelfde gift schriftelijk vast als "periodieke gift" (minimaal 5 jaar, ongeveer gelijk bedrag, aan een ANBI) — geen notaris meer nodig sinds 2014, een onderhandse overeenkomst volstaat — dan is het VOLLEDIGE bedrag aftrekbaar, zonder drempel.</Uitleg>
+          </p>
+          <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>Relevant als jullie "Goede doelen"-abonnementen (zie de Abonnementen-tool) een vaste, terugkerende gift aan dezelfde instelling(en) betreffen.</p>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <h3 style={{ margin: "0 0 10px", fontSize: 13.5, fontWeight: 800, color: C.accent }}>🏢 Zakelijk (BV)</h3>
+
+        <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${C.border}` }}>
+          <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>
+            Lijfrente vanuit de BV
+            <Uitleg>In plaats van (of naast) een privé-lijfrente kan de BV zelf een lijfrente-verplichting aangaan ten behoeve van de DGA — dit kan fiscaal aantrekkelijk zijn omdat de BV de inleg als kostenpost kan boeken, in plaats van dat het ten koste gaat van je privé-netto-inkomen. De exacte afweging (privé vs. via de BV) hangt af van jullie volledige plaatje en is iets voor een fiscalist.</Uitleg>
+          </p>
+          {v.zzpRegeltZelfPensioen === false && (
+            <p style={{ fontSize: 11, color: C.oranje, margin: 0 }}>Relevant: op het Vangnet-tabblad staat aangegeven dat er voor de zzp-partner nog niets geregeld is.</p>
+          )}
+        </div>
+
+        <div>
+          <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>
+            Timing van dividenduitkeringen
+            <Uitleg>Box 2 kent een laag tarief (24,5%) tot €68.843 en een hoog tarief (31%) daarboven, PER JAAR. Een groot dividend in één keer uitkeren kan je dus sneller in de hoge schijf duwen dan hetzelfde bedrag over meerdere jaren spreiden. Dit is een kwestie van timing, geen wondermiddel — maar wel iets om bewust over te beslissen in plaats van toevallig te laten gebeuren.</Uitleg>
+          </p>
+        </div>
+      </div>
 
       <Disclaimer />
     </>
