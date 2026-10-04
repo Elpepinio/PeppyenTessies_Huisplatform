@@ -14,7 +14,8 @@ const {
   berekenBoetevrijeRuimte, berekenAflossenMeerdereDelen,
   berekenEigenwoningforfait, berekenWetHillenAftrek, berekenJaarlijksePensioenopbouw,
   berekenNoodbufferStatus, berekenErfbelastingPartner, berekenZorgtoeslagPerMaand, berekenKindgebondenBudgetPerJaar,
-  bouwAandachtspunten, euro,
+  bouwAandachtspunten, euro, berekenJaarruimteLijfrente, berekenGroeneBeleggingenVoordeel,
+  berekenVerliesverrekening, berekenBox3VoordeelVerdelen,
 } = laadFuncties(BESTAND, [
   /const euro = /,
   /const BOX1_SCHIJVEN_2026 = /,
@@ -53,6 +54,16 @@ const {
   /function berekenErfbelastingPartner\(erfdeel, heeftSamenlevingscontract\)/,
   /function berekenZorgtoeslagPerMaand\(toetsingsinkomen, heeftToeslagpartner\)/,
   /function berekenKindgebondenBudgetPerJaar\(aantalKinderen, toetsingsinkomen, heeftToeslagpartner\)/,
+  /const JAARRUIMTE_PCT_2026 = /,
+  /const JAARRUIMTE_MAX_2026 = /,
+  /const JAARRUIMTE_MAX_INKOMEN_2026 = /,
+  /function berekenJaarruimteLijfrente\(inkomen, pensioenaangroeiWerkgever = 0\)/,
+  /const GROENE_BELEGGINGEN_VRIJSTELLING_2026 = /,
+  /const GROENE_BELEGGINGEN_HEFFINGSKORTING_PCT = /,
+  /function berekenGroeneBeleggingenVoordeel\(huidigeGroeneBeleggingen, aantalPersonen = 2\)/,
+  /const VERLIESVERREKENING_DREMPEL_2026 = /,
+  /function berekenVerliesverrekening\(winst, compensabelVerlies\)/,
+  /function berekenBox3VoordeelVerdelen\(vermogenPartner1, vermogenPartner2\)/,
   /function bouwAandachtspunten\(data\)/,
   /const KOT_MAX_UURPRIJS_2026 = /,
   /const KOT_MAX_UREN_PER_MAAND = /,
@@ -367,5 +378,48 @@ test("geen enkel deel heeft een bedrag ingevuld: alles blijft op 0, geen crash",
   berekenAflossenMeerdereDelen([{ naam: "X", rente: "4", extraBedrag: "" }], "6").totaalExtraBedrag === 0);
 test("een lege delen-lijst crasht niet", berekenAflossenMeerdereDelen([], "6").perDeel.length === 0);
 test("ontbrekende delen (undefined) crasht niet", berekenAflossenMeerdereDelen(undefined, "6").totaalExtraBedrag === 0);
+
+sectie("Mogelijkheden-tab — lijfrente-jaarruimte 2026 (geverifieerd tegen officiële rekenvoorbeelden)");
+test("winst €40.000 geeft €6.248 jaarruimte (30% van (40.000-19.172))", berekenJaarruimteLijfrente(40000) === 6248);
+test("winst €80.000 geeft exact €18.248 jaarruimte — komt overeen met het officiële rekenvoorbeeld", berekenJaarruimteLijfrente(80000) === 18248);
+test("boven het maximale inkomen (€137.800) wordt het inkomen afgetopt, niet de jaarruimte zelf onbegrensd", berekenJaarruimteLijfrente(200000) <= 35589);
+test("onder de AOW-franchise (€19.172) is er geen jaarruimte", berekenJaarruimteLijfrente(15000) === 0);
+test("geen inkomen crasht niet", berekenJaarruimteLijfrente(0) === 0 && berekenJaarruimteLijfrente(null) === 0);
+test("pensioenaangroei bij een werkgever vermindert de jaarruimte (6,27 × factor A)",
+  berekenJaarruimteLijfrente(60000, 500) < berekenJaarruimteLijfrente(60000, 0));
+
+sectie("Mogelijkheden-tab — groene beleggingen vrijstelling box 3 2026");
+const groenLeeg = berekenGroeneBeleggingenVoordeel(0, 2);
+test("voor twee fiscale partners is de vrijstelling €53.430 (2× €26.715)", groenLeeg.vrijstelling === 53430);
+const groenDeels = berekenGroeneBeleggingenVoordeel(20000, 2);
+test("een ingevuld bedrag onder de vrijstelling is volledig 'benut' en laat nog ruimte over", groenDeels.benut === 20000 && groenDeels.nogRuimte === 33430);
+const groenVol = berekenGroeneBeleggingenVoordeel(100000, 2);
+test("een bedrag boven de vrijstelling wordt afgetopt op de vrijstelling zelf, geen ruimte meer over", groenVol.benut === 53430 && groenVol.nogRuimte === 0);
+test("de heffingskorting is 0,1% van het benutte (niet het volledige) bedrag", groenDeels.heffingskorting === Math.round(20000 * 0.001));
+test("geen beleggingen crasht niet", berekenGroeneBeleggingenVoordeel(0, 2).benut === 0);
+
+sectie("Mogelijkheden-tab — verliesverrekening in de BV (2026-regels, geverifieerd tegen officieel rekenvoorbeeld)");
+const refVoorbeeld = berekenVerliesverrekening(8000000, 5000000);
+test("officieel rekenvoorbeeld (winst 8 mln, verlies 5 mln): verrekend komt exact uit op 4,5 miljoen", refVoorbeeld.verrekend === 4500000);
+test("hetzelfde voorbeeld: restwinst na verrekening is exact 3,5 miljoen", refVoorbeeld.restWinstNaVerrekening === 3500000);
+test("hetzelfde voorbeeld: restverlies voor latere jaren is exact 5 ton", refVoorbeeld.restVerlies === 500000);
+
+const mkbScenario = berekenVerliesverrekening(30000, 50000);
+test("realistisch MKB-scenario (winst 30.000, verlies 50.000, ruim onder de €1 mln-drempel): winst volledig weggestreept", mkbScenario.verrekend === 30000 && mkbScenario.restWinstNaVerrekening === 0);
+test("het overschot aan verlies (20.000) blijft over voor latere jaren", mkbScenario.restVerlies === 20000);
+
+test("geen verlies ingevuld: niets te verrekenen, geen crash", berekenVerliesverrekening(30000, 0).verrekend === 0);
+test("geen winst dit jaar (verlies): niets te verrekenen, geen crash", berekenVerliesverrekening(0, 10000).verrekend === 0);
+test("meer verlies dan winst: nooit meer verrekend dan er winst is om tegen af te zetten", berekenVerliesverrekening(10000, 999999).verrekend <= 10000);
+
+sectie("Mogelijkheden-tab — box 3-voordeel van optimaal verdelen tussen fiscale partners");
+const scheefVerdeeld = berekenBox3VoordeelVerdelen({ spaargeld: 150000 }, { spaargeld: 0 });
+test("bij scheef verdeeld vermogen (al het geld bij één persoon) levert optimaal verdelen een positieve besparing op",
+  scheefVerdeeld.besparing > 0);
+const gelijkVerdeeld = berekenBox3VoordeelVerdelen({ spaargeld: 75000 }, { spaargeld: 75000 });
+test("bij al gelijk verdeeld vermogen levert herverdelen geen besparing meer op (al optimaal)", gelijkVerdeeld.besparing === 0);
+test("optimaal verdelen is nooit NADELIGER dan apart aangeven — de besparing is nooit negatief",
+  berekenBox3VoordeelVerdelen({ spaargeld: 200000 }, { spaargeld: 10000 }).besparing >= 0);
+test("geen vermogen bij beide partners crasht niet", berekenBox3VoordeelVerdelen({}, {}).besparing === 0);
 
 samenvatting();
