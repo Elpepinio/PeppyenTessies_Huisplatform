@@ -17,8 +17,9 @@ export default async function handler(req, res) {
     if (!data) {
       return res.status(200).json({
         hypotheek: { delen: [{ id: "deel-1", naam: "Hypotheekdeel 1", type: "annuitair", schuld: "", rente: "", resterendeJaren: "" }], extraDeelIdx: 0, extraBedrag: "", verwachtRendement: "6", wozWaarde: "" },
-        kot: { aantalKinderen: 1, urenPerMaandKind1: "", typeKind1: "dagopvang", urenPerMaandKind2: "", typeKind2: "dagopvang" },
-        bv: { verwachteWinstPerJaar: "", dividendplan: "" },
+        kot: { aantalKinderen: 1, urenPerMaandKind1: "", typeKind1: "dagopvang", bsoVanaf1: "", bsoUren1: "", urenPerMaandKind2: "", typeKind2: "dagopvang", bsoVanaf2: "", bsoUren2: "" },
+        bv: { verwachteWinstPerJaar: "", dividendplan: "", compensabelVerlies: "", dividendTotaal: "", dividend2026: "", basisToetsingsinkomen: "" },
+        studieschuld: { schulden: [], bruteringsfactor: "1.25" },
         vangnet: { heeftAov: null, zzpRegeltZelfPensioen: null, pensioenEigenInlegPerJaar: "", maandelijkseVasteLasten: "", heeftSamenlevingscontract: null, heeftTestament: null, heeftOrvGekoppeldAanHypotheek: null },
       });
     }

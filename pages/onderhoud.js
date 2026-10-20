@@ -260,6 +260,35 @@ function berekenKritiekPad(taken, schema, werkdagenOnly = false) {
   return speling; // { taakId: aantal dagen speling (0 = kritiek pad) }
 }
 
+// Betaalstatus per kostenregel: óf volledig betaald (vinkje, zoals voorheen),
+// óf een lijst deelbetalingen. Een regel die als volledig betaald is gemarkeerd
+// telt altijd voor het hele bedrag; zo blijven oude data en het vinkje werken.
+function berekenBetaling(prijs, volledigBetaald, deelbetalingen) {
+  const totaal = Math.max(0, +prijs || 0);
+  const lijst = Array.isArray(deelbetalingen) ? deelbetalingen : [];
+  const som = Math.round(lijst.reduce((s, d) => s + (+d?.bedrag > 0 ? +d.bedrag : 0), 0) * 100) / 100;
+  const betaald = volledigBetaald ? totaal : som;
+  const open = Math.round(Math.max(0, totaal - betaald) * 100) / 100;
+  const teveel = Math.round(Math.max(0, betaald - totaal) * 100) / 100;
+  const status = (volledigBetaald || (totaal > 0 && open === 0)) ? "betaald" : betaald > 0 ? "deels" : "open";
+  return { totaal, betaald, open, teveel, status };
+}
+// Haalt alle gegevens van één kostenregel (betaalstatus, deelbetalingen,
+// factuur) uit een project, zodat er niets achterblijft na verwijderen.
+// De factuurfoto wordt expliciet op null gezet zodat de API-route 'm ook uit
+// Redis verwijdert.
+function ruimKostRegelOp(project, itemId) {
+  const zonder = (obj) => Object.fromEntries(Object.entries(obj || {}).filter(([id]) => id !== itemId));
+  return {
+    ...project,
+    betaalStatus: zonder(project.betaalStatus),
+    deelbetalingen: zonder(project.deelbetalingen),
+    facturen: zonder(project.facturen),
+    facturenFotos: { ...zonder(project.facturenFotos), [itemId]: null },
+  };
+}
+const eurFmt = (n) => (+n || 0).toLocaleString("nl-NL", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
 async function loadData() {
   try {
     const res = await fetch("/api/onderhoud");
@@ -458,6 +487,8 @@ export default function OnderhoudApp() {
   const [kostenZoek, setKostenZoek] = useState("");
   const [showKostenKoppelen, setShowKostenKoppelen] = useState(false);
   const [extraKostForm, setExtraKostForm] = useState({ naam: "", bedrag: "", link: "" });
+  const [deelOpenId, setDeelOpenId] = useState(null); // kostenregel waarvan het betaalpaneel openstaat
+  const [deelForm, setDeelForm] = useState({ bedrag: "", datum: new Date().toISOString().slice(0, 10) });
   const [showExtraKostForm, setShowExtraKostForm] = useState(false);
 
   const laadWoonideeen = useCallback(async () => {
@@ -728,6 +759,86 @@ export default function OnderhoudApp() {
     }), projectTaken);
   }
 
+  function voegDeelbetalingToe(projectId, itemId) {
+    const bedrag = Math.round((+String(deelForm.bedrag).replace(",", ".")) * 100) / 100;
+    if (!(bedrag > 0)) return;
+    persistProjectData(projecten.map(p => {
+      if (p.id !== projectId) return p;
+      const alle = p.deelbetalingen || {};
+      const nieuw = { id: uid(), bedrag, datum: deelForm.datum || new Date().toISOString().slice(0, 10) };
+      return { ...p, deelbetalingen: { ...alle, [itemId]: [...(alle[itemId] || []), nieuw] } };
+    }), projectTaken);
+    setDeelForm(f => ({ ...f, bedrag: "" }));
+  }
+
+  function verwijderDeelbetaling(projectId, itemId, deelId) {
+    persistProjectData(projecten.map(p => {
+      if (p.id !== projectId) return p;
+      const alle = p.deelbetalingen || {};
+      return { ...p, deelbetalingen: { ...alle, [itemId]: (alle[itemId] || []).filter(d => d.id !== deelId) } };
+    }), projectTaken);
+  }
+
+  // Knop met status naast een kostenregel; opent het paneel met deelbetalingen.
+  function betaalKnop(project, itemId, prijs) {
+    const b = berekenBetaling(prijs, (project.betaalStatus || {})[itemId], (project.deelbetalingen || {})[itemId]);
+    const kleur = b.status === "betaald" ? C.green : b.status === "deels" ? C.orange : C.muted;
+    const tekst = b.status === "betaald" ? "✅ Betaald" : b.status === "deels" ? `€${eurFmt(b.betaald)} betaald` : "Nog te betalen";
+    return (
+      <button onClick={() => setDeelOpenId(deelOpenId === itemId ? null : itemId)}
+        style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${kleur}`, background: b.status === "open" ? "transparent" : `${kleur}18`, color:kleur, cursor:"pointer", whiteSpace:"nowrap" }}>
+        {tekst}
+      </button>
+    );
+  }
+
+  function deelPaneel(project, itemId, prijs) {
+    const volledig = !!(project.betaalStatus || {})[itemId];
+    const lijst = (project.deelbetalingen || {})[itemId] || [];
+    const b = berekenBetaling(prijs, volledig, lijst);
+    if (deelOpenId !== itemId) {
+      return b.status === "deels" ? (
+        <p style={{ width:"100%", margin:"0 0 4px", fontSize:11, color:C.muted }}>Betaald €{eurFmt(b.betaald)} · nog open <strong style={{ color:C.orange }}>€{eurFmt(b.open)}</strong></p>
+      ) : null;
+    }
+    return (
+      <div style={{ width:"100%", background:C.card, borderRadius:10, padding:10, margin:"4px 0 6px" }}>
+        <p style={{ margin:"0 0 6px", fontSize:12, fontWeight:700, color:C.text }}>
+          Betaald €{eurFmt(b.betaald)} van €{eurFmt(b.totaal)} · open <span style={{ color: b.open > 0 ? C.orange : C.green }}>€{eurFmt(b.open)}</span>
+        </p>
+        {b.teveel > 0 && <p style={{ margin:"0 0 6px", fontSize:11, color:C.red }}>Let op: €{eurFmt(b.teveel)} meer betaald dan het bedrag.</p>}
+        {lijst.map(d => (
+          <div key={d.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, padding:"3px 0" }}>
+            <span style={{ color:C.muted }}>{d.datum ? d.datum.split("-").reverse().join("-") : ""}</span>
+            <span style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <strong>€{eurFmt(d.bedrag)}</strong>
+              <button onClick={() => verwijderDeelbetaling(project.id, itemId, d.id)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", padding:0 }} aria-label="Verwijder deelbetaling"><X size={13} /></button>
+            </span>
+          </div>
+        ))}
+        {!volledig && (
+          <div style={{ display:"flex", gap:6, marginTop:6, alignItems:"center" }}>
+            <input style={{ ...S.inp, flex:1, fontSize:13, padding:"7px 8px", minWidth:0 }} type="number" min="0" step="0.01" inputMode="decimal" placeholder="Bedrag €"
+              value={deelForm.bedrag} onChange={e => setDeelForm(f => ({ ...f, bedrag: e.target.value }))} />
+            <input style={{ ...S.inp, flex:1, fontSize:13, padding:"7px 8px", minWidth:0 }} type="date"
+              value={deelForm.datum} onChange={e => setDeelForm(f => ({ ...f, datum: e.target.value }))} />
+            <button style={{ ...S.btn(C.purple), fontSize:12, padding:"7px 10px" }} onClick={() => voegDeelbetalingToe(project.id, itemId)}>+</button>
+          </div>
+        )}
+        <div style={{ display:"flex", gap:6, marginTop:8, flexWrap:"wrap" }}>
+          {!volledig && b.open > 0 && (
+            <button style={{ ...S.btn(C.card, C.purple), border:`1px solid ${C.border}`, fontSize:11, padding:"5px 10px" }}
+              onClick={() => setDeelForm(f => ({ ...f, bedrag: String(b.open) }))}>Vul rest in (€{eurFmt(b.open)})</button>
+          )}
+          <button style={{ ...S.btn(C.card, volledig ? C.muted : C.green), border:`1px solid ${C.border}`, fontSize:11, padding:"5px 10px" }}
+            onClick={() => toggleBetaald(project.id, itemId)}>
+            {volledig ? "Heropen (niet volledig betaald)" : "✅ Alles betaald"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   function voegExtraKostToe(projectId) {
     if (!extraKostForm.naam.trim() || !extraKostForm.bedrag) return;
     persistProjectData(projecten.map(p => p.id === projectId
@@ -739,8 +850,23 @@ export default function OnderhoudApp() {
   }
 
   function verwijderExtraKost(projectId, kostId) {
+    const kost = projecten.find(p => p.id === projectId)?.extraKosten?.find(k => k.id === kostId);
+    if (!window.confirm(`"${kost?.naam || "Kostenpost"}" verwijderen? Eventuele deelbetalingen en factuur gaan ook weg.`)) return;
+    if (deelOpenId === kostId) setDeelOpenId(null);
     persistProjectData(projecten.map(p => p.id === projectId
-      ? { ...p, extraKosten: (p.extraKosten||[]).filter(k => k.id !== kostId) }
+      ? ruimKostRegelOp({ ...p, extraKosten: (p.extraKosten||[]).filter(k => k.id !== kostId) }, kostId)
+      : p
+    ), projectTaken);
+  }
+
+  // Een gekoppeld woonidee uit de kosten halen (het idee zelf blijft in
+  // Woonideeën staan; alleen de koppeling en de betaalgegevens gaan weg).
+  function ontkoppelIdee(projectId, ideeId) {
+    const idee = woonideeenItems.find(w => w.id === ideeId);
+    if (!window.confirm(`"${idee?.titel || "Woonidee"}" uit de verbouwingskosten halen? Het idee blijft in Woonideeën staan; deelbetalingen en factuur bij deze regel gaan weg.`)) return;
+    if (deelOpenId === ideeId) setDeelOpenId(null);
+    persistProjectData(projecten.map(p => p.id === projectId
+      ? ruimKostRegelOp({ ...p, gekoppeldeIdeeIds: (p.gekoppeldeIdeeIds||[]).filter(id => id !== ideeId) }, ideeId)
       : p
     ), projectTaken);
   }
@@ -1537,9 +1663,8 @@ export default function OnderhoudApp() {
                   const pExtra = p.extraKosten||[];
                   const pBetaalStatus = p.betaalStatus || {};
                   const totaalKosten = pGekoppeld.reduce((s,w)=>s+(w.prijs||0),0) + pExtra.reduce((s,k)=>s+(k.bedrag||0),0);
-                  const teBetalen = totaalKosten
-                    - pGekoppeld.filter(w=>pBetaalStatus[w.id]).reduce((s,w)=>s+(w.prijs||0),0)
-                    - pExtra.filter(k=>pBetaalStatus[k.id]).reduce((s,k)=>s+(k.bedrag||0),0);
+                  const teBetalen = pGekoppeld.reduce((s,w)=>s+berekenBetaling(w.prijs, pBetaalStatus[w.id], (p.deelbetalingen||{})[w.id]).open,0)
+                    + pExtra.reduce((s,k)=>s+berekenBetaling(k.bedrag, pBetaalStatus[k.id], (p.deelbetalingen||{})[k.id]).open,0);
                   return (
                     <div key={p.id} style={{ ...S.card, cursor:"pointer" }} onClick={() => setActieefProjectId(p.id)}>
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
@@ -1651,9 +1776,10 @@ export default function OnderhoudApp() {
                 const totaalIdeeen = gekoppeldeItems.reduce((s,w) => s + (w.prijs||0), 0);
                 const totaalExtra = extraKosten.reduce((s,k) => s + (k.bedrag||0), 0);
                 const totaal = totaalIdeeen + totaalExtra;
-                const totaalBetaald = gekoppeldeItems.filter(w => betaalStatus[w.id]).reduce((s,w)=>s+(w.prijs||0),0)
-                  + extraKosten.filter(k => betaalStatus[k.id]).reduce((s,k)=>s+(k.bedrag||0),0);
-                const totaalTeBetalen = totaal - totaalBetaald;
+                const deelAlle = project.deelbetalingen || {};
+                const totaalBetaald = gekoppeldeItems.reduce((s,w)=>s+Math.min(berekenBetaling(w.prijs, betaalStatus[w.id], deelAlle[w.id]).betaald, w.prijs||0),0)
+                  + extraKosten.reduce((s,k)=>s+Math.min(berekenBetaling(k.bedrag, betaalStatus[k.id], deelAlle[k.id]).betaald, k.bedrag||0),0);
+                const totaalTeBetalen = Math.round((totaal - totaalBetaald) * 100) / 100;
                 const gefilterdeIdeeen = woonideeenItems.filter(w =>
                   !kostenZoek.trim() || (w.titel||"").toLowerCase().includes(kostenZoek.toLowerCase())
                 );
@@ -1675,8 +1801,8 @@ export default function OnderhoudApp() {
                     </p>
                     {totaal > 0 && (
                       <div style={{ display:"flex", gap:14, marginBottom:10 }}>
-                        <span style={{ fontSize:12, color:C.green, fontWeight:700 }}>✅ Betaald: €{totaalBetaald.toFixed(0)}</span>
-                        <span style={{ fontSize:12, color:totaalTeBetalen>0?C.orange:C.muted, fontWeight:700 }}>⏳ Nog te betalen: €{totaalTeBetalen.toFixed(0)}</span>
+                        <span style={{ fontSize:12, color:C.green, fontWeight:700 }}>✅ Betaald: €{eurFmt(totaalBetaald)}</span>
+                        <span style={{ fontSize:12, color:totaalTeBetalen>0?C.orange:C.muted, fontWeight:700 }}>⏳ Nog te betalen: €{eurFmt(totaalTeBetalen)}</span>
                       </div>
                     )}
 
@@ -1688,7 +1814,7 @@ export default function OnderhoudApp() {
                               {WOONIDEE_CATEGORIEEN[cat]?.icon} {WOONIDEE_CATEGORIEEN[cat]?.label}
                             </p>
                             {gekoppeldPerCategorie[cat].map(w => (
-                              <div key={w.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:13 }}>
+                              <div key={w.id} style={{ display:"flex", flexWrap:"wrap", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:13 }}>
                                 <span style={{ textDecoration: betaalStatus[w.id] ? "line-through" : "none", color: betaalStatus[w.id] ? C.muted : C.text }}>{w.titel}</span>
                                 <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                                   {w.link && (
@@ -1703,11 +1829,10 @@ export default function OnderhoudApp() {
                                     style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, opacity: facturenFotos[w.id]?1:0.4 }}>
                                     📎
                                   </button>
-                                  <button onClick={() => toggleBetaald(project.id, w.id)}
-                                    style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${betaalStatus[w.id]?C.green:C.border}`, background:betaalStatus[w.id]?`${C.green}18`:"transparent", color:betaalStatus[w.id]?C.green:C.muted, cursor:"pointer", whiteSpace:"nowrap" }}>
-                                    {betaalStatus[w.id] ? "✅ Betaald" : "Nog te betalen"}
-                                  </button>
+                                  {betaalKnop(project, w.id, w.prijs)}
+                                  <button onClick={() => ontkoppelIdee(project.id, w.id)} title="Uit kosten halen" aria-label="Uit kosten halen" style={{ background:"none", border:"none", color:C.muted, cursor:"pointer" }}><X size={13} /></button>
                                 </div>
+                                {deelPaneel(project, w.id, w.prijs)}
                               </div>
                             ))}
                           </div>
@@ -1717,7 +1842,7 @@ export default function OnderhoudApp() {
                     {extraKosten.length > 0 && (
                       <div style={{ marginBottom:10, borderTop: gekoppeldeItems.length ? `1px solid ${C.border}` : "none", paddingTop: gekoppeldeItems.length ? 8 : 0 }}>
                         {extraKosten.map(k => (
-                          <div key={k.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:13 }}>
+                          <div key={k.id} style={{ display:"flex", flexWrap:"wrap", justifyContent:"space-between", alignItems:"center", padding:"4px 0", fontSize:13 }}>
                             <span style={{ textDecoration: betaalStatus[k.id] ? "line-through" : "none", color: betaalStatus[k.id] ? C.muted : C.text }}>{k.naam}</span>
                             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
                               {k.link && (
@@ -1732,12 +1857,10 @@ export default function OnderhoudApp() {
                                 style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, opacity: facturenFotos[k.id]?1:0.4 }}>
                                 📎
                               </button>
-                              <button onClick={() => toggleBetaald(project.id, k.id)}
-                                style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${betaalStatus[k.id]?C.green:C.border}`, background:betaalStatus[k.id]?`${C.green}18`:"transparent", color:betaalStatus[k.id]?C.green:C.muted, cursor:"pointer", whiteSpace:"nowrap" }}>
-                                {betaalStatus[k.id] ? "✅ Betaald" : "Nog te betalen"}
-                              </button>
+                              {betaalKnop(project, k.id, k.bedrag)}
                               <button onClick={() => verwijderExtraKost(project.id, k.id)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer" }}><X size={13} /></button>
                             </div>
+                            {deelPaneel(project, k.id, k.bedrag)}
                           </div>
                         ))}
                       </div>

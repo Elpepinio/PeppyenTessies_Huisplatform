@@ -334,6 +334,80 @@ function berekenKinderopvangtoeslagPerKind(urenPerMaand, type, toetsingsinkomen,
   return { toeslagPerMaand, kostenPerMaand, eigenBijdragePerMaand: kostenPerMaand - toeslagPerMaand, percentage };
 }
 
+// ── Overstap van dagopvang naar BSO (kind gaat naar school) ───────────────
+// Rekent de toeslag over een heel kalenderjaar: dagopvang tot de overstapdatum,
+// daarna buitenschoolse opvang (BSO) met eigen uren. In de maand van de
+// overstap wordt naar rato van dagen verdeeld. Rekent met de tarieven en
+// ijkpunten van 2026, ook voor latere jaren (die zijn nog niet vastgesteld),
+// en met één vast toetsingsinkomen — dus een vergelijking, geen voorspelling.
+function berekenKotJaar({ urenDag, typeDag, bsoUren, bsoVanaf, toetsingsinkomen, isEersteKind = true, jaar }) {
+  const overstap = bsoVanaf ? new Date(`${bsoVanaf}T00:00:00`) : null;
+  const heeftOverstap = !!overstap && !isNaN(overstap.getTime()) && typeDag !== "bso";
+  const dag = berekenKinderopvangtoeslagPerKind(+urenDag || 0, typeDag, toetsingsinkomen, isEersteKind);
+  const bso = heeftOverstap ? berekenKinderopvangtoeslagPerKind(+bsoUren || 0, "bso", toetsingsinkomen, isEersteKind) : dag;
+  let toeslag = 0, kosten = 0, maandenDag = 0, maandenBso = 0;
+  for (let m = 0; m < 12; m++) {
+    let fractieDag = 1;
+    if (heeftOverstap) {
+      const start = new Date(jaar, m, 1), eind = new Date(jaar, m + 1, 1);
+      if (overstap <= start) fractieDag = 0;
+      else if (overstap < eind) fractieDag = (overstap.getDate() - 1) / new Date(jaar, m + 1, 0).getDate();
+    }
+    toeslag += fractieDag * dag.toeslagPerMaand + (1 - fractieDag) * bso.toeslagPerMaand;
+    kosten += fractieDag * dag.kostenPerMaand + (1 - fractieDag) * bso.kostenPerMaand;
+    maandenDag += fractieDag;
+    maandenBso += 1 - fractieDag;
+  }
+  return {
+    toeslag: Math.round(toeslag), kosten: Math.round(kosten), eigenBijdrage: Math.round(kosten - toeslag),
+    maandenDag: Math.round(maandenDag * 10) / 10, maandenBso: Math.round(maandenBso * 10) / 10, heeftOverstap,
+  };
+}
+
+// ── Dividend: dit jaar of volgend jaar uitkeren? ──────────────────────────
+// Dividend uit je eigen BV (box 2) telt volledig mee in het toetsingsinkomen
+// van het jaar waarin je het ontvangt. Toeslagen worden achteraf over het hele
+// jaar herberekend: een hoger inkomen geeft dus een terugvordering, ook als
+// de voorschotten eerder lager waren. Kinderbijslag (SVB) is inkomensonafhankelijk
+// en zit hier dus niet in. Rekent met de tarieven van 2026 voor beide jaren.
+function bouwKotKinderen(kot) {
+  if (!kot) return [];
+  return [
+    { uren: kot.urenPerMaandKind1, type: kot.typeKind1 || "dagopvang", vanaf: kot.bsoVanaf1, bsoUren: kot.bsoUren1, eerste: true, actief: true },
+    { uren: kot.urenPerMaandKind2, type: kot.typeKind2 || "dagopvang", vanaf: kot.bsoVanaf2, bsoUren: kot.bsoUren2, eerste: false, actief: (+kot.aantalKinderen || 1) >= 2 },
+  ].filter(k => k.actief && +k.uren > 0);
+}
+function berekenToeslagenJaar(kinderen, aantalKinderen, toetsingsinkomen, jaar) {
+  const kot = (kinderen || []).reduce((som, k) => som + berekenKotJaar({ urenDag: k.uren, typeDag: k.type, bsoUren: k.bsoUren, bsoVanaf: k.vanaf, toetsingsinkomen, isEersteKind: k.eerste, jaar }).toeslag, 0);
+  const zorg = berekenZorgtoeslagPerMaand(toetsingsinkomen, true) * 12;
+  const kgb = berekenKindgebondenBudgetPerJaar(+aantalKinderen || 0, toetsingsinkomen, true);
+  return { kot, zorg, kgb, overig: zorg + kgb, totaal: kot + zorg + kgb };
+}
+function berekenDividendScenario({ dividend2026, dividend2027, basisToetsingsinkomen, kinderen, aantalKinderen }) {
+  const d26 = Math.max(0, +dividend2026 || 0), d27 = Math.max(0, +dividend2027 || 0);
+  const basis = +basisToetsingsinkomen || 0;
+  const t26 = berekenToeslagenJaar(kinderen, aantalKinderen, basis + d26, 2026);
+  const t27 = berekenToeslagenJaar(kinderen, aantalKinderen, basis + d27, 2027);
+  const box2 = berekenBox2Belasting(d26) + berekenBox2Belasting(d27);
+  const nettoDividend = d26 + d27 - box2;
+  const toeslagen = t26.totaal + t27.totaal;
+  return { dividend2026: d26, dividend2027: d27, box2, nettoDividend, t26, t27, kot: t26.kot + t27.kot, overig: t26.overig + t27.overig, toeslagen, nettoTotaal: Math.round(nettoDividend + toeslagen) };
+}
+// Loopt alle verdelingen af (stappen) en geeft de beste terug. Bij gelijkspel
+// wint het latere jaar (minder uitkeren in 2026), omdat uitstel niets kost.
+function berekenDividendOptimum(params, totaal, stappen = 100) {
+  const T = Math.max(0, +totaal || 0);
+  const punten = [];
+  let beste = null;
+  for (let i = 0; i <= stappen; i++) {
+    const x = Math.round((T * i) / stappen);
+    const sc = berekenDividendScenario({ ...params, dividend2026: x, dividend2027: T - x });
+    punten.push({ x, nettoTotaal: sc.nettoTotaal });
+    if (!beste || sc.nettoTotaal > beste.nettoTotaal) beste = { x, ...sc };
+  }
+  return { punten, beste };
+}
+
 const C = {
   bg: "#F7F4EC", surf: "#FFFFFF", card: "#F3EFE6", border: "#E4DCCB",
   accent: "#2D4A3E", accentLicht: "#4A7A6C", text: "#2D2A26", muted: "#8C8576",
@@ -531,6 +605,7 @@ export default function FinancieelApp() {
         <button style={{ ...S.tab(tab==="overzicht"), flexShrink: 0 }} onClick={() => setTab("overzicht")}>Overzicht</button>
         <button style={{ ...S.tab(tab==="kinderopvang"), flexShrink: 0 }} onClick={() => setTab("kinderopvang")}>Toeslagen</button>
         <button style={{ ...S.tab(tab==="hypotheek"), flexShrink: 0 }} onClick={() => setTab("hypotheek")}>Hypotheek</button>
+        <button style={{ ...S.tab(tab==="studieschuld"), flexShrink: 0 }} onClick={() => setTab("studieschuld")}>Studieschuld</button>
         <button style={{ ...S.tab(tab==="vangnet"), flexShrink: 0 }} onClick={() => setTab("vangnet")}>Vangnet</button>
         <button style={{ ...S.tab(tab==="bv"), flexShrink: 0 }} onClick={() => setTab("bv")}>BV</button>
         <button style={{ ...S.tab(tab==="samenvatting"), flexShrink: 0 }} onClick={() => setTab("samenvatting")}>📋 Samenvatting</button>
@@ -541,6 +616,7 @@ export default function FinancieelApp() {
         {tab === "overzicht" && <OverzichtTab data={data} persist={persist} />}
         {tab === "kinderopvang" && <KinderopvangTab data={data} persist={persist} />}
         {tab === "hypotheek" && <HypotheekTab data={data} persist={persist} />}
+        {tab === "studieschuld" && <StudieschuldTab data={data} persist={persist} />}
         {tab === "vangnet" && <VangnetTab data={data} persist={persist} />}
         {tab === "bv" && <BvTab data={data} persist={persist} />}
         {tab === "samenvatting" && <SamenvattingTab data={data} setTab={setTab} />}
@@ -693,6 +769,28 @@ function bouwAandachtspunten(data) {
       tekst: "Zonder WOZ-waarde ontbreekt het eigenwoningforfait in het beeld — dat beïnvloedt hoe gunstig de hypotheekrenteaftrek in de praktijk uitpakt." });
   }
 
+  // ── Studieschuld ──────────────────────────────────────────────────────
+  const studieschulden = (data.studieschuld?.schulden || []).filter(x => +x.restschuld > 0);
+  studieschulden.forEach(x => {
+    const sim = simuleerStudieschuld(x.restschuld, x.rente, x.maandbedrag, x.resterendeJaren);
+    if (!sim.kanBerekenen) {
+      punten.push({ id: `studie-leeg-${x.id}`, prioriteit: "info", tab: "studieschuld",
+        titel: `Studieschuld ${x.persoon || ""}: maandbedrag of looptijd ontbreekt`.replace("  ", " "),
+        tekst: "Vul het maandbedrag aan DUO en de resterende looptijd in om te zien wanneer de schuld is afgelost." });
+    } else if (!sim.wordtAfgelost) {
+      punten.push({ id: `studie-kwijtschelding-${x.id}`, prioriteit: "kans", tab: "studieschuld",
+        titel: `Studieschuld ${x.persoon || ""}: wordt niet volledig afgelost`.replace("  ", " "),
+        tekst: `Bij het huidige maandbedrag blijft er na de looptijd ongeveer ${euro(sim.kwijtgescholden)} over, dat volgens de regeling wordt kwijtgescholden — extra aflossen levert dan weinig op.` });
+    }
+  });
+  const studieTotaalMaand = studieschulden.reduce((som, x) => som + (+x.maandbedrag || 0), 0);
+  const studieImpact = berekenStudieschuldHypotheekImpact(studieTotaalMaand, data.studieschuld?.bruteringsfactor || STUDIESCHULD_BRUTERINGSFACTOR_STANDAARD, berekenGemiddeldeHypotheekRente(delen));
+  if (studieImpact && studieImpact.verlagingMaxHypotheek > 0) {
+    punten.push({ id: "studie-hypotheek", prioriteit: "info", tab: "studieschuld",
+      titel: "Studieschuld drukt op een nieuwe hypotheek",
+      tekst: `Bij verhuizen of oversluiten verlaagt de studieschuld de maximale hypotheek grof geschat met ${euro(studieImpact.verlagingMaxHypotheek)}.` });
+  }
+
   // ── Inzichten/kansen: wat de cijfers zelf al laten zien ────────────────
   delen.forEach(deel => {
     const extraBedrag = +deel.extraBedrag || 0;
@@ -741,9 +839,12 @@ function bouwFinancieelContext(data) {
   (data.hypotheek?.delen || []).forEach(d => {
     if (+d.schuld > 0) regels.push(`Hypotheekdeel "${d.naam}": ${euro(+d.schuld)} resterende schuld, ${d.rente || "?"}% rente, type: ${d.type === "aflossingsvrij" ? "aflossingsvrij/opbouw" : "annuïtair"}${d.resterendeJaren ? `, resterende looptijd ${d.resterendeJaren} jaar` : ""}`);
   });
+  (data.studieschuld?.schulden || []).forEach(x => {
+    if (+x.restschuld > 0) regels.push(`Studieschuld (${x.persoon || "onbekend"}): ${euro(+x.restschuld)} restschuld, ${x.rente || "?"}% rente, ${x.maandbedrag ? `${euro(+x.maandbedrag)} per maand aan DUO` : "maandbedrag onbekend"}, ${x.resterendeJaren || "?"} jaar resterend`);
+  });
   const kot = data.kot;
-  if (+kot?.urenPerMaandKind1 > 0) regels.push(`Kinderopvang kind 1: ${kot.urenPerMaandKind1} uur/maand, type ${kot.typeKind1}`);
-  if (kot?.aantalKinderen >= 2 && +kot?.urenPerMaandKind2 > 0) regels.push(`Kinderopvang kind 2: ${kot.urenPerMaandKind2} uur/maand, type ${kot.typeKind2}`);
+  if (+kot?.urenPerMaandKind1 > 0) regels.push(`Kinderopvang kind 1: ${kot.urenPerMaandKind1} uur/maand, type ${kot.typeKind1}${kot.bsoVanaf1 && +kot.bsoUren1 > 0 ? `, overstap naar BSO per ${kot.bsoVanaf1} met ${kot.bsoUren1} uur/maand` : ""}`);
+  if (kot?.aantalKinderen >= 2 && +kot?.urenPerMaandKind2 > 0) regels.push(`Kinderopvang kind 2: ${kot.urenPerMaandKind2} uur/maand, type ${kot.typeKind2}${kot.bsoVanaf2 && +kot.bsoUren2 > 0 ? `, overstap naar BSO per ${kot.bsoVanaf2} met ${kot.bsoUren2} uur/maand` : ""}`);
   if (+data.bv?.verwachteWinstPerJaar > 0) regels.push(`Verwachte BV-winst per jaar: ${euro(+data.bv.verwachteWinstPerJaar)}`);
   if (+data.bv?.dividendplan > 0) regels.push(`Voorgenomen dividenduitkering: ${euro(+data.bv.dividendplan)}`);
   if (+data.hypotheek?.wozWaarde > 0) regels.push(`WOZ-waarde woning: ${euro(+data.hypotheek.wozWaarde)}`);
@@ -766,8 +867,9 @@ function LEEG_DATA() {
       extraDeelIdx: 0, extraBedrag: "", verwachtRendement: "6", wozWaarde: "",
       aflossenModus: "een-deel", boetevrijPercentage: 20,
     },
-    kot: { aantalKinderen: 1, urenPerMaandKind1: "", typeKind1: "dagopvang", urenPerMaandKind2: "", typeKind2: "dagopvang" },
-    bv: { verwachteWinstPerJaar: "", dividendplan: "", compensabelVerlies: "" },
+    kot: { aantalKinderen: 1, urenPerMaandKind1: "", typeKind1: "dagopvang", bsoVanaf1: "", bsoUren1: "", urenPerMaandKind2: "", typeKind2: "dagopvang", bsoVanaf2: "", bsoUren2: "" },
+    bv: { verwachteWinstPerJaar: "", dividendplan: "", compensabelVerlies: "", dividendTotaal: "", dividend2026: "", basisToetsingsinkomen: "" },
+    studieschuld: { schulden: [], bruteringsfactor: String(STUDIESCHULD_BRUTERINGSFACTOR_STANDAARD) },
     vermogenVerdeling: {
       partner1: { naam: "Pepijn", spaargeld: "", beleggingen: "", schulden: "" },
       partner2: { naam: "Tessa", spaargeld: "", beleggingen: "", schulden: "" },
@@ -931,6 +1033,24 @@ function KinderopvangTab({ data, persist }) {
   const totaalToeslag = kind1.toeslagPerMaand + (kind2?.toeslagPerMaand || 0);
   const totaalKosten = kind1.kostenPerMaand + (kind2?.kostenPerMaand || 0);
 
+  // Overstap naar BSO: per kind een datum + BSO-uren. Het overzicht per jaar
+  // verschijnt zodra minstens één kind een geldige overstap heeft.
+  const kindOpties = [
+    { uren: kot.urenPerMaandKind1, type: kot.typeKind1, vanaf: kot.bsoVanaf1, bsoUren: kot.bsoUren1, eerste: true, actief: true },
+    { uren: kot.urenPerMaandKind2, type: kot.typeKind2, vanaf: kot.bsoVanaf2, bsoUren: kot.bsoUren2, eerste: false, actief: kot.aantalKinderen >= 2 },
+  ].filter(k => k.actief);
+  const BSO_JAREN = [2026, 2027, 2028];
+  const jaarOverzicht = BSO_JAREN.map(jaar => {
+    const perKind = kindOpties.map(k => berekenKotJaar({ urenDag: k.uren, typeDag: k.type, bsoUren: k.bsoUren, bsoVanaf: k.vanaf, toetsingsinkomen, isEersteKind: k.eerste, jaar }));
+    return {
+      jaar,
+      toeslag: perKind.reduce((som, k) => som + k.toeslag, 0),
+      eigenBijdrage: perKind.reduce((som, k) => som + k.eigenBijdrage, 0),
+      maandenBso: Math.max(...perKind.map(k => k.maandenBso)),
+    };
+  });
+  const toonJaaroverzicht = kindOpties.some(k => k.type !== "bso" && k.vanaf && !isNaN(new Date(`${k.vanaf}T00:00:00`).getTime()) && +k.bsoUren > 0);
+
   // Dit gezin woont samen met een kind, dus geldt fiscaal gezien een
   // toeslagpartner — vandaar steeds het gezamenlijke toetsingsinkomen.
   const zorgtoeslagPerMaand = berekenZorgtoeslagPerMaand(toetsingsinkomen, true);
@@ -963,6 +1083,16 @@ function KinderopvangTab({ data, persist }) {
           <option value="bso">Buitenschoolse opvang (max € 9,98/u)</option>
           <option value="gastouder">Gastouderopvang (max € 8,49/u)</option>
         </select>
+        {kot.typeKind1 !== "bso" && (
+          <div style={{ background: C.card, borderRadius: 10, padding: 12, marginBottom: 10 }}>
+            <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700 }}>🎒 Gaat naar school — overstap naar BSO?<Uitleg>Op de basisschool kan een kind vanaf de dag dat het 4 wordt starten. Daarna is er alleen nog buitenschoolse opvang (BSO) voor de uren buiten schooltijd, met een lager maximumuurtarief en meestal minder uren per maand. Vul hier de datum in vanaf wanneer de dagopvang stopt en hoeveel BSO-uren je daarna per maand verwacht (reken vakantie- en vrije-dagenopvang naar een gemiddelde per maand mee).</Uitleg></p>
+            <Veld label="Overstap per (datum)" type="date" value={kot.bsoVanaf1 || ""} onChange={v => updateKot({ bsoVanaf1: v })} />
+            <Veld label="BSO-uren per maand daarna" value={kot.bsoUren1 || ""} onChange={v => updateKot({ bsoUren1: v })} suffix="uur" />
+            {kot.bsoVanaf1 && !(+kot.bsoUren1 > 0) && (
+              <p style={{ margin: 0, fontSize: 11, color: C.oranje }}>Vul de BSO-uren in — zonder uren rekent de tool met géén opvang na de overstap.</p>
+            )}
+          </div>
+        )}
 
         {kot.aantalKinderen >= 2 && (
           <>
@@ -974,6 +1104,16 @@ function KinderopvangTab({ data, persist }) {
               <option value="bso">Buitenschoolse opvang (max € 9,98/u)</option>
               <option value="gastouder">Gastouderopvang (max € 8,49/u)</option>
             </select>
+            {kot.typeKind2 !== "bso" && (
+              <div style={{ background: C.card, borderRadius: 10, padding: 12, marginBottom: 10 }}>
+                <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700 }}>🎒 Gaat naar school — overstap naar BSO?<Uitleg>Op de basisschool kan een kind vanaf de dag dat het 4 wordt starten. Daarna is er alleen nog buitenschoolse opvang (BSO) voor de uren buiten schooltijd, met een lager maximumuurtarief en meestal minder uren per maand. Vul hier de datum in vanaf wanneer de dagopvang stopt en hoeveel BSO-uren je daarna per maand verwacht (reken vakantie- en vrije-dagenopvang naar een gemiddelde per maand mee).</Uitleg></p>
+                <Veld label="Overstap per (datum)" type="date" value={kot.bsoVanaf2 || ""} onChange={v => updateKot({ bsoVanaf2: v })} />
+                <Veld label="BSO-uren per maand daarna" value={kot.bsoUren2 || ""} onChange={v => updateKot({ bsoUren2: v })} suffix="uur" />
+                {kot.bsoVanaf2 && !(+kot.bsoUren2 > 0) && (
+                  <p style={{ margin: 0, fontSize: 11, color: C.oranje }}>Vul de BSO-uren in — zonder uren rekent de tool met géén opvang na de overstap.</p>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -989,6 +1129,21 @@ function KinderopvangTab({ data, persist }) {
           {kind2 && <Rij label="Vergoedingspercentage kind 2" waarde={`${Math.round(kind2.percentage*100)}%`} wit muted />}
           <Rij label="Geschatte kinderopvangtoeslag" waarde={euro(totaalToeslag)} wit dik />
           <Rij label="Geschatte eigen bijdrage" waarde={euro(totaalKosten - totaalToeslag)} wit dik />
+        </div>
+      )}
+
+      {toonJaaroverzicht && (
+        <div style={S.card}>
+          <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 800, color: C.accent }}>📅 Per jaar, met de overstap naar BSO</h3>
+          <p style={{ margin: "0 0 10px", fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
+            Dagopvang tot de overstapdatum, daarna BSO. Gerekend met de tarieven van 2026 en hetzelfde toetsingsinkomen in elk jaar — de regels voor latere jaren zijn nog niet vastgesteld.
+          </p>
+          {jaarOverzicht.map(j => (
+            <div key={j.jaar} style={{ padding: "8px 0", borderTop: `1px solid ${C.border}` }}>
+              <Rij label={<>{j.jaar}{j.maandenBso > 0 && j.maandenBso < 12 ? ` · ${j.maandenBso} mnd BSO` : j.maandenBso >= 12 ? " · volledig BSO" : " · dagopvang"}</>} waarde={euro(j.toeslag)} dik />
+              <Rij label="Toeslag per jaar · eigen bijdrage" waarde={euro(j.eigenBijdrage)} muted />
+            </div>
+          ))}
         </div>
       )}
 
@@ -1423,6 +1578,279 @@ function HypotheekTab({ data, persist }) {
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// STUDIESCHULD (DUO) — restschuld, rente, aflossing en wat het betekent voor
+// de hypotheek. De rente is NIET aftrekbaar (anders dan hypotheekrente).
+// ══════════════════════════════════════════════════════════════════════════
+// DUO-rente 2026 (persbericht "rentepercentages studiefinanciering voor
+// 2026"): 2,33% voor de 35-jaarsregeling (leenstelsel), 2,29% voor de
+// 15-jaarsregeling (o.a. pre-2015). Voor oud-studenten staat de rente 5 jaar
+// vast vanaf het begin van hun periode — het eigen percentage staat in Mijn DUO.
+const STUDIESCHULD_RENTE_2026 = { "35": 2.33, "15": 2.29 };
+const STUDIESCHULD_LOOPTIJD_JAREN = { "35": 35, "15": 15 };
+// Bruteringsfactor waarmee hypotheekverstrekkers de maandlast aan DUO
+// optellen bij de leenlasten; hangt af van de hypotheekrente (hypotheker.nl,
+// 2026: ≤2% → 1,05 · 4,001–4,5% → 1,25 · 5,001–5,5% → 1,30 · ≥6% → 1,40).
+const STUDIESCHULD_BRUTERINGSFACTOR_STANDAARD = 1.25;
+
+function berekenStudieschuldRentePerJaar(restschuld, rentePct) {
+  const schuld = +restschuld || 0, rente = +rentePct || 0;
+  if (schuld <= 0 || rente <= 0) return 0;
+  return Math.round(schuld * rente / 100);
+}
+
+// Maand-voor-maand simulatie: rente erbij, vaste betaling eraf. Na de
+// resterende looptijd wordt een eventuele restschuld kwijtgescholden (zo is
+// de regeling opgezet) — dat telt hier dus NIET als betaald.
+function simuleerStudieschuld(restschuld, rentePct, maandbedrag, resterendeJaren, extraEenmalig = 0) {
+  const startSchuld = Math.max(0, (+restschuld || 0) - (+extraEenmalig || 0));
+  if (startSchuld <= 0) return { kanBerekenen: true, maanden: 0, jaren: 0, totaleRente: 0, totaalBetaald: 0, kwijtgescholden: 0, wordtAfgelost: true };
+  const bedrag = +maandbedrag || 0;
+  const maxMaanden = Math.round((+resterendeJaren || 0) * 12);
+  if (bedrag <= 0 || maxMaanden <= 0) return { kanBerekenen: false };
+  const r = (+rentePct || 0) / 100 / 12;
+  let saldo = startSchuld, totaleRente = 0, totaalBetaald = 0, maanden = 0;
+  while (saldo > 0.005 && maanden < maxMaanden) {
+    const rente = saldo * r;
+    totaleRente += rente;
+    const betaling = Math.min(saldo + rente, bedrag);
+    saldo = saldo + rente - betaling;
+    totaalBetaald += betaling;
+    maanden++;
+  }
+  const kwijtgescholden = saldo > 0.5 ? Math.round(saldo) : 0;
+  return {
+    kanBerekenen: true, maanden, jaren: Math.round(maanden / 12 * 10) / 10,
+    totaleRente: Math.round(totaleRente), totaalBetaald: Math.round(totaalBetaald),
+    kwijtgescholden, wordtAfgelost: kwijtgescholden === 0,
+  };
+}
+
+// Wat levert een eenmalige extra aflossing écht op? Vergelijkt wat je in
+// TOTAAL kwijt bent (incl. de extra aflossing zelf). Wordt een deel van de
+// schuld toch kwijtgescholden, dan kan extra aflossen netto méér kosten dan
+// opleveren — dat zie je hier terug als negatieve besparing.
+function berekenExtraAflossenEffect(schuld) {
+  const extra = +schuld?.extraBedrag || 0;
+  if (!(extra > 0)) return null;
+  const zonder = simuleerStudieschuld(schuld.restschuld, schuld.rente, schuld.maandbedrag, schuld.resterendeJaren);
+  if (!zonder.kanBerekenen) return null;
+  const met = simuleerStudieschuld(schuld.restschuld, schuld.rente, schuld.maandbedrag, schuld.resterendeJaren, extra);
+  const werkelijkExtra = Math.min(extra, +schuld.restschuld || 0);
+  return {
+    besparing: zonder.totaalBetaald - (met.totaalBetaald + werkelijkExtra),
+    maandenKorter: zonder.maanden - met.maanden,
+    kwijtgescholdenZonder: zonder.kwijtgescholden, kwijtgescholdenMet: met.kwijtgescholden,
+  };
+}
+
+function berekenGemiddeldeHypotheekRente(delen) {
+  const relevant = (delen || []).filter(d => +d.schuld > 0 && +d.rente > 0);
+  const totaal = relevant.reduce((som, d) => som + (+d.schuld), 0);
+  if (totaal <= 0) return 0;
+  return Math.round(relevant.reduce((som, d) => som + (+d.schuld) * (+d.rente), 0) / totaal * 100) / 100;
+}
+
+// Grove inschatting: de gebruteerde maandlast aan DUO verlaagt de maximale
+// hypotheek met de contante waarde van die maandlast over 30 jaar bij de
+// hypotheekrente. Een echte aanvraag rekent met de leennormen van de
+// verstrekker — dit is alleen om de ORDE VAN GROOTTE te laten zien.
+function berekenStudieschuldHypotheekImpact(totaalMaandbedrag, bruteringsfactor, hypotheekRentePct, looptijdJaren = 30) {
+  const maand = +totaalMaandbedrag || 0;
+  const factor = +bruteringsfactor || 0;
+  if (maand <= 0 || factor <= 0) return null;
+  const gebruteerd = maand * factor;
+  const r = (+hypotheekRentePct || 0) / 100 / 12;
+  const n = looptijdJaren * 12;
+  const contanteWaardeFactor = r > 0 ? (1 - Math.pow(1 + r, -n)) / r : n;
+  return { gebruteerdeMaandlast: Math.round(gebruteerd), verlagingMaxHypotheek: Math.round(gebruteerd * contanteWaardeFactor) };
+}
+
+// Welke schuld kost het meest, netto? Studieschuldrente is niet aftrekbaar;
+// hypotheekrente wel (geschat tegen het hoogste aftrektarief, zoals elders
+// in deze tool). Puur een vergelijking van rentepercentages — boeterente,
+// rentevaste periodes en de soepele voorwaarden van DUO (draagkracht,
+// kwijtschelding) zitten er niet in.
+function bepaalAflosvolgorde(studieschulden, hypotheekDelen) {
+  const lijst = [];
+  (studieschulden || []).filter(x => +x.restschuld > 0 && +x.rente > 0).forEach(x =>
+    lijst.push({ naam: x.naam || "Studieschuld", soort: "studieschuld", nettoRente: Math.round(+x.rente * 100) / 100 }));
+  (hypotheekDelen || []).filter(d => +d.schuld > 0 && +d.rente > 0).forEach(d =>
+    lijst.push({ naam: d.naam || "Hypotheekdeel", soort: "hypotheek", nettoRente: Math.round(+d.rente * (1 - MAX_AFTREKTARIEF_2026) * 100) / 100 }));
+  return lijst.sort((a, b) => b.nettoRente - a.nettoRente);
+}
+
+function nieuweStudieschuld(persoon) {
+  return { id: uid(), persoon, regeling: "35", restschuld: "", rente: String(STUDIESCHULD_RENTE_2026["35"]), maandbedrag: "", resterendeJaren: "35", extraBedrag: "" };
+}
+
+function StudieschuldTab({ data, persist }) {
+  const studie = data.studieschuld || { schulden: [], bruteringsfactor: String(STUDIESCHULD_BRUTERINGSFACTOR_STANDAARD) };
+  const schulden = studie.schulden || [];
+  const delen = data.hypotheek?.delen || [];
+  const naam1 = data.vermogenVerdeling?.partner1?.naam || "Pepijn";
+  const naam2 = data.vermogenVerdeling?.partner2?.naam || "Tessa";
+
+  function opslaan(lijst) { persist({ studieschuld: { ...studie, schulden: lijst } }); }
+  function updateSchuld(id, patch) { opslaan(schulden.map(x => x.id === id ? { ...x, ...patch } : x)); }
+  function verwijder(id) {
+    if (!window.confirm("Deze studieschuld verwijderen?")) return;
+    opslaan(schulden.filter(x => x.id !== id));
+  }
+
+  const actief = schulden.filter(x => +x.restschuld > 0);
+  const totaalSchuld = actief.reduce((som, x) => som + (+x.restschuld), 0);
+  const totaalMaand = actief.reduce((som, x) => som + (+x.maandbedrag || 0), 0);
+  const totaalRente = actief.reduce((som, x) => som + berekenStudieschuldRentePerJaar(x.restschuld, x.rente), 0);
+  const gemHypRente = berekenGemiddeldeHypotheekRente(delen);
+  const impact = berekenStudieschuldHypotheekImpact(totaalMaand, studie.bruteringsfactor || STUDIESCHULD_BRUTERINGSFACTOR_STANDAARD, gemHypRente);
+  const volgorde = bepaalAflosvolgorde(schulden, delen);
+
+  return (
+    <>
+      <div style={S.card}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 800, color: C.accent }}>🎓 Studieschuld (DUO)</h3>
+        <p style={{ margin: 0, fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
+          Vul per persoon in wat er nog openstaat — je vindt de bedragen en je rente in Mijn DUO. De rente op een studieschuld is niet aftrekbaar van de belasting (anders dan hypotheekrente).
+        </p>
+      </div>
+
+      {actief.length > 0 && (
+        <div style={{ ...S.card, background: C.accent, color: "#FFF" }}>
+          <Rij label="Totale restschuld" waarde={euro(totaalSchuld)} dik wit />
+          <Rij label="Rente per jaar (bij benadering)" waarde={euro(totaalRente)} wit />
+          {totaalMaand > 0 && <Rij label="Aflossing aan DUO per maand" waarde={euro(totaalMaand)} wit />}
+        </div>
+      )}
+
+      {schulden.map(x => {
+        const sim = simuleerStudieschuld(x.restschuld, x.rente, x.maandbedrag, x.resterendeJaren);
+        const effect = berekenExtraAflossenEffect(x);
+        const rentePerJaar = berekenStudieschuldRentePerJaar(x.restschuld, x.rente);
+        return (
+          <div key={x.id} style={S.card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[naam1, naam2].map(n => (
+                  <button key={n} onClick={() => updateSchuld(x.id, { persoon: n })}
+                    style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${C.border}`, background: x.persoon === n ? C.accent : C.card, color: x.persoon === n ? "#FFF" : C.text, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => verwijder(x.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.rood, fontSize: 12, fontWeight: 700 }}>Verwijder</button>
+            </div>
+
+            <label style={S.label}>Regeling<Uitleg>De meeste studenten sinds 2015 (leenstelsel) hebben 35 jaar om terug te betalen. Wie voor 2015 begon heeft meestal 15 jaar. Welke bij jou hoort staat in Mijn DUO. Wat er na afloop nog openstaat, wordt volgens de regeling kwijtgescholden.</Uitleg></label>
+            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              {[["35", "35 jaar (leenstelsel)"], ["15", "15 jaar (o.a. pre-2015)"]].map(([waarde, label]) => (
+                <button key={waarde} onClick={() => updateSchuld(x.id, { regeling: waarde, resterendeJaren: String(STUDIESCHULD_LOOPTIJD_JAREN[waarde]), rente: String(STUDIESCHULD_RENTE_2026[waarde]) })}
+                  style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: `1px solid ${C.border}`, background: x.regeling === waarde ? C.accent : C.card, color: x.regeling === waarde ? "#FFF" : C.text, fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1 }}><Veld label="Restschuld" value={x.restschuld} onChange={v => updateSchuld(x.id, { restschuld: v })} suffix="€" /></div>
+              <div style={{ flex: 1 }}><Veld label={<>Rente<Uitleg>Het DUO-tarief voor 2026 is {STUDIESCHULD_RENTE_2026["35"]}% (35-jaarsregeling) of {STUDIESCHULD_RENTE_2026["15"]}% (15-jaarsregeling). Voor wie al terugbetaalt staat de rente 5 jaar vast, dus jouw eigen percentage kan hiervan afwijken — controleer het in Mijn DUO en pas het hier aan.</Uitleg></>} value={x.rente} onChange={v => updateSchuld(x.id, { rente: v })} suffix="%" /></div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1 }}><Veld label="Aflossing per maand" value={x.maandbedrag} onChange={v => updateSchuld(x.id, { maandbedrag: v })} suffix="€" /></div>
+              <div style={{ flex: 1 }}><Veld label="Resterende looptijd" value={x.resterendeJaren} onChange={v => updateSchuld(x.id, { resterendeJaren: v })} suffix="jaar" /></div>
+            </div>
+
+            {+x.restschuld > 0 && (
+              <div style={{ background: C.card, borderRadius: 10, padding: 12 }}>
+                <Rij label="Rente per jaar" waarde={euro(rentePerJaar)} />
+                {sim.kanBerekenen ? (
+                  <>
+                    <Rij label="Afgelost over" waarde={sim.wordtAfgelost ? `${sim.jaren} jaar` : `niet binnen ${x.resterendeJaren} jaar`} />
+                    <Rij label="Totale rente die je nog betaalt" waarde={euro(sim.totaleRente)} />
+                    {!sim.wordtAfgelost && (
+                      <p style={{ margin: "6px 0 0", fontSize: 11.5, lineHeight: 1.5, color: C.oranje }}>
+                        Bij dit maandbedrag blijft na {x.resterendeJaren} jaar nog {euro(sim.kwijtgescholden)} over, dat volgens de regeling wordt kwijtgescholden. Extra aflossen levert dan minder op dan je zou denken.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p style={{ margin: "4px 0 0", fontSize: 11.5, color: C.muted }}>Vul het maandbedrag en de resterende looptijd in om te zien wanneer de schuld is afgelost.</p>
+                )}
+              </div>
+            )}
+
+            {+x.restschuld > 0 && sim.kanBerekenen && (
+              <div style={{ marginTop: 10 }}>
+                <Veld label="Wat als je eenmalig extra aflost? (optioneel)" value={x.extraBedrag} onChange={v => updateSchuld(x.id, { extraBedrag: v })} suffix="€" />
+                {effect && (
+                  <div style={{ background: C.card, borderRadius: 10, padding: 12 }}>
+                    <Rij label="Netto effect over de hele looptijd" waarde={effect.besparing >= 0 ? `+ ${euro(effect.besparing)}` : `− ${euro(-effect.besparing)}`} dik groen={effect.besparing > 0} />
+                    {effect.maandenKorter > 0 && <Rij label="Eerder klaar met" waarde={`${effect.maandenKorter} maanden`} />}
+                    <p style={{ margin: "6px 0 0", fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>
+                      {effect.besparing < 0
+                        ? "Negatief: je betaalt in totaal méér dan je bespaart, omdat een deel van de schuld anders toch zou worden kwijtgescholden."
+                        : "Gerekend inclusief de extra aflossing zelf. Aflossen levert een gegarandeerd rendement op ter hoogte van de rente, belastingvrij maar ook zonder aftrek."}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <button onClick={() => persist({ studieschuld: { ...studie, schulden: [...schulden, nieuweStudieschuld(schulden.length % 2 === 0 ? naam1 : naam2)] } })}
+        style={{ width: "100%", background: C.card, border: `1px dashed ${C.accentLicht}`, borderRadius: 12, padding: "13px 0", fontWeight: 700, fontSize: 13, color: C.accent, cursor: "pointer", marginBottom: 12 }}>
+        + Studieschuld toevoegen
+      </button>
+
+      {impact && (
+        <div style={S.card}>
+          <h3 style={{ margin: "0 0 4px", fontSize: 13.5, fontWeight: 800, color: C.accent }}>🏠 Effect op een (nieuwe) hypotheek</h3>
+          <p style={{ margin: "0 0 8px", fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
+            Relevant bij verhuizen of oversluiten: hypotheekverstrekkers tellen de maandlast aan DUO mee, vermenigvuldigd met een factor die afhangt van de hypotheekrente.<Uitleg>Per 2026 (bron: hypotheker.nl): 1,05 bij een hypotheekrente tot 2%, 1,25 bij 4,001–4,5%, 1,30 bij 5,001–5,5% en 1,40 vanaf 6%. Voor de tussenliggende rentes zijn geen waarden gevonden — vraag je adviseur welke factor voor jouw rente geldt en pas hem hieronder aan.</Uitleg>
+          </p>
+          <Veld label="Bruteringsfactor" value={studie.bruteringsfactor ?? String(STUDIESCHULD_BRUTERINGSFACTOR_STANDAARD)} onChange={v => persist({ studieschuld: { ...studie, bruteringsfactor: v } })} />
+          <Rij label="Meegerekende maandlast" waarde={euro(impact.gebruteerdeMaandlast)} />
+          {gemHypRente > 0 ? (
+            <Rij label={`Lagere maximale hypotheek (grof, bij ${gemHypRente}% over 30 jaar)`} waarde={`− ${euro(impact.verlagingMaxHypotheek)}`} dik />
+          ) : (
+            <p style={{ margin: "6px 0 0", fontSize: 11, color: C.muted }}>Vul op het Hypotheek-tabblad een rente in om ook de orde van grootte van het effect op de maximale hypotheek te zien.</p>
+          )}
+          <p style={{ margin: "8px 0 0", fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>
+            Indicatief. Een echte aanvraag rekent met de leennormen van de verstrekker. Met een lager maandbedrag aan DUO (laat het opnieuw berekenen na extra aflossen) telt er minder mee.
+          </p>
+        </div>
+      )}
+
+      {volgorde.length >= 2 && volgorde.some(v => v.soort === "studieschuld") && (
+        <div style={S.card}>
+          <h3 style={{ margin: "0 0 4px", fontSize: 13.5, fontWeight: 800, color: C.accent }}>⚖️ Welke schuld kost het meest?</h3>
+          <p style={{ margin: "0 0 8px", fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
+            Rente per jaar, na belastingvoordeel (hypotheekrente wordt geschat tegen {Math.round(MAX_AFTREKTARIEF_2026 * 10000) / 100}% aftrek; studieschuldrente is niet aftrekbaar).
+          </p>
+          {volgorde.map((v, i) => (
+            <Rij key={i} label={`${v.naam} (${v.soort})`} waarde={`${v.nettoRente.toLocaleString("nl-NL")}%`} dik={i === 0} />
+          ))}
+          <p style={{ margin: "8px 0 0", fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>
+            Alleen een vergelijking van percentages. Boeterente, rentevaste periodes en de soepelere voorwaarden van DUO (inkomensafhankelijk, kwijtschelding) wegen ook mee in een echte afweging.
+          </p>
+        </div>
+      )}
+
+      <div style={{ ...S.card, background: "#FBF0E4", border: `1px solid #E8C9A044` }}>
+        <h3 style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 800, color: C.text }}>Goed om te weten</h3>
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: C.text, lineHeight: 1.7 }}>
+          <li>Een studieschuld telt in principe mee als schuld in box 3, maar alleen het deel boven een drempel. Wil je dat meenemen, vul de studieschuld dan ook in onder "schulden" op het Overzicht-tabblad.</li>
+          <li>Extra aflossen kan altijd, zonder boete. Vraag DUO daarna het maandbedrag opnieuw te berekenen als je een lagere maandlast wilt (handig voor een hypotheekaanvraag).</li>
+          <li>Het exacte maandbedrag hangt af van je inkomen (draagkracht) en kan jaarlijks veranderen — gebruik hier het bedrag dat DUO nu van je afschrijft.</li>
+        </ul>
+      </div>
+      <Disclaimer />
+    </>
+  );
+}
+
 function BvTab({ data, persist }) {
   const bv = data.bv || { verwachteWinstPerJaar: "", dividendplan: "", compensabelVerlies: "" };
   function updateBv(patch) { persist({ bv: { ...bv, ...patch } }); }
@@ -1435,6 +1863,23 @@ function BvTab({ data, persist }) {
   const winstNaVpb = winst - vpb;
   const box2 = berekenBox2Belasting(dividend);
   const beleggingenBv = +data.beleggingenBv || 0;
+
+  // Dividend-timing: totaal te verdelen over 2026 en 2027, met schuifje.
+  const { belastbareWinst: winstZzpBelast } = berekenBelastbareWinstZzp(+data.winstZzp || 0, { voldoetUrencriterium: data.voldoetUrencriterium, isStarter: data.isStarter });
+  const tiAfgeleid = (+data.inkomenLoondienst || 0) + winstZzpBelast;
+  const basisTI = bv.basisToetsingsinkomen !== "" && bv.basisToetsingsinkomen != null ? (+bv.basisToetsingsinkomen || 0) : tiAfgeleid;
+  const totaalDividend = +(bv.dividendTotaal || bv.dividendplan) || 0;
+  const [schuif, setSchuif] = useState(bv.dividend2026 !== "" && bv.dividend2026 != null ? +bv.dividend2026 : null);
+  const x26 = Math.min(totaalDividend, schuif == null ? totaalDividend : schuif);
+  const kotKinderen = bouwKotKinderen(data.kot);
+  const aantalKinderen = +data.kot?.aantalKinderen || 1;
+  const timingParams = { basisToetsingsinkomen: basisTI, kinderen: kotKinderen, aantalKinderen };
+  const gekozen = berekenDividendScenario({ ...timingParams, dividend2026: x26, dividend2027: totaalDividend - x26 });
+  const alles26 = berekenDividendScenario({ ...timingParams, dividend2026: totaalDividend, dividend2027: 0 });
+  const alles27 = berekenDividendScenario({ ...timingParams, dividend2026: 0, dividend2027: totaalDividend });
+  const optimum = totaalDividend > 0 ? berekenDividendOptimum(timingParams, totaalDividend, 100) : null;
+  const stapGrootte = totaalDividend > 100000 ? 1000 : 500;
+  const heeftOverstapIngevuld = kotKinderen.some(k => k.type !== "bso" && k.vanaf && +k.bsoUren > 0);
 
   return (
     <>
@@ -1475,6 +1920,103 @@ function BvTab({ data, persist }) {
             <Rij label={<>Box 2-belasting<Uitleg>Zodra je geld van je BV naar jezelf privé overmaakt als dividend (winstuitkering), betaal je daar persoonlijk belasting over — dat heet "box 2". Winst die gewoon in de BV blijft zitten, raakt box 2 niet.</Uitleg></>} waarde={euro(box2)} />
             <Rij label="Netto in privé" waarde={euro(dividend - box2)} dik />
           </div>
+        )}
+      </div>
+
+
+      <div style={S.card}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 800, color: C.accent }}>⚖️ Dividend: 2026 of 2027?</h3>
+        <p style={{ margin: "0 0 12px", fontSize: 11.5, color: C.muted }}>
+          Dividend telt volledig mee in het toetsingsinkomen van het jaar waarin je het uitkeert en kan toeslagen kosten. Schuif om te zien wat een andere verdeling over 2026 en 2027 oplevert. Kinderbijslag blijft buiten beeld: die hangt niet van inkomen af.
+        </p>
+        <Veld label="Totaal dividend dat je wilt uitkeren (2026 + 2027)" value={bv.dividendTotaal !== "" && bv.dividendTotaal != null ? bv.dividendTotaal : bv.dividendplan} onChange={v => updateBv({ dividendTotaal: v })} suffix="€" />
+        <Veld label={<>Toetsingsinkomen zonder dividend (per jaar)<Uitleg>Standaard het geschatte toetsingsinkomen uit het Overzicht ({euro(tiAfgeleid)}). Staat er in je voorlopige aanslag of op toeslagen.nl een ander bedrag, vul dat hier in. Het wordt voor 2026 en 2027 gelijk gehouden.</Uitleg></>} value={bv.basisToetsingsinkomen} onChange={v => updateBv({ basisToetsingsinkomen: v })} suffix="€" placeholder={String(Math.round(tiAfgeleid))} />
+
+        {totaalDividend > 0 ? (
+          <>
+            <div style={{ margin: "8px 0 4px", display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 700 }}>
+              <span>2026: {euro(x26)}</span>
+              <span>2027: {euro(totaalDividend - x26)}</span>
+            </div>
+            <input type="range" min={0} max={totaalDividend} step={stapGrootte} value={x26}
+              onChange={e => setSchuif(+e.target.value)}
+              onMouseUp={() => updateBv({ dividend2026: String(x26) })}
+              onTouchEnd={() => updateBv({ dividend2026: String(x26) })}
+              onKeyUp={() => updateBv({ dividend2026: String(x26) })}
+              aria-label="Dividend in 2026"
+              style={{ width: "100%", accentColor: C.accent }} />
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: C.muted, marginBottom: 10 }}>
+              <span>alles in 2027</span><span>alles in 2026</span>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr", gap: 4, fontSize: 11.5, background: C.card, borderRadius: 10, padding: 10 }}>
+              <span />
+              <strong style={{ textAlign: "right" }}>Alles 2026</strong>
+              <strong style={{ textAlign: "right", color: C.accent }}>Jouw keuze</strong>
+              <strong style={{ textAlign: "right" }}>Alles 2027</strong>
+              {[
+                ["Box 2-belasting", s => `− ${euro(s.box2)}`],
+                ["Opvangtoeslag", s => euro(s.kot)],
+                ["Overige toeslagen", s => euro(s.overig)],
+                ["Netto totaal", s => euro(s.nettoTotaal), true],
+              ].map(([label, f, dik]) => (
+                <React.Fragment key={label}>
+                  <span style={{ fontWeight: dik ? 800 : 400 }}>{label}</span>
+                  <span style={{ textAlign: "right", fontWeight: dik ? 800 : 400 }}>{f(alles26)}</span>
+                  <span style={{ textAlign: "right", fontWeight: dik ? 800 : 400, color: C.accent }}>{f(gekozen)}</span>
+                  <span style={{ textAlign: "right", fontWeight: dik ? 800 : 400 }}>{f(alles27)}</span>
+                </React.Fragment>
+              ))}
+            </div>
+            <p style={{ margin: "6px 0 0", fontSize: 10.5, color: C.muted }}>Netto totaal = dividend na box 2 + alle toeslagen over beide jaren.</p>
+
+            {optimum && (
+              <div style={{ background: "#E8F1EC", borderRadius: 10, padding: 12, marginTop: 10, fontSize: 12.5, lineHeight: 1.5 }}>
+                <strong>Beste verdeling: {euro(optimum.beste.x)} in 2026 en {euro(totaalDividend - optimum.beste.x)} in 2027.</strong>
+                {" "}Dat levert {euro(optimum.beste.nettoTotaal - alles26.nettoTotaal)} meer op dan alles in 2026
+                {optimum.beste.nettoTotaal - alles27.nettoTotaal > 0 ? ` en ${euro(optimum.beste.nettoTotaal - alles27.nettoTotaal)} meer dan alles in 2027` : ""}.
+                <div style={{ marginTop: 6 }}>
+                  <button onClick={() => { setSchuif(optimum.beste.x); updateBv({ dividend2026: String(optimum.beste.x) }); }}
+                    style={{ border: "none", background: C.accent, color: "#FFF", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                    Zet schuifje op de beste verdeling
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {optimum && (() => {
+              const W = 300, H = 90, P = 6;
+              const ys = optimum.punten.map(pt => pt.nettoTotaal);
+              const min = Math.min(...ys), max = Math.max(...ys), span = Math.max(1, max - min);
+              const px = x => P + ((totaalDividend - x) / totaalDividend) * (W - 2 * P);
+              const py = y => H - P - ((y - min) / span) * (H - 2 * P);
+              const lijn = optimum.punten.map(pt => `${px(pt.x).toFixed(1)},${py(pt.nettoTotaal).toFixed(1)}`).join(" ");
+              return (
+                <div style={{ marginTop: 10 }}>
+                  <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Netto totaal per verdeling van het dividend">
+                    <polyline points={lijn} fill="none" stroke={C.accentLicht} strokeWidth="2" />
+                    <circle cx={px(optimum.beste.x)} cy={py(optimum.beste.nettoTotaal)} r="4" fill={C.groen} />
+                    <circle cx={px(x26)} cy={py(gekozen.nettoTotaal)} r="4" fill={C.oranje} />
+                  </svg>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted }}>
+                    <span>alles in 2027</span><span>🟢 beste · 🟠 jouw keuze</span><span>alles in 2026</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {kotKinderen.length === 0 && (
+              <p style={{ fontSize: 11.5, color: C.oranje, margin: "10px 0 0" }}>Op het tabblad Toeslagen is nog geen kinderopvang ingevuld; nu telt alleen box 2 (en eventuele zorgtoeslag/kindgebonden budget).</p>
+            )}
+            {kotKinderen.length > 0 && !heeftOverstapIngevuld && (
+              <p style={{ fontSize: 11.5, color: C.oranje, margin: "10px 0 0" }}>Tip: vul op het tabblad Toeslagen de overstap naar BSO in (bijv. per 3 april 2027 met het aantal BSO-uren). Zonder overstap rekent 2027 nog met dagopvang en lijkt uitstel minder voordelig.</p>
+            )}
+            <p style={{ fontSize: 10.5, color: C.muted, margin: "10px 0 0" }}>
+              Schatting met de tarieven van 2026 voor beide jaren, een gelijk toetsingsinkomen en lineaire interpolatie van de toeslagtabellen. Toeslagen worden achteraf herberekend: ook als je voorschot nu laag staat, kan een hogere uitkering later tot terugbetaling leiden. Pas bij een uitkering je voorschot tijdig aan. Boven {euro(BOX2_GRENS_2026)} per jaar geldt in box 2 een hoger tarief (31%), dus verdelen over twee jaar kan ook daar voordeel geven. Check de uitkomst met een proefberekening op toeslagen.nl en overleg met je boekhouder.
+            </p>
+          </>
+        ) : (
+          <p style={{ fontSize: 12, color: C.muted, margin: "8px 0 0" }}>Vul het totale dividend in om te verdelen over 2026 en 2027.</p>
         )}
       </div>
 
@@ -1651,7 +2193,7 @@ const PRIORITEIT_INFO = {
   kans: { label: "Kans/inzicht", kleur: C.groen, achtergrond: "#EAF3EE", icoon: "💡" },
   info: { label: "Compleetheid", kleur: C.oranje, achtergrond: "#FBF0E4", icoon: "ℹ️" },
 };
-const TAB_LABELS = { overzicht: "Overzicht", kinderopvang: "Toeslagen", hypotheek: "Hypotheek", vangnet: "Vangnet", bv: "BV" };
+const TAB_LABELS = { overzicht: "Overzicht", kinderopvang: "Toeslagen", hypotheek: "Hypotheek", studieschuld: "Studieschuld", vangnet: "Vangnet", bv: "BV" };
 
 function SamenvattingTab({ data, setTab }) {
   const punten = bouwAandachtspunten(data);
@@ -1758,12 +2300,13 @@ function MogelijkhedenTab({ data, persist }) {
         <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${C.border}` }}>
           <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>
             Groene beleggingen
-            <Uitleg>Bovenop het algemene heffingsvrij vermogen in box 3 geldt een aparte vrijstelling voor erkende groene beleggingen/spaartegoeden: €26.715 per persoon in 2026 (€53.430 samen als fiscale partners), plus een kleine heffingskorting (0,1%) over het vrijgestelde bedrag. Fiscaal gezien dus een manier om een deel van je vermogen belastingvrij(er) te laten renderen, als groen beleggen sowieso bij je past.</Uitleg>
+            <Uitleg>Niet hetzelfde als "duurzaam beleggen" in het algemeen — het belastingvoordeel geldt alleen voor door de overheid (RVO) erkende groenfondsen, zoals ASN Groenprojectenfonds, Triodos Groenfonds of Rabo GroenSparen. Een fonds dat zichzelf "groen" noemt zonder die officiële erkenning telt niet mee. Bovenop het algemene heffingsvrij vermogen in box 3 geldt voor erkende groene beleggingen/spaartegoeden een aparte vrijstelling: €26.715 per persoon in 2026 (€53.430 samen als fiscale partners), plus een kleine heffingskorting (0,1%) over het vrijgestelde bedrag. Let op: deze regeling wordt afgebouwd — de vrijstelling daalt fors in 2027, en in 2028 verdwijnen zowel de vrijstelling als de heffingskorting helemaal. 2026 en 2027 zijn dus de laatste jaren om hier nog (bijna) het volledige voordeel uit te halen.</Uitleg>
           </p>
           <Rij label="Beschikbare vrijstelling (samen, nog ongebruikt)" waarde={euro(groen.vrijstelling)} dik />
           {beleggingenPrive > 0 && (
             <p style={{ fontSize: 11, color: C.muted, margin: "4px 0 0" }}>Van je ingevulde €{Math.round(beleggingenPrive).toLocaleString("nl-NL")} aan privébeleggingen zou een deel hier eventueel voor in aanmerking kunnen komen, afhankelijk van in welke producten je belegt.</p>
           )}
+          <p style={{ fontSize: 10.5, color: C.oranje, margin: "6px 0 0" }}>⚠️ Wordt afgebouwd: fors lagere vrijstelling in 2027, volledig verdwenen in 2028.</p>
         </div>
 
         <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${C.border}` }}>

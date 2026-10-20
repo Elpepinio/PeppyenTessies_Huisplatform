@@ -21,7 +21,7 @@ const BRON_LABELS = {
   "maaltijden-link-import": { emoji: "🍽️", label: "Maaltijden — Recept via link" },
   "maaltijden-overig": { emoji: "🍽️", label: "Maaltijden — Overig" },
   "places-foto-herkenning": { emoji: "🗺️", label: "Places — Foto herkennen" },
-  "kijklijst-suggesties": { emoji: "🎬", label: "Kijklijst — Suggesties" },
+  "kijklijst-suggesties": { emoji: "🎬", label: "Medialijst — Suggesties" },
   "gezondheid-patronen": { emoji: "🩺", label: "Gezondheid — Patroonanalyse" },
   "gezondheid-vragenlijst": { emoji: "❓", label: "Gezondheid — Vragenlijst dokter" },
   "bonnetjes-scan": { emoji: "🧾", label: "Bonnetjes — Bon scannen" },
@@ -127,7 +127,7 @@ export default function AiKostenApp() {
         {log.length === 0 ? (
           <div style={{ textAlign: "center", padding: "40px 20px" }}>
             <p style={{ fontSize: 17, fontWeight: 700, color: C.accentDark, margin: "0 0 6px" }}>Nog geen AI-gebruik gelogd</p>
-            <p style={{ fontSize: 14, color: C.muted, margin: 0 }}>Zodra iemand een AI-functie gebruikt (Planten, Maaltijden, Places, Kijklijst) verschijnt dat hier.</p>
+            <p style={{ fontSize: 14, color: C.muted, margin: 0 }}>Zodra iemand een AI-functie gebruikt (Planten, Maaltijden, Places, Medialijst) verschijnt dat hier.</p>
           </div>
         ) : (
           <>

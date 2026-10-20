@@ -129,8 +129,8 @@ const TOOLS = [
   },
   {
     href: "/kijklijst",
-    label: "Kijklijst",
-    description: "Films en series die we willen kijken, met IMDb-score",
+    label: "Medialijst",
+    description: "Films, series, podcasts en boeken om te kijken, luisteren of lezen",
     emoji: "🎬",
     color: "#7A2E3B",
   },

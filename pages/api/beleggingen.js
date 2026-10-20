@@ -14,6 +14,11 @@ const LEGE_STRUCTUUR = {
   posities: [],
   watchlist: [],
   cryptoPosities: [],
+  onderzochtAfgewezen: [],
+  preIpoVolgen: [],
+  bronbelasting: [],
+  bronbelastingNietOnderzocht: "",
+  openstaandeBeslissingen: [],
   laatstBijgewerkt: null,
 };
 
