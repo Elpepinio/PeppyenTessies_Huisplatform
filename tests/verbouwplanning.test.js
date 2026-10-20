@@ -3,7 +3,7 @@ const { laadFuncties } = require("./extractie");
 const { sectie, test } = require("./testhulp");
 
 const BESTAND = path.join(__dirname, "..", "pages", "onderhoud.js");
-const { dagPlus, dagVerschil, fmtDatum, berekenSchema, berekenKritiekPad } = laadFuncties(BESTAND, [
+const { dagPlus, dagVerschil, fmtDatum, berekenSchema, berekenKritiekPad, berekenBetaling, ruimKostRegelOp } = laadFuncties(BESTAND, [
   /function dagPlus\(/,
   /function dagVerschil\(/,
   /function fmtDatum\(/,
@@ -13,6 +13,8 @@ const { dagPlus, dagVerschil, fmtDatum, berekenSchema, berekenKritiekPad } = laa
   /function werkdagMin\(/,
   /function berekenSchema\(/,
   /function berekenKritiekPad\(/,
+  /function berekenBetaling\(/,
+  /function ruimKostRegelOp\(/,
 ]);
 
 const START = "2026-08-01";
@@ -155,4 +157,29 @@ sectie("Werkdagen — cascade werkt ook correct door met werkdagen-modus aan");
   ];
   const werkdagen = berekenSchema(taken, "2026-07-31", true, true); // vrijdag start
   test("b start exact waar a (in werkdagen) eindigt", fmtDatum(werkdagen.b.start) === fmtDatum(werkdagen.a.eind));
+}
+
+sectie("Verbouwingskosten — deelbetalingen");
+{
+  const a = berekenBetaling(1000, false, [{ bedrag: 300 }, { bedrag: 200.5 }]);
+  test("twee deelbetalingen tellen op, rest staat open", a.betaald === 500.5 && a.open === 499.5 && a.status === "deels");
+  test("geen betalingen = open", berekenBetaling(1000, false, []).status === "open" && berekenBetaling(1000, false, undefined).open === 1000);
+  test("deelbetalingen die samen het bedrag halen = betaald", berekenBetaling(1000, false, [{ bedrag: 600 }, { bedrag: 400 }]).status === "betaald");
+  const v = berekenBetaling(1000, true, [{ bedrag: 100 }]);
+  test("volledig-betaald vinkje telt voor het hele bedrag (oude data blijft werken)", v.betaald === 1000 && v.open === 0 && v.status === "betaald");
+  test("te veel betaald wordt gemeld, open blijft 0", berekenBetaling(100, false, [{ bedrag: 130 }]).teveel === 30 && berekenBetaling(100, false, [{ bedrag: 130 }]).open === 0);
+  test("negatieve of rommelige bedragen worden genegeerd", berekenBetaling(100, false, [{ bedrag: -50 }, { bedrag: "abc" }, null]).betaald === 0);
+  test("komma-afrondingsfout (0,1+0,2) blijft netjes", berekenBetaling(0.3, false, [{ bedrag: 0.1 }, { bedrag: 0.2 }]).open === 0);
+  test("bedrag 0 is nooit 'betaald' zonder vinkje", berekenBetaling(0, false, []).status === "open");
+}
+
+sectie("Verbouwingskosten — verwijderen ruimt alles van de regel op");
+{
+  const p = { id: "p", betaalStatus: { a: true, b: true }, deelbetalingen: { a: [{ bedrag: 5 }], b: [{ bedrag: 7 }] }, facturen: { a: true, b: true }, facturenFotos: { a: "foto-a", b: "foto-b" }, naam: "Keuken" };
+  const r = ruimKostRegelOp(p, "a");
+  test("betaalstatus, deelbetalingen en factuur van de regel verdwijnen", !("a" in r.betaalStatus) && !("a" in r.deelbetalingen) && !("a" in r.facturen));
+  test("factuurfoto krijgt null zodat de server hem ook wist", r.facturenFotos.a === null);
+  test("andere regels blijven onaangeroerd", r.betaalStatus.b === true && r.deelbetalingen.b[0].bedrag === 7 && r.facturenFotos.b === "foto-b" && r.naam === "Keuken");
+  const leeg = ruimKostRegelOp({ id: "x" }, "a");
+  test("project zonder deze velden crasht niet", leeg.betaalStatus && Object.keys(leeg.deelbetalingen).length === 0);
 }

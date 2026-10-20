@@ -16,6 +16,9 @@ const {
   berekenNoodbufferStatus, berekenErfbelastingPartner, berekenZorgtoeslagPerMaand, berekenKindgebondenBudgetPerJaar,
   bouwAandachtspunten, euro, berekenJaarruimteLijfrente, berekenGroeneBeleggingenVoordeel,
   berekenVerliesverrekening, berekenBox3VoordeelVerdelen,
+  STUDIESCHULD_RENTE_2026, berekenStudieschuldRentePerJaar, simuleerStudieschuld, berekenExtraAflossenEffect,
+  berekenGemiddeldeHypotheekRente, berekenStudieschuldHypotheekImpact, bepaalAflosvolgorde,
+  berekenKotJaar, bouwKotKinderen, berekenToeslagenJaar, berekenDividendScenario, berekenDividendOptimum,
 } = laadFuncties(BESTAND, [
   /const euro = /,
   /const BOX1_SCHIJVEN_2026 = /,
@@ -64,6 +67,15 @@ const {
   /const VERLIESVERREKENING_DREMPEL_2026 = /,
   /function berekenVerliesverrekening\(winst, compensabelVerlies\)/,
   /function berekenBox3VoordeelVerdelen\(vermogenPartner1, vermogenPartner2\)/,
+  /const STUDIESCHULD_RENTE_2026 = /,
+  /const STUDIESCHULD_LOOPTIJD_JAREN = /,
+  /const STUDIESCHULD_BRUTERINGSFACTOR_STANDAARD = /,
+  /function berekenStudieschuldRentePerJaar\(restschuld, rentePct\)/,
+  /function simuleerStudieschuld\(restschuld, rentePct, maandbedrag, resterendeJaren, extraEenmalig = 0\)/,
+  /function berekenExtraAflossenEffect\(schuld\)/,
+  /function berekenGemiddeldeHypotheekRente\(delen\)/,
+  /function berekenStudieschuldHypotheekImpact\(totaalMaandbedrag, bruteringsfactor, hypotheekRentePct, looptijdJaren = 30\)/,
+  /function bepaalAflosvolgorde\(studieschulden, hypotheekDelen\)/,
   /function bouwAandachtspunten\(data\)/,
   /const KOT_MAX_UURPRIJS_2026 = /,
   /const KOT_MAX_UREN_PER_MAAND = /,
@@ -71,6 +83,11 @@ const {
   /const KOT_IJKPUNTEN_VOLGEND_KIND = /,
   /function interpoleerPercentage\(inkomen, ijkpunten\)/,
   /function berekenKinderopvangtoeslagPerKind\(/,
+  /function berekenKotJaar\(/,
+  /function bouwKotKinderen\(/,
+  /function berekenToeslagenJaar\(/,
+  /function berekenDividendScenario\(/,
+  /function berekenDividendOptimum\(/,
   /function berekenRenteAflossingsvrij\(schuld, renteJaar, resterendeJaren\)/,
   /function berekenBoetevrijeRuimte\(oorspronkelijkBedrag, percentage\)/,
   /const MAX_AFTREKTARIEF_2026 = /,
@@ -421,5 +438,97 @@ test("bij al gelijk verdeeld vermogen levert herverdelen geen besparing meer op 
 test("optimaal verdelen is nooit NADELIGER dan apart aangeven — de besparing is nooit negatief",
   berekenBox3VoordeelVerdelen({ spaargeld: 200000 }, { spaargeld: 10000 }).besparing >= 0);
 test("geen vermogen bij beide partners crasht niet", berekenBox3VoordeelVerdelen({}, {}).besparing === 0);
+
+sectie("Studieschuld — rente en aflossing (handberekeningen)");
+test("DUO-rente 2026: 2,33% (35 jaar) en 2,29% (15 jaar)", STUDIESCHULD_RENTE_2026["35"] === 2.33 && STUDIESCHULD_RENTE_2026["15"] === 2.29);
+test("rente per jaar: €10.000 à 2,33% = €233", berekenStudieschuldRentePerJaar(10000, 2.33) === 233);
+test("geen schuld of rente crasht niet", berekenStudieschuldRentePerJaar(0, 2.33) === 0 && berekenStudieschuldRentePerJaar(10000, 0) === 0 && berekenStudieschuldRentePerJaar("", "") === 0);
+const zonderRente = simuleerStudieschuld(10000, 0, 500, 35);
+test("zonder rente: €10.000 met €500 per maand is na precies 20 maanden af, zonder rentekosten",
+  zonderRente.maanden === 20 && zonderRente.totaleRente === 0 && zonderRente.totaalBetaald === 10000 && zonderRente.wordtAfgelost === true);
+const metRente = simuleerStudieschuld(1000, 12, 100, 35); // 1% per maand
+test("€1.000 à 12% met €100 per maand: 11 maanden (10,59 afgerond naar boven), zoals met de annuïteitenformule", metRente.maanden === 11);
+test("…en de totale rente is dan ongeveer €59 (1% per maand, saldo na 10 maanden €58,40)", Math.abs(metRente.totaleRente - 59) <= 1);
+test("totaal betaald = schuld + rente", metRente.totaalBetaald === 1000 + metRente.totaleRente || Math.abs(metRente.totaalBetaald - (1000 + metRente.totaleRente)) <= 1);
+const teLaag = simuleerStudieschuld(10000, 2.33, 20, 35);
+test("een maandbedrag dat net de rente dekt lost niet af binnen 35 jaar; de rest wordt kwijtgescholden",
+  teLaag.wordtAfgelost === false && teLaag.kwijtgescholden > 5000 && teLaag.maanden === 420);
+test("kwijtgescholden bedrag telt niet als betaald (35 jaar × €20 × 12 = €8.400)", teLaag.totaalBetaald === 8400);
+test("zonder maandbedrag of looptijd kan er niets berekend worden (geen crash)", simuleerStudieschuld(10000, 2.33, "", 35).kanBerekenen === false && simuleerStudieschuld(10000, 2.33, 100, "").kanBerekenen === false);
+test("geen restschuld = al afgelost", simuleerStudieschuld(0, 2.33, 100, 35).wordtAfgelost === true && simuleerStudieschuld("", "", "", "").maanden === 0);
+test("een maandbedrag groter dan de schuld lost in 1 maand af zonder negatief saldo", (() => { const r = simuleerStudieschuld(50, 2.33, 100, 35); return r.maanden === 1 && r.totaalBetaald <= 51 && r.wordtAfgelost; })());
+
+sectie("Studieschuld — extra aflossen");
+const normaal = { restschuld: 10000, rente: 2.33, maandbedrag: 300, resterendeJaren: 35, extraBedrag: 2000 };
+const eff = berekenExtraAflossenEffect(normaal);
+const nul = simuleerStudieschuld(10000, 2.33, 300, 35);
+test("extra aflossen bij een schuld die toch wordt afgelost bespaart rente (positief), maar nooit meer dan alle rente",
+  eff.besparing > 0 && eff.besparing < nul.totaleRente);
+test("je bent er eerder vanaf", eff.maandenKorter > 0);
+const kwijt = berekenExtraAflossenEffect({ restschuld: 10000, rente: 2.33, maandbedrag: 20, resterendeJaren: 35, extraBedrag: 1000 });
+test("als de schuld toch grotendeels wordt kwijtgescholden kost extra aflossen netto precies het extra bedrag (€1.000 negatief)", kwijt.besparing === -1000);
+test("extra bedrag boven de restschuld wordt afgekapt en crasht niet", (() => { const r = berekenExtraAflossenEffect({ restschuld: 1000, rente: 2.33, maandbedrag: 100, resterendeJaren: 35, extraBedrag: 5000 }); return r !== null && r.besparing >= 0; })());
+test("geen extra bedrag of onvolledige gegevens geeft null", berekenExtraAflossenEffect({ ...normaal, extraBedrag: "" }) === null && berekenExtraAflossenEffect({ ...normaal, maandbedrag: "" }) === null && berekenExtraAflossenEffect(undefined) === null);
+
+sectie("Studieschuld — effect op de hypotheek");
+const impact = berekenStudieschuldHypotheekImpact(100, 1.25, 4.25);
+test("€100 aan DUO met factor 1,25 telt als €125 per maand mee", impact.gebruteerdeMaandlast === 125);
+test("dat verlaagt de maximale hypotheek met ruwweg €25.400 (30 jaar, 4,25%)", impact.verlagingMaxHypotheek > 25000 && impact.verlagingMaxHypotheek < 25800);
+test("zonder rente: €125 × 360 maanden = €45.000", berekenStudieschuldHypotheekImpact(100, 1.25, 0).verlagingMaxHypotheek === 45000);
+test("geen maandbedrag of factor geeft null", berekenStudieschuldHypotheekImpact("", 1.25, 4) === null && berekenStudieschuldHypotheekImpact(100, "", 4) === null);
+test("gewogen gemiddelde hypotheekrente: €100k à 4% + €50k à 5% = 4,33%", berekenGemiddeldeHypotheekRente([{ schuld: 100000, rente: 4 }, { schuld: 50000, rente: 5 }]) === 4.33);
+test("deel zonder schuld of rente telt niet mee, lege lijst geeft 0", berekenGemiddeldeHypotheekRente([{ schuld: "", rente: 4 }, { schuld: 1000, rente: "" }]) === 0 && berekenGemiddeldeHypotheekRente(undefined) === 0);
+
+sectie("Studieschuld — welke schuld kost het meest?");
+const vlg = bepaalAflosvolgorde([{ naam: "Studie Pepijn", restschuld: 20000, rente: 2.33 }], [{ naam: "Annuïteit", schuld: 100000, rente: 4.65 }, { naam: "Deel 2", schuld: 50000, rente: 4.25 }]);
+test("hypotheek 4,65% is na aftrek (×0,6244) 2,9%, duurder dan studieschuld 2,33%", vlg[0].naam === "Annuïteit" && vlg[0].nettoRente === 2.9);
+test("hypotheek 4,25% is netto 2,65%, óók duurder dan studieschuld 2,33%", vlg[1].naam === "Deel 2" && vlg[1].nettoRente === 2.65);
+test("studieschuld is onaangetast: geen aftrek, dus netto = bruto 2,33%", vlg[2].soort === "studieschuld" && vlg[2].nettoRente === 2.33);
+test("lege invoer crasht niet", bepaalAflosvolgorde(undefined, undefined).length === 0);
+
+sectie("Studieschuld — samenvatting");
+const metStudie = { inkomenLoondienst: "50000", studieschuld: { schulden: [{ id: "s1", persoon: "Pepijn", restschuld: 10000, rente: 2.33, maandbedrag: 20, resterendeJaren: 35 }] } };
+test("een niet-aflosbare studieschuld geeft een inzicht in de samenvatting", bouwAandachtspunten(metStudie).some(p => p.id === "studie-kwijtschelding-s1" && p.tab === "studieschuld"));
+const zonderBedrag = { studieschuld: { schulden: [{ id: "s2", persoon: "Tessa", restschuld: 8000, rente: 2.33, maandbedrag: "", resterendeJaren: 35 }] } };
+test("ontbrekend maandbedrag geeft een compleetheids-punt", bouwAandachtspunten(zonderBedrag).some(p => p.id === "studie-leeg-s2" && p.prioriteit === "info"));
+const metHyp = { hypotheek: { delen: [{ id: "d", naam: "Deel", schuld: "100000", rente: "4.25" }] }, studieschuld: { schulden: [{ id: "s3", persoon: "Pepijn", restschuld: 20000, rente: 2.33, maandbedrag: 150, resterendeJaren: 35 }] } };
+test("studieschuld + hypotheekrente geeft het hypotheek-effect als punt", bouwAandachtspunten(metHyp).some(p => p.id === "studie-hypotheek"));
+test("oude opgeslagen data zonder studieschuld-veld crasht niet en geeft geen studiepunten", !bouwAandachtspunten({ inkomenLoondienst: "40000" }).some(p => p.id.startsWith("studie")));
+test("een studieschuld zonder restschuld wordt genegeerd", !bouwAandachtspunten({ studieschuld: { schulden: [{ id: "x", restschuld: "", maandbedrag: "" }] } }).some(p => p.id.startsWith("studie")));
+
+sectie("BSO-overstap per jaar");
+const jaarM = berekenKinderopvangtoeslagPerKind(95, "dagopvang", 86702, true).toeslagPerMaand;
+const geenO = berekenKotJaar({ urenDag: 95, typeDag: "dagopvang", bsoUren: 60, bsoVanaf: "", toetsingsinkomen: 86702, jaar: 2027 });
+test("zonder overstap = 12 maanden dagopvang", Math.abs(geenO.toeslag - Math.round(jaarM * 12)) <= 1 && !geenO.heeftOverstap && geenO.maandenBso === 0);
+const o26 = berekenKotJaar({ urenDag: 95, typeDag: "dagopvang", bsoUren: 60, bsoVanaf: "2027-04-03", toetsingsinkomen: 86702, jaar: 2026 });
+test("overstap in 2027 raakt 2026 niet", Math.abs(o26.toeslag - Math.round(jaarM * 12)) <= 1 && o26.maandenBso === 0);
+const o27 = berekenKotJaar({ urenDag: 95, typeDag: "dagopvang", bsoUren: 60, bsoVanaf: "2027-04-03", toetsingsinkomen: 86702, jaar: 2027 });
+test("2027: ruim 3 maanden dagopvang, rest BSO", Math.abs(o27.maandenDag - 3.1) < 0.05 && Math.abs(o27.maandenBso - 8.9) < 0.05);
+test("2027 toeslag ligt tussen alles-BSO en alles-dag", o27.toeslag < Math.round(jaarM * 12) && o27.toeslag > 0);
+const o28 = berekenKotJaar({ urenDag: 95, typeDag: "dagopvang", bsoUren: 60, bsoVanaf: "2027-04-03", toetsingsinkomen: 86702, jaar: 2028 });
+const bsoM = berekenKinderopvangtoeslagPerKind(60, "bso", 86702, true).toeslagPerMaand;
+test("2028: 12 maanden BSO", Math.abs(o28.toeslag - Math.round(bsoM * 12)) <= 1 && o28.maandenDag === 0);
+test("toeslag + eigen bijdrage = kosten", Math.abs(o27.toeslag + o27.eigenBijdrage - o27.kosten) <= 1);
+test("ongeldige datum telt als geen overstap", !berekenKotJaar({ urenDag: 95, typeDag: "dagopvang", bsoUren: 60, bsoVanaf: "geen-datum", toetsingsinkomen: 86702, jaar: 2027 }).heeftOverstap);
+test("kind dat al op BSO zit wordt niet nogmaals omgezet", !berekenKotJaar({ urenDag: 60, typeDag: "bso", bsoUren: 30, bsoVanaf: "2027-04-03", toetsingsinkomen: 86702, jaar: 2027 }).heeftOverstap);
+
+sectie("Dividend 2026 of 2027");
+const kind = bouwKotKinderen({ aantalKinderen: 1, urenPerMaandKind1: "95", typeKind1: "dagopvang", bsoVanaf1: "2027-04-03", bsoUren1: "60" });
+const prm = { basisToetsingsinkomen: 86702, kinderen: kind, aantalKinderen: 1 };
+test("bouwKotKinderen: 1 actief kind, geen kind zonder uren", kind.length === 1 && bouwKotKinderen({ aantalKinderen: 1, urenPerMaandKind1: "" }).length === 0 && bouwKotKinderen(undefined).length === 0);
+const s0 = berekenDividendScenario({ ...prm, dividend2026: 0, dividend2027: 0 });
+test("zonder dividend: geen box 2, netto totaal = toeslagen", s0.box2 === 0 && s0.nettoTotaal === Math.round(s0.toeslagen));
+const sA = berekenDividendScenario({ ...prm, dividend2026: 30000, dividend2027: 0 });
+const sB = berekenDividendScenario({ ...prm, dividend2026: 0, dividend2027: 30000 });
+test("box 2 over €30.000 is 24,5% in beide jaren", sA.box2 === 7350 && sB.box2 === 7350);
+test("dividend in 2026 kost meer opvangtoeslag dan in 2027 (BSO is goedkoper)", sA.kot < sB.kot);
+test("uitstel naar 2027 geeft hoger netto totaal", sB.nettoTotaal > sA.nettoTotaal);
+const sG = berekenDividendScenario({ ...prm, dividend2026: 100000, dividend2027: 0 }), sH = berekenDividendScenario({ ...prm, dividend2026: 50000, dividend2027: 50000 });
+test("boven €68.843 verdelen scheelt box 2 (31% vs 24,5%)", sH.box2 < sG.box2);
+const opt = berekenDividendOptimum(prm, 30000, 30);
+test("optimum is minstens zo goed als elk uiterste", opt.beste.nettoTotaal >= sA.nettoTotaal && opt.beste.nettoTotaal >= sB.nettoTotaal && opt.punten.length === 31);
+test("optimum zonder kinderopvang: gelijkspel kiest het latere jaar", berekenDividendOptimum({ basisToetsingsinkomen: 10000, kinderen: [], aantalKinderen: 0 }, 10000, 10).beste.x === 0);
+test("totaal 0 of rommel crasht niet", berekenDividendOptimum(prm, 0).beste.nettoTotaal >= 0 && berekenDividendOptimum(prm, "abc").punten.length === 101);
+
 
 samenvatting();
