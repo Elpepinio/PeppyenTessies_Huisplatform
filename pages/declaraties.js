@@ -135,6 +135,24 @@ function berekenPeriodeBereik(preset, jaar) {
   return null; // "aangepast" — van/tot worden los ingevuld
 }
 
+// ── Selectie-voor-indienen — welke declaraties horen in de selectie.
+//    Preset "alles" negeert zowel de periode als het gekozen jaar: alle
+//    openstaande declaraties in één keer, dus ook een vergeten exemplaar
+//    uit december van vorig jaar. Bij een periode-preset zonder (volledig)
+//    bereik — "aangepast" met een lege datum — is de selectie leeg. ──────
+function selecteerVoorIndienen(items, { modus, preset, bereik, jaar, persoonFilter, uitgeslotenIds }) {
+  const alles = preset === "alles";
+  if (!alles && !bereik) return [];
+  return items.filter(i =>
+    (modus === "openstaand" ? !i.ingediend : i.ingediend) &&
+    (!persoonFilter || i.persoon === persoonFilter) &&
+    !(uitgeslotenIds && uitgeslotenIds.has(i.id)) &&
+    (alles
+      ? true
+      : (i.datum?.startsWith(String(jaar)) && i.datum >= bereik.van && i.datum <= bereik.tot))
+  );
+}
+
 // ── Kilometerafstand automatisch berekenen — geocoding (Nominatim/
 //    OpenStreetMap, al elders in de app gebruikt) + routing (OSRM's gratis
 //    demo-server) i.p.v. de gebruiker de afstand zelf te laten opzoeken.
@@ -658,13 +676,10 @@ export default function DeclaratiesApp() {
   // correctie). Losstaand van nogNietIngediendDitJaar hierboven, want die
   // voedt elders (het jaaroverzicht) altijd het échte openstaande bedrag,
   // ongeacht welke modus hier gekozen is.
-  const selectieBronItems = items.filter(i =>
-    (selectieToonModus === "openstaand" ? !i.ingediend : i.ingediend) &&
-    i.datum?.startsWith(String(jaar)) && (!persoonFilter || i.persoon === persoonFilter)
-  );
-  const selectieItems = periodeBereik
-    ? selectieBronItems.filter(i => i.datum >= periodeBereik.van && i.datum <= periodeBereik.tot && !uitgeslotenIds.has(i.id))
-    : [];
+  const selectieItems = selecteerVoorIndienen(items, {
+    modus: selectieToonModus, preset: selectiePreset, bereik: periodeBereik,
+    jaar, persoonFilter, uitgeslotenIds,
+  });
   const selectieTotaal = selectieItems.reduce((s,i) => s + bedragVoorItem(i), 0);
 
   function markeerAlsIngediend() {
@@ -881,7 +896,7 @@ export default function DeclaratiesApp() {
 
             <p style={{ margin: "0 0 8px", fontSize: 12, fontWeight: 700, color: C.accentDark }}>Periode</p>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-              {[["deze-maand","Deze maand"],["vorige-maand","Vorige maand"],["dit-kwartaal","Dit kwartaal"],["vorig-kwartaal","Vorig kwartaal"],["aangepast","Aangepast"]].map(([id,label]) => (
+              {[["alles", selectieToonModus === "openstaand" ? "Alle openstaande" : "Alles"],["deze-maand","Deze maand"],["vorige-maand","Vorige maand"],["dit-kwartaal","Dit kwartaal"],["vorig-kwartaal","Vorig kwartaal"],["aangepast","Aangepast"]].map(([id,label]) => (
                 <button key={id} style={S.chip(selectiePreset === id)} onClick={() => setSelectiePreset(id)}>{label}</button>
               ))}
             </div>
@@ -893,7 +908,7 @@ export default function DeclaratiesApp() {
             )}
 
             {selectieItems.length === 0 ? (
-              <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>{selectieToonModus === "openstaand" ? "Geen openstaande declaraties in deze periode." : "Geen ingediende declaraties in deze periode."}</p>
+              <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>{selectieToonModus === "openstaand" ? (selectiePreset === "alles" ? "Geen openstaande declaraties — alles is ingediend." : "Geen openstaande declaraties in deze periode.") : (selectiePreset === "alles" ? "Nog geen ingediende declaraties." : "Geen ingediende declaraties in deze periode.")}</p>
             ) : (
               <>
                 {selectieItems.map(item => (
