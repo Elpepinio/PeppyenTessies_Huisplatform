@@ -3,7 +3,7 @@ const { sectie, test, samenvatting } = require("./testhulp.js");
 
 sectie("Declaraties — geëxtraheerd uit de echte broncode van declaraties.js");
 
-const { kwartaalVan, bedragVoorItem, kmVoorItem, berekenPeriodeBereik, vandaagStr, persoonKleur, berekenLocatieFavorieten, berekenOvOmschrijvingFavorieten, naamVoorFavoriet } = laadFuncties("../pages/declaraties.js", [
+const { kwartaalVan, bedragVoorItem, kmVoorItem, berekenPeriodeBereik, vandaagStr, persoonKleur, berekenLocatieFavorieten, berekenOvOmschrijvingFavorieten, naamVoorFavoriet, selecteerVoorIndienen } = laadFuncties("../pages/declaraties.js", [
   /const KM_TARIEF = /,
   /const PERSONEN = /,
   /const VERVOERMIDDELEN = /,
@@ -17,6 +17,7 @@ const { kwartaalVan, bedragVoorItem, kmVoorItem, berekenPeriodeBereik, vandaagSt
   /function berekenLocatieFavorieten\(items, type, veld, max = 6\)/,
   /function berekenOvOmschrijvingFavorieten\(items, max = 6\)/,
   /function berekenPeriodeBereik\(preset, jaar\)/,
+  /function selecteerVoorIndienen\(items, \{ modus, preset, bereik, jaar, persoonFilter, uitgeslotenIds \}\)/,
 ]);
 
 sectie("Favorieten — leesbare naam per declaratietype");
@@ -110,5 +111,29 @@ test("'dit kwartaal' start in de juiste maand", ditKwartaal.van === `${jaar}-${S
 const vorigKwartaal = berekenPeriodeBereik("vorig-kwartaal", jaar);
 test("'vorig kwartaal' geeft een geldig van/tot-bereik terug", vorigKwartaal.van < vorigKwartaal.tot);
 test("'vorig kwartaal' ligt volledig vóór 'dit kwartaal'", vorigKwartaal.tot < ditKwartaal.van);
+
+sectie("Selectie voor indienen — 'Alle openstaande' en periode-presets");
+const selItems = [
+  { id:"a", persoon:"Pepijn", datum:`${jaar-1}-12-15`, ingediend:false },
+  { id:"b", persoon:"Pepijn", datum:`${jaar}-01-10`, ingediend:false },
+  { id:"c", persoon:"Tessa",  datum:`${jaar}-02-03`, ingediend:false },
+  { id:"d", persoon:"Pepijn", datum:`${jaar}-02-20`, ingediend:true },
+];
+const ids = arr => arr.map(i => i.id).join(",");
+const basis = { modus:"openstaand", jaar, persoonFilter:"", uitgeslotenIds:new Set() };
+test("'alles' selecteert alle openstaande, ook uit vorig jaar en zonder bereik",
+  ids(selecteerVoorIndienen(selItems, { ...basis, preset:"alles", bereik:null })) === "a,b,c");
+test("'alles' laat al ingediende declaraties buiten de selectie",
+  !selecteerVoorIndienen(selItems, { ...basis, preset:"alles", bereik:null }).some(i => i.id === "d"));
+test("'alles' respecteert het persoonfilter",
+  ids(selecteerVoorIndienen(selItems, { ...basis, preset:"alles", bereik:null, persoonFilter:"Pepijn" })) === "a,b");
+test("'alles' respecteert handmatig uitgesloten declaraties",
+  ids(selecteerVoorIndienen(selItems, { ...basis, preset:"alles", bereik:null, uitgeslotenIds:new Set(["b"]) })) === "a,c");
+test("'alles' in de modus 'al ingediend' geeft alleen ingediende declaraties",
+  ids(selecteerVoorIndienen(selItems, { ...basis, modus:"ingediend", preset:"alles", bereik:null })) === "d");
+test("een periode-preset filtert nog steeds op datumbereik en jaar",
+  ids(selecteerVoorIndienen(selItems, { ...basis, preset:"aangepast", bereik:{ van:`${jaar-1}-12-01`, tot:`${jaar}-01-31` } })) === "b");
+test("'aangepast' zonder volledig bereik geeft een lege selectie",
+  selecteerVoorIndienen(selItems, { ...basis, preset:"aangepast", bereik:null }).length === 0);
 
 samenvatting();
