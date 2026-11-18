@@ -26,7 +26,6 @@
     "react-markdown": "^9.0.1",
     "recharts": "^2.12.7",
     "resend": "^6.32.0",
-    "suncalc": "^1.9.0",
     "tldraw": "^3.6.0",
     "web-push": "^3.6.7"
   }

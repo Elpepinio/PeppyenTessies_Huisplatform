@@ -149,13 +149,6 @@ const TOOLS = [
     color: "#3D7A5C",
   },
   {
-    href: "/weer",
-    label: "Weer",
-    description: "Weer, wind, zon/maan, luchtkwaliteit en kledingadvies",
-    emoji: "🌤️",
-    color: "#5B9BD5",
-  },
-  {
     href: "/declaraties",
     label: "Declaraties",
     description: "Kilometers, parkeren, OV en overige kosten bijhouden",
