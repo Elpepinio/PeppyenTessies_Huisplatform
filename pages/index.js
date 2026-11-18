@@ -79,13 +79,6 @@ const TOOLS = [
     color: "#4A7A6C",
   },
   {
-    href: "/beleggingen",
-    label: "Beleggingen",
-    description: "Ektachrome B.V. — posities, thesis-journal, watchlist en FIRE-voortgang",
-    emoji: "📈",
-    color: "#2D4A3E",
-  },
-  {
     href: "/planten",
     label: "Planten & Tuin",
     description: "Verzorging, seizoensadvies en AI-analyse",
