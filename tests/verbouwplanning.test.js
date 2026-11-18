@@ -3,7 +3,8 @@ const { laadFuncties } = require("./extractie");
 const { sectie, test } = require("./testhulp");
 
 const BESTAND = path.join(__dirname, "..", "pages", "onderhoud.js");
-const { dagPlus, dagVerschil, fmtDatum, berekenSchema, berekenKritiekPad, berekenBetaling, ruimKostRegelOp } = laadFuncties(BESTAND, [
+const { dagPlus, dagVerschil, fmtDatum, berekenSchema, berekenKritiekPad, berekenBetaling, ruimKostRegelOp, prijsVoorIdee, leesBedrag, verwerkBedragWijziging } = laadFuncties(BESTAND, [
+  /const uid = /,
   /function dagPlus\(/,
   /function dagVerschil\(/,
   /function fmtDatum\(/,
@@ -15,6 +16,9 @@ const { dagPlus, dagVerschil, fmtDatum, berekenSchema, berekenKritiekPad, bereke
   /function berekenKritiekPad\(/,
   /function berekenBetaling\(/,
   /function ruimKostRegelOp\(/,
+  /function prijsVoorIdee\(/,
+  /function leesBedrag\(/,
+  /function verwerkBedragWijziging\(/,
 ]);
 
 const START = "2026-08-01";
@@ -182,4 +186,35 @@ sectie("Verbouwingskosten — verwijderen ruimt alles van de regel op");
   test("andere regels blijven onaangeroerd", r.betaalStatus.b === true && r.deelbetalingen.b[0].bedrag === 7 && r.facturenFotos.b === "foto-b" && r.naam === "Keuken");
   const leeg = ruimKostRegelOp({ id: "x" }, "a");
   test("project zonder deze velden crasht niet", leeg.betaalStatus && Object.keys(leeg.deelbetalingen).length === 0);
+}
+
+sectie("Verbouwingskosten — bedrag achteraf wijzigen");
+{
+  test("bedrag-invoer met komma en duizendtal-punt", leesBedrag("1.250,50") === 1250.5);
+  test("bedrag-invoer met punt als decimaal", leesBedrag("1250.5") === 1250.5);
+  test("bedrag-invoer met euroteken en spaties", leesBedrag(" € 99,95 ") === 99.95);
+  test("lege, negatieve of rommelige invoer = null", leesBedrag("") === null && leesBedrag("-5") === null && leesBedrag("abc") === null);
+  test("0 is een geldig bedrag (bv. gratis meegeleverd)", leesBedrag("0") === 0);
+
+  const idee = { id: "w1", prijs: 800 };
+  test("zonder aanpassing geldt de prijs uit Woonideeën", prijsVoorIdee({}, idee) === 800);
+  test("met aanpassing geldt het werkelijke bedrag", prijsVoorIdee({ prijsAanpassingen: { w1: 650 } }, idee) === 650);
+  test("aanpassing naar 0 wordt gerespecteerd", prijsVoorIdee({ prijsAanpassingen: { w1: 0 } }, idee) === 0);
+
+  const volledig = { betaalStatus: { k: true }, deelbetalingen: {} };
+  const duurder = verwerkBedragWijziging(volledig, "k", 1000, 1200);
+  const bDuurder = berekenBetaling(1200, duurder.betaalStatus.k, duurder.deelbetalingen.k);
+  test("volledig betaald + duurder: vinkje weg, oud bedrag blijft betaald", duurder.betaalStatus.k === false && bDuurder.betaald === 1000);
+  test("volledig betaald + duurder: meerbedrag staat open", bDuurder.open === 200 && bDuurder.status === "deels");
+  test("volledig betaald + goedkoper: blijft gewoon betaald", verwerkBedragWijziging(volledig, "k", 1000, 900) === volledig);
+
+  const metDeel = { betaalStatus: { k: true }, deelbetalingen: { k: [{ id: "d1", bedrag: 300, datum: "2026-10-01" }] } };
+  const r = verwerkBedragWijziging(metDeel, "k", 1000, 1100);
+  const bR = berekenBetaling(1100, r.betaalStatus.k, r.deelbetalingen.k);
+  test("bestaande deelbetalingen blijven staan, alleen het ontbrekende deel komt erbij", r.deelbetalingen.k.length === 2 && bR.betaald === 1000 && bR.open === 100);
+
+  const nietBetaald = { betaalStatus: {}, deelbetalingen: { k: [{ bedrag: 200 }] } };
+  test("niet volledig betaald: deelbetalingen blijven ongewijzigd", verwerkBedragWijziging(nietBetaald, "k", 1000, 1500) === nietBetaald);
+
+  test("verwijderen ruimt ook de prijsaanpassing op", !("w1" in ruimKostRegelOp({ prijsAanpassingen: { w1: 650, w2: 1 } }, "w1").prijsAanpassingen));
 }

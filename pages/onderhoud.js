@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, AlertCircle, Check, Clock, ExternalLink } from "lucide-react";
+import { Plus, X, ChevronLeft, AlertCircle, Check, Clock, ExternalLink, Pencil } from "lucide-react";
 
 const OBJECT_ICONEN = ["🏠","🚐","🚗","🔧","❄️","🌡️","💧","⚡","🌿","📦","🛁","🍳","🔑","🏊","📺","💻"];
 
@@ -285,6 +285,49 @@ function ruimKostRegelOp(project, itemId) {
     deelbetalingen: zonder(project.deelbetalingen),
     facturen: zonder(project.facturen),
     facturenFotos: { ...zonder(project.facturenFotos), [itemId]: null },
+    prijsAanpassingen: zonder(project.prijsAanpassingen),
+  };
+}
+
+// Werkelijk bedrag van een gekoppeld woonidee binnen deze verbouwing: een
+// aangepaste prijs (viel goedkoper/duurder uit) gaat vóór de prijs uit
+// Woonideeën. De aanpassing staat op het project, zodat het woonidee zelf
+// (de webshop-/wensprijs) ongemoeid blijft.
+function prijsVoorIdee(project, idee) {
+  const aanpassing = (project?.prijsAanpassingen || {})[idee?.id];
+  return aanpassing != null ? aanpassing : (idee?.prijs || 0);
+}
+
+// Bedrag-invoer van de gebruiker → getal (accepteert "1.250,50" en "1250.5").
+// Geeft null bij lege of ongeldige invoer.
+function leesBedrag(invoer) {
+  let s = String(invoer ?? "").trim().replace(/[€\s]/g, "");
+  if (!s) return null;
+  if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
+}
+
+// Bedrag van een kostenregel wordt aangepast. Was de regel met het vinkje
+// "Alles betaald" afgerekend en wordt hij duurder, dan is het meerbedrag nog
+// níet betaald: het vinkje wordt dan omgezet in een deelbetaling van het oude
+// bedrag (zonder datum — die is onbekend), zodat het verschil als open staat.
+// Stonden er al deelbetalingen, dan blijven die staan en komt er alleen het
+// ontbrekende deel bij, zodat het betaalde totaal precies het oude bedrag is.
+// Goedkoper of gelijk: vinkje blijft gewoon staan.
+function verwerkBedragWijziging(project, itemId, oudBedrag, nieuwBedrag) {
+  const volledig = !!(project.betaalStatus || {})[itemId];
+  if (!volledig || !(nieuwBedrag > oudBedrag)) return project;
+  const bestaand = (project.deelbetalingen || {})[itemId] || [];
+  const alBetaald = berekenBetaling(oudBedrag, false, bestaand).betaald;
+  const aanvulling = Math.round((oudBedrag - alBetaald) * 100) / 100;
+  return {
+    ...project,
+    betaalStatus: { ...(project.betaalStatus || {}), [itemId]: false },
+    deelbetalingen: {
+      ...(project.deelbetalingen || {}),
+      [itemId]: aanvulling > 0 ? [{ id: uid(), bedrag: aanvulling, datum: null }, ...bestaand] : bestaand,
+    },
   };
 }
 const eurFmt = (n) => (+n || 0).toLocaleString("nl-NL", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
@@ -490,6 +533,7 @@ export default function OnderhoudApp() {
   const [deelOpenId, setDeelOpenId] = useState(null); // kostenregel waarvan het betaalpaneel openstaat
   const [deelForm, setDeelForm] = useState({ bedrag: "", datum: new Date().toISOString().slice(0, 10) });
   const [showExtraKostForm, setShowExtraKostForm] = useState(false);
+  const [bewerkKost, setBewerkKost] = useState(null); // { itemId, soort: "extra"|"idee", naam, bedrag, link, wensPrijs }
 
   const laadWoonideeen = useCallback(async () => {
     try {
@@ -785,7 +829,7 @@ export default function OnderhoudApp() {
     const kleur = b.status === "betaald" ? C.green : b.status === "deels" ? C.orange : C.muted;
     const tekst = b.status === "betaald" ? "✅ Betaald" : b.status === "deels" ? `€${eurFmt(b.betaald)} betaald` : "Nog te betalen";
     return (
-      <button onClick={() => setDeelOpenId(deelOpenId === itemId ? null : itemId)}
+      <button onClick={() => { setBewerkKost(null); setDeelOpenId(deelOpenId === itemId ? null : itemId); }}
         style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:8, border:`1px solid ${kleur}`, background: b.status === "open" ? "transparent" : `${kleur}18`, color:kleur, cursor:"pointer", whiteSpace:"nowrap" }}>
         {tekst}
       </button>
@@ -809,7 +853,7 @@ export default function OnderhoudApp() {
         {b.teveel > 0 && <p style={{ margin:"0 0 6px", fontSize:11, color:C.red }}>Let op: €{eurFmt(b.teveel)} meer betaald dan het bedrag.</p>}
         {lijst.map(d => (
           <div key={d.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, padding:"3px 0" }}>
-            <span style={{ color:C.muted }}>{d.datum ? d.datum.split("-").reverse().join("-") : ""}</span>
+            <span style={{ color:C.muted }}>{d.datum ? d.datum.split("-").reverse().join("-") : "Eerder betaald"}</span>
             <span style={{ display:"flex", alignItems:"center", gap:6 }}>
               <strong>€{eurFmt(d.bedrag)}</strong>
               <button onClick={() => verwijderDeelbetaling(project.id, itemId, d.id)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", padding:0 }} aria-label="Verwijder deelbetaling"><X size={13} /></button>
@@ -847,6 +891,80 @@ export default function OnderhoudApp() {
     ), projectTaken);
     setExtraKostForm({ naam: "", bedrag: "", link: "" });
     setShowExtraKostForm(false);
+  }
+
+  // ── Kostenregel wijzigen (viel goedkoper/duurder uit, typfout, …) ──
+  // Losse posten: omschrijving, bedrag en link zijn aan te passen.
+  // Gekoppelde woonideeën: alleen het werkelijke bedrag binnen deze
+  // verbouwing — het woonidee zelf (wensprijs) blijft ongemoeid.
+  function startBewerkKost(project, soort, item) {
+    setDeelOpenId(null);
+    setShowExtraKostForm(false);
+    const naarInvoer = (n) => String(n ?? "").replace(".", ",");
+    if (soort === "extra") {
+      setBewerkKost({ itemId: item.id, soort, naam: item.naam || "", bedrag: naarInvoer(item.bedrag), link: item.link || "" });
+    } else {
+      setBewerkKost({ itemId: item.id, soort, naam: item.titel || "", bedrag: naarInvoer(prijsVoorIdee(project, item)), wensPrijs: item.prijs || 0 });
+    }
+  }
+
+  function bewaarBewerkKost(projectId) {
+    const b = bewerkKost;
+    const bedrag = leesBedrag(b?.bedrag);
+    if (!b || bedrag == null || (b.soort === "extra" && !b.naam.trim())) return;
+    persistProjectData(projecten.map(p => {
+      if (p.id !== projectId) return p;
+      if (b.soort === "extra") {
+        const oud = (p.extraKosten || []).find(k => k.id === b.itemId)?.bedrag || 0;
+        const bijgewerkt = { ...p, extraKosten: (p.extraKosten || []).map(k => k.id === b.itemId
+          ? { ...k, naam: b.naam.trim(), bedrag, link: (b.link || "").trim() || null } : k) };
+        return verwerkBedragWijziging(bijgewerkt, b.itemId, oud, bedrag);
+      }
+      const oud = prijsVoorIdee(p, { id: b.itemId, prijs: b.wensPrijs });
+      const aanpassingen = { ...(p.prijsAanpassingen || {}) };
+      if (bedrag === Math.round((b.wensPrijs || 0) * 100) / 100) delete aanpassingen[b.itemId];
+      else aanpassingen[b.itemId] = bedrag;
+      return verwerkBedragWijziging({ ...p, prijsAanpassingen: aanpassingen }, b.itemId, oud, bedrag);
+    }), projectTaken);
+    setBewerkKost(null);
+    showToast("✏️ Kostenpost bijgewerkt");
+  }
+
+  function bewerkPaneel(project, itemId) {
+    if (!bewerkKost || bewerkKost.itemId !== itemId) return null;
+    const b = bewerkKost;
+    const bedrag = leesBedrag(b.bedrag);
+    const geldig = bedrag != null && (b.soort !== "extra" || b.naam.trim());
+    const kleineInp = { ...S.inp, fontSize:13, padding:"7px 8px", marginBottom:6 };
+    return (
+      <div style={{ width:"100%", background:C.card, borderRadius:10, padding:10, margin:"4px 0 6px" }}>
+        {b.soort === "extra" ? (
+          <input style={kleineInp} placeholder="Omschrijving" value={b.naam}
+            onChange={e => setBewerkKost(v => ({ ...v, naam: e.target.value }))} />
+        ) : (
+          <p style={{ margin:"0 0 6px", fontSize:11, color:C.muted }}>
+            Werkelijk bedrag voor deze verbouwing. Prijs in Woonideeën blijft €{eurFmt(b.wensPrijs)}.
+          </p>
+        )}
+        <input style={kleineInp} type="text" inputMode="decimal" placeholder="Bedrag €" value={b.bedrag} autoFocus={b.soort !== "extra"}
+          onChange={e => setBewerkKost(v => ({ ...v, bedrag: e.target.value }))}
+          onKeyDown={e => { if (e.key === "Enter" && geldig) bewaarBewerkKost(project.id); }} />
+        {b.soort === "extra" && (
+          <input style={kleineInp} placeholder="Link naar webshop/offerte (optioneel)" value={b.link}
+            onChange={e => setBewerkKost(v => ({ ...v, link: e.target.value }))} />
+        )}
+        {b.soort === "idee" && (project.prijsAanpassingen || {})[itemId] != null && (
+          <button style={{ background:"none", border:"none", color:C.purple, fontSize:11, cursor:"pointer", padding:"0 0 6px" }}
+            onClick={() => setBewerkKost(v => ({ ...v, bedrag: String(v.wensPrijs).replace(".", ",") }))}>
+            ↩︎ Terug naar prijs uit Woonideeën (€{eurFmt(b.wensPrijs)})
+          </button>
+        )}
+        <div style={{ display:"flex", gap:6 }}>
+          <button style={{ ...S.btn(C.card, C.text), border:`1px solid ${C.border}`, flex:1, fontSize:12, padding:"7px 0" }} onClick={() => setBewerkKost(null)}>Annuleer</button>
+          <button style={{ ...S.btn(C.purple), flex:1, fontSize:12, padding:"7px 0", opacity: geldig ? 1 : 0.5 }} disabled={!geldig} onClick={() => bewaarBewerkKost(project.id)}>Opslaan</button>
+        </div>
+      </div>
+    );
   }
 
   function verwijderExtraKost(projectId, kostId) {
@@ -1659,7 +1777,7 @@ export default function OnderhoudApp() {
                 ) : projecten.map(p => {
                   const pTaken = projectTaken.filter(t => t.projectId === p.id);
                   const klaar = pTaken.filter(t => t.werkelijkEind).length;
-                  const pGekoppeld = woonideeenItems.filter(w => (p.gekoppeldeIdeeIds||[]).includes(w.id));
+                  const pGekoppeld = woonideeenItems.filter(w => (p.gekoppeldeIdeeIds||[]).includes(w.id)).map(w => ({ ...w, prijs: prijsVoorIdee(p, w) }));
                   const pExtra = p.extraKosten||[];
                   const pBetaalStatus = p.betaalStatus || {};
                   const totaalKosten = pGekoppeld.reduce((s,w)=>s+(w.prijs||0),0) + pExtra.reduce((s,k)=>s+(k.bedrag||0),0);
@@ -1761,7 +1879,10 @@ export default function OnderhoudApp() {
               {/* ── Kosten: gekoppelde Woonideeën-items + losse posten ── */}
               {(() => {
                 const gekoppeldeIds = project.gekoppeldeIdeeIds || [];
-                const gekoppeldeItems = woonideeenItems.filter(w => gekoppeldeIds.includes(w.id));
+                // prijs = werkelijk bedrag in deze verbouwing (evt. aangepast),
+                // wensPrijs = de prijs zoals die in Woonideeën staat.
+                const gekoppeldeItems = woonideeenItems.filter(w => gekoppeldeIds.includes(w.id))
+                  .map(w => ({ ...w, prijs: prijsVoorIdee(project, w), wensPrijs: w.prijs || 0 }));
                 // Groeperen per Woonideeën-categorie, zodat de lijst
                 // overzichtelijk blijft naarmate er meer items bij komen.
                 const gekoppeldPerCategorie = {};
@@ -1823,7 +1944,10 @@ export default function OnderhoudApp() {
                                       <ExternalLink size={13} />
                                     </a>
                                   )}
+                                  {w.prijs !== w.wensPrijs && <span style={{ fontSize:10, color:C.muted, textDecoration:"line-through" }}>€ {w.wensPrijs.toFixed(0)}</span>}
                                   <span style={{ fontWeight:600 }}>€ {(w.prijs||0).toFixed(0)}</span>
+                                  <button onClick={() => bewerkKost?.itemId === w.id ? setBewerkKost(null) : startBewerkKost(project, "idee", w)} title="Bedrag wijzigen" aria-label="Bedrag wijzigen"
+                                    style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", padding:0, display:"flex" }}><Pencil size={12} /></button>
                                   <button onClick={() => { if (facturenFotos[w.id]) { setFactuurDoelId({ projectId: project.id, itemId: w.id }); setShowFactuurPreview(facturenFotos[w.id]); } else startFactuurUpload(project.id, w.id); }}
                                     title={facturenFotos[w.id] ? "Bekijk factuur" : "Factuur toevoegen"}
                                     style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, opacity: facturenFotos[w.id]?1:0.4 }}>
@@ -1832,7 +1956,7 @@ export default function OnderhoudApp() {
                                   {betaalKnop(project, w.id, w.prijs)}
                                   <button onClick={() => ontkoppelIdee(project.id, w.id)} title="Uit kosten halen" aria-label="Uit kosten halen" style={{ background:"none", border:"none", color:C.muted, cursor:"pointer" }}><X size={13} /></button>
                                 </div>
-                                {deelPaneel(project, w.id, w.prijs)}
+                                {bewerkPaneel(project, w.id) || deelPaneel(project, w.id, w.prijs)}
                               </div>
                             ))}
                           </div>
@@ -1851,7 +1975,9 @@ export default function OnderhoudApp() {
                                   <ExternalLink size={13} />
                                 </a>
                               )}
-                              <span style={{ fontWeight:600 }}>€ {k.bedrag.toFixed(0)}</span>
+                              <span style={{ fontWeight:600 }}>€ {(k.bedrag||0).toFixed(0)}</span>
+                              <button onClick={() => bewerkKost?.itemId === k.id ? setBewerkKost(null) : startBewerkKost(project, "extra", k)} title="Wijzigen" aria-label="Kostenpost wijzigen"
+                                style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", padding:0, display:"flex" }}><Pencil size={12} /></button>
                               <button onClick={() => { if (facturenFotos[k.id]) { setFactuurDoelId({ projectId: project.id, itemId: k.id }); setShowFactuurPreview(facturenFotos[k.id]); } else startFactuurUpload(project.id, k.id); }}
                                 title={facturenFotos[k.id] ? "Bekijk factuur" : "Factuur toevoegen"}
                                 style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, opacity: facturenFotos[k.id]?1:0.4 }}>
@@ -1860,7 +1986,7 @@ export default function OnderhoudApp() {
                               {betaalKnop(project, k.id, k.bedrag)}
                               <button onClick={() => verwijderExtraKost(project.id, k.id)} style={{ background:"none", border:"none", color:C.muted, cursor:"pointer" }}><X size={13} /></button>
                             </div>
-                            {deelPaneel(project, k.id, k.bedrag)}
+                            {bewerkPaneel(project, k.id) || deelPaneel(project, k.id, k.bedrag)}
                           </div>
                         ))}
                       </div>
