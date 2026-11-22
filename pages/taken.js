@@ -33,6 +33,7 @@ import {
   onthoudContact, contactSuggesties, prijsTekst,
   DELIVERABLE_KANALEN, FORMATEN, STANDAARD_FORMATEN, normaliseerDeliverables, deliverablesTekst,
   BUYOUT_MEDIA, BUYOUT_DUUR, buyoutSoort, standaardBuyouts, buyoutEinde,
+  leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
 } from "../lib/projecten-logica";
 import { dagenTussen } from "../lib/taken-logica";
 
@@ -163,11 +164,12 @@ export default function TakenApp() {
   function startMetOnderdelen(lijst, sjabloon, opties) {
     const metOnderdelen = pasOnderdelenToe(lijst, opties.onderdelen || [], {
       draaidag: opties.draaidag, opleverdatum: opties.opleverdatum, vandaag, meetings: opties.meetings || {}, deliverables: opties.deliverables || {},
+      eigenPlanning: opties.eigenPlanning || [],
       verledenNaarVandaag: opties.verledenNaarVandaag, wie: ik, nieuwId: uid,
     });
     zetLijst("werk", metOnderdelen);
     bewaarSjablonen(registreerGebruik(sjablonen, sjabloon.id).map(t => (t.id === sjabloon.id
-      ? { ...t, laatsteOnderdelen: opties.onderdelen || [], onderdelenBekend: metOnderdelen.project.onderdelenBekend, laatsteDeliverables: normaliseerDeliverables(opties.deliverables) }
+      ? onthoudPlanningNamen({ ...t, laatsteOnderdelen: opties.onderdelen || [], onderdelenBekend: metOnderdelen.project.onderdelenBekend, laatsteDeliverables: normaliseerDeliverables(opties.deliverables) }, opties.eigenPlanning)
       : t)));
     return metOnderdelen;
   }
@@ -277,8 +279,13 @@ export default function TakenApp() {
   function lijstVan(ruimte, listId) {
     return (ruimte === "werk" ? werkRef.current?.lists || [] : thuisRef.current).find(l => l.id === listId);
   }
-  function zetLijst(ruimte, nieuw, { verwijderd = false } = {}) {
+  function zetLijst(ruimte, nieuwOrigineel, { verwijderd = false } = {}) {
     lastWriteRef.current = Date.now();
+    // Projecten: "buy-out loopt af"-herinneringen altijd in de pas houden met
+    // de namen, buy-outs en datums (een maand vóór het einde, 10:00).
+    const nieuw = !verwijderd && nieuwOrigineel.project
+      ? synchroniseerBuyoutHerinneringen(nieuwOrigineel, { nieuwId: uid, wie: ik })
+      : nieuwOrigineel;
     // Taken die in déze wijziging zijn weggehaald expliciet meesturen; de
     // server bewaart anders taken die < 10 s geleden zijn toegevoegd (bedoeld
     // voor een ander toestel) en dan zou een net verwijderde taak terugkomen.
@@ -598,8 +605,12 @@ export default function TakenApp() {
         const sjabloon = sjablonen.find(t => t.id === lijst.project?.sjabloonId);
         return (
           <OnderdelenSheet lijst={lijst} sjabloon={sjabloon} vandaag={vandaag} sluit={() => setSheet(null)}
-            toepassen={(onderdelen, meetings, deliverables) => {
-              zetLijst("werk", pasOnderdelenToe(lijstVan("werk", lijst.id), onderdelen, { draaidag: lijst.project.draaidag, vandaag, meetings, deliverables, wie: ik, nieuwId: uid }));
+            toepassen={(onderdelen, meetings, deliverables, eigenPlanning) => {
+              zetLijst("werk", pasOnderdelenToe(lijstVan("werk", lijst.id), onderdelen, { draaidag: lijst.project.draaidag, vandaag, meetings, deliverables, eigenPlanning, wie: ik, nieuwId: uid }));
+              // Nieuwe eigen afspraken onthouden bij het sjabloon (voor de suggesties).
+              const oudeIds = new Set((lijst.project.eigenPlanning || []).map(e => e.id));
+              const nieuwe = eigenPlanning.filter(e => !oudeIds.has(e.id));
+              if (sjabloon && nieuwe.length) bewaarSjablonen(sjablonen.map(t => (t.id === sjabloon.id ? onthoudPlanningNamen(t, nieuwe) : t)));
               setSheet(null);
               meld("🧩 Onderdelen bijgewerkt");
             }} />
@@ -1268,6 +1279,13 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
           <input type="date" value={oplever || ""} onChange={e => setOplever(e.target.value)} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
         </label>
       </div>
+      {/* Campagne live: startpunt van de buy-outs (leeg = opleverdatum). */}
+      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 12, color: C.muted, fontWeight: 700 }}>
+        📡 CAMPAGNE LIVE
+        <input type="date" value={p.liveDatum || ""} onChange={e => zetProject({ liveDatum: e.target.value || null })} aria-label="Campagne live"
+          style={{ ...S.inp, padding: "6px 8px", fontSize: 13, width: "auto" }} />
+        {!p.liveDatum && <span style={{ fontWeight: 400 }}>leeg = oplevering</span>}
+      </label>
       {gewijzigd && draai && oplever && (
         <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, color: C.muted, flex: 1 }}>Open taken schuiven evenveel dagen mee.</span>
@@ -1930,6 +1948,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
   const [verledenNaarVandaag, setVerledenNaarVandaag] = useState(true);
   const [onderdelen, setOnderdelen] = useState(() => standaardOnderdelen(sjabloon));
   const [deliverables, setDeliverables] = useState(() => normaliseerDeliverables(vanOfferte?.project?.deliverables || sjabloon?.laatsteDeliverables || {}));
+  const [eigenPlanning, setEigenPlanning] = useState([]);
   const [meetings, setMeetings] = useState(() => standaardMeetings({ draaidag, vandaag }));
   const [ppmAangepast, setPpmAangepast] = useState(false);
   // PPM schuift mee met de draaidag zolang je 'm niet zelf hebt aangepast.
@@ -2006,6 +2025,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
         <p style={{ ...S.sectieKop, marginTop: 18 }}>📦 Deliverables</p>
         <DeliverablesKiezer waarde={deliverables} zet={setDeliverables} />
         <OnderdelenKiezer gekozen={onderdelen} setGekozen={setOnderdelen} meetings={meetings}
+          eigenPlanning={eigenPlanning} setEigenPlanning={setEigenPlanning} suggesties={planningSuggesties(sjabloon, eigenPlanning)} draaidag={draaidag}
           setMeetings={(m) => { setMeetings(m); setPpmAangepast(true); }} />
         {teLaat > 0 && (
           <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, fontSize: 14 }}>
@@ -2013,7 +2033,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
             {teLaat} {teLaat === 1 ? "stap ligt" : "stappen liggen"} al in het verleden — op vandaag zetten
           </label>
         )}
-        <button disabled={!kan} onClick={() => maak(sjabloon, { naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag, onderdelen, meetings, deliverables })}
+        <button disabled={!kan} onClick={() => maak(sjabloon, { naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag, onderdelen, meetings, deliverables, eigenPlanning })}
           style={{ ...S.knop(), width: "100%", marginTop: 16, opacity: kan ? 1 : 0.5 }}>
           🎬 {vanOfferte ? "Productie starten" : "Project starten"} ({sjabloon.stappen.length} taken)
         </button>
@@ -2212,7 +2232,7 @@ function LeerSheet({ lijst, sjabloon, sluit, toepassen }) {
 // ONDERDELEN-KIEZER — per groep chips die je met één tik aan/uit zet.
 // Kickoff en PPM krijgen een datum en tijd zodra ze aan staan.
 // ════════════════════════════════════════════════════════════════════
-function OnderdelenKiezer({ gekozen, setGekozen, meetings, setMeetings }) {
+function OnderdelenKiezer({ gekozen, setGekozen, meetings, setMeetings, eigenPlanning = null, setEigenPlanning, suggesties = [], draaidag }) {
   const aan = new Set(gekozen);
   const zet = (id) => { const n = new Set(aan); n.has(id) ? n.delete(id) : n.add(id); setGekozen([...n]); };
   return (
@@ -2249,6 +2269,9 @@ function OnderdelenKiezer({ gekozen, setGekozen, meetings, setMeetings }) {
                   style={{ ...S.inp, padding: "6px 8px", fontSize: 14, width: 104 }} />
               </div>
             ))}
+            {g.groep === "Planning" && eigenPlanning && (
+              <EigenPlanning lijst={eigenPlanning} zet={setEigenPlanning} suggesties={suggesties} draaidag={draaidag} />
+            )}
           </div>
         );
       })}
@@ -2260,8 +2283,10 @@ function OnderdelenKiezer({ gekozen, setGekozen, meetings, setMeetings }) {
 function OnderdelenSheet({ lijst, sjabloon, vandaag, sluit, toepassen }) {
   const p = lijst.project;
   const [gekozen, setGekozen] = useState(() => p.onderdelen || standaardOnderdelen(sjabloon));
-  const [meetings, setMeetings] = useState(() => standaardMeetings({ draaidag: p.draaidag, vandaag, bestaand: p.meetings || {} }));
+  const uitTaken = useMemo(() => leesPlanningUitTaken(lijst), []);
+  const [meetings, setMeetings] = useState(() => standaardMeetings({ draaidag: p.draaidag, vandaag, bestaand: { ...(p.meetings || {}), ...uitTaken.meetings } }));
   const [deliverables, setDeliverables] = useState(() => normaliseerDeliverables(p.deliverables || {}));
+  const [eigenPlanning, setEigenPlanning] = useState(() => uitTaken.eigenPlanning);
   const weg = telVerdwijnendeTaken(lijst, gekozen);
   return (
     <div style={S.sheetAchter} onClick={sluit}>
@@ -2271,9 +2296,9 @@ function OnderdelenSheet({ lijst, sjabloon, vandaag, sluit, toepassen }) {
         <p style={{ ...S.sectieKop, marginTop: 4 }}>📦 Deliverables</p>
         <DeliverablesKiezer waarde={deliverables} zet={setDeliverables} />
         <p style={{ ...S.sectieKop, marginTop: 14 }}>🧩 Onderdelen</p>
-        <OnderdelenKiezer {...{ gekozen, setGekozen, meetings, setMeetings }} />
+        <OnderdelenKiezer {...{ gekozen, setGekozen, meetings, setMeetings, eigenPlanning, setEigenPlanning }} suggesties={planningSuggesties(sjabloon, eigenPlanning)} draaidag={p.draaidag} />
         {weg > 0 && <p style={{ ...S.hint, color: C.oranje }}>⚠️ {weg} open {weg === 1 ? "taak verdwijnt" : "taken verdwijnen"} uit het project.</p>}
-        <button style={{ ...S.knop(), width: "100%", marginTop: 12 }} onClick={() => toepassen(gekozen, meetings, deliverables)}>Toepassen</button>
+        <button style={{ ...S.knop(), width: "100%", marginTop: 12 }} onClick={() => toepassen(gekozen, meetings, deliverables, eigenPlanning)}>Toepassen</button>
       </div>
     </div>
   );
@@ -2307,7 +2332,7 @@ function BezettingEditor({ taak, wijzigLaatste, contacten, onthoud, project = {}
               </p>
             )}
             {regels.map(b => (
-              <BezettingRegel key={b.id} b={b} contacten={contacten} opleverdatum={project.opleverdatum} wijzig={(v) => wijzig(b.id, v)} verwijder={() => pasAan(lijst => lijst.filter(x => x.id !== b.id))}
+              <BezettingRegel key={b.id} b={b} contacten={contacten} opleverdatum={buyoutStart(project)} wijzig={(v) => wijzig(b.id, v)} verwijder={() => pasAan(lijst => lijst.filter(x => x.id !== b.id))}
                 onthoud={(volledig) => { const contactId = onthoud(volledig); if (contactId && contactId !== b.contactId) wijzig(b.id, { contactId }); }} />
             ))}
             <button onClick={() => pasAan(lijst => [...lijst, nieuweBezetting({ onderdeelId: sec.id, buyouts: standaardBuyouts(project.deliverables, sec.id), eenheid: isLocatie || sec.id === "hotel" || sec.id === "verzekering" || sec.id === "catering" ? "totaal" : "dag" }, uid)])}
@@ -2515,7 +2540,36 @@ function BuyoutEditor({ b, opleverdatum, wijzig }) {
           </div>
         );
       })}
-      {lijst.some(x => x.duur) && <p style={{ ...S.hint, marginTop: 0 }}>Looptijd gerekend vanaf de opleverdatum; pas aan als de campagne later live gaat.</p>}
+      {lijst.some(x => x.duur) && <p style={{ ...S.hint, marginTop: 0 }}>Looptijd vanaf "campagne live" in de projectkop (of anders de oplevering). Een maand vóór het einde krijg je een herinnering.</p>}
+    </div>
+  );
+}
+
+// Zelf toegevoegde planning: naam + datum + tijd, met snelkeuzes van eerder.
+function EigenPlanning({ lijst, zet, suggesties, draaidag }) {
+  const voegToe = (naam = "") => zet([...lijst, { id: uid(), naam, datum: draaidag ? plusDagen(draaidag, -7) : null, tijd: "10:00" }]);
+  const wijzig = (id, velden) => zet(lijst.map(e => (e.id === id ? { ...e, ...velden } : e)));
+  return (
+    <div style={{ marginTop: 10 }}>
+      {lijst.map(e => (
+        <div key={e.id} style={{ background: C.bg, borderRadius: 10, padding: 8, marginBottom: 6 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input value={e.naam} autoFocus={!e.naam} placeholder="Bijv. moodboardpresentatie, locatiebezoek" aria-label="Naam afspraak"
+              onChange={ev => wijzig(e.id, { naam: ev.target.value })} style={{ ...S.inp, padding: "6px 8px", fontSize: 14 }} />
+            <button onClick={() => zet(lijst.filter(x => x.id !== e.id))} aria-label="Afspraak verwijderen" style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}><X size={15} color={C.licht} /></button>
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <input type="date" value={e.datum || ""} aria-label={`Datum ${e.naam || "afspraak"}`} onChange={ev => wijzig(e.id, { datum: ev.target.value || null })} style={{ ...S.inp, padding: "6px 8px", fontSize: 14 }} />
+            <input type="time" value={e.tijd || "10:00"} aria-label={`Tijd ${e.naam || "afspraak"}`} onChange={ev => wijzig(e.id, { tijd: ev.target.value || "10:00" })} style={{ ...S.inp, padding: "6px 8px", fontSize: 14, width: 104 }} />
+          </div>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <button onClick={() => voegToe()} style={{ ...S.chip(false), padding: "6px 11px", fontSize: 13, color: C.groen, fontWeight: 700 }}>+ Eigen planning toevoegen</button>
+        {suggesties.map(n => (
+          <button key={n} onClick={() => voegToe(n)} title="Eerder gebruikt" style={{ ...S.chip(false), padding: "5px 10px", fontSize: 12, borderStyle: "dashed" }}>+ {n}</button>
+        ))}
+      </div>
     </div>
   );
 }

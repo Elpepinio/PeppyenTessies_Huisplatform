@@ -274,4 +274,53 @@ test("buy-outbedragen apart opgeteld", sb.perEenheid.dag === 600 && sb.perEenhei
 const bk = P.onthoudContact([], { onderdeelId: "acteurs", naam: "Eva", bedrag: 600, eenheid: "dag", buyouts: [{ medium: "tv", duur: "1j", bedrag: 1500 }, { medium: "online", duur: null, bedrag: null }] }, { projectId: "p", projectNaam: "P", datum: "2026-11-22", nieuwId }).contacten;
 test("buy-outafspraak onthouden bij het contact (lege regels niet)", bk[0].prijzen.acteurs.buyouts.length === 1 && bk[0].prijzen.acteurs.buyouts[0].bedrag === 1500 && bk[0].prijzen.acteurs.bedrag === 600);
 
+sectie("Eigen planning — zelf afspraken toevoegen");
+const epBasis = P.maakProjectUitSjabloon(klein, { naam: "EP", draaidag: "2027-01-20", opleverdatum: "2027-02-10", vandaag: "2026-11-22", nieuwId });
+const ep = [
+  { id: "e1", naam: "Moodboardpresentatie", datum: "2026-12-15", tijd: "14:00" },
+  { id: "e2", naam: "Extra draaidag", datum: "2027-01-20", tijd: "08:00" },
+  { id: "e3", naam: "Review met klant", datum: "2027-02-01", tijd: "11:30" },
+  { id: "e4", naam: "  ", datum: "2027-02-02" },
+];
+const epP = P.pasOnderdelenToe(epBasis, [], { vandaag: "2026-11-22", eigenPlanning: ep, nieuwId });
+const epi = (id) => epP.items.filter(i => i.eigenPlanningId === id);
+test("elke afspraak wordt één taak met herinnering een uur vooraf", epi("e1").length === 1 && epi("e1")[0].dueDate === "2026-12-15" && epi("e1")[0].herinnering === "2026-12-15T13:00" && epi("e1")[0].note === "Om 14:00");
+test("fase volgt de datum: vóór / op / na de draaidag", epi("e1")[0].category === "pre" && epi("e2")[0].category === "productie" && epi("e3")[0].category === "post");
+test("afspraak zonder naam wordt genegeerd", !epi("e4").length && epP.project.eigenPlanning.length === 3);
+const epGewijzigd = P.pasOnderdelenToe(epP, [], { vandaag: "2026-11-22", eigenPlanning: [{ ...ep[0], datum: "2026-12-16" }, ep[2]], nieuwId });
+test("verzetten werkt de taak bij (geen dubbele)", epGewijzigd.items.filter(i => i.eigenPlanningId === "e1").length === 1 && epGewijzigd.items.find(i => i.eigenPlanningId === "e1").dueDate === "2026-12-16");
+test("weggehaalde afspraak verdwijnt", !epGewijzigd.items.some(i => i.eigenPlanningId === "e2"));
+test("zonder eigenPlanning-parameter blijft alles staan", P.pasOnderdelenToe(epP, [], { vandaag: "2026-11-22", nieuwId }).items.filter(i => i.eigenPlanningId).length === 3);
+const verzetInTaak = { ...epP, items: epP.items.map(i => (i.eigenPlanningId === "e1" ? { ...i, dueDate: "2026-12-18", note: "Om 09:30" } : i)) };
+const gelezen = P.leesPlanningUitTaken(verzetInTaak);
+test("planning wordt uit de taken gelezen (in de taak verzet → gaat mee)", gelezen.eigenPlanning.find(e => e.id === "e1").datum === "2026-12-18" && gelezen.eigenPlanning.find(e => e.id === "e1").tijd === "09:30");
+test("eigen planning wordt niet als sjabloonstap voorgesteld", !P.berekenLeerVoorstellen(klein, epP).some(v => v.type === "toevoegen"));
+test("eigen planning telt niet als 'verdwijnende' onderdeeltaak", P.telVerdwijnendeTaken(epP, []) === P.telVerdwijnendeTaken(epBasis, []));
+let tk = P.onthoudPlanningNamen(klein, ep);
+tk = P.onthoudPlanningNamen(tk, [{ naam: "Moodboardpresentatie" }]);
+test("namen onthouden per sjabloon, vaakst gebruikt eerst", P.planningSuggesties(tk).join("|") === "Moodboardpresentatie|Extra draaidag|Review met klant");
+test("al gekozen namen niet nogmaals voorstellen", !P.planningSuggesties(tk, [{ naam: "moodboardpresentatie" }]).includes("Moodboardpresentatie"));
+
+sectie("Buy-out loopt af — herinnering een maand van tevoren");
+const boLijst = { id: "L", items: [{ id: "a", onderdeelId: "acteurs", bezetting: [
+  { id: "b1", naam: "Eva Jansen", buyouts: [{ medium: "tv", duur: "1j" }, { medium: "online", duur: "onbeperkt" }, { medium: "online-paid", duur: null }] },
+  { id: "b2", naam: "", buyouts: [{ medium: "tv", duur: "1j" }] },
+] }], project: { opleverdatum: "2027-02-10", klantId: "k1" } };
+const bo1 = P.synchroniseerBuyoutHerinneringen(boLijst, { nieuwId });
+const boTaken = bo1.items.filter(i => i.buyoutKey);
+test("alleen buy-outs met een looptijd (niet onbeperkt, niet leeg, niet zonder naam)", boTaken.length === 1);
+test("einde 1 jaar na oplevering (9 feb 2028) → herinnering 9 jan 2028 om 10:00", boTaken[0].dueDate === "2028-01-09" && boTaken[0].herinnering === "2028-01-09T10:00");
+test("duidelijke naam en notitie, belangrijk, postproductie, klant", /Eva Jansen — TV/.test(boTaken[0].name) && /09-02-2028/.test(boTaken[0].note) && boTaken[0].belangrijk && boTaken[0].category === "post" && boTaken[0].klantId === "k1");
+test("opnieuw synchroniseren zonder wijziging → zelfde object (niets opslaan)", P.synchroniseerBuyoutHerinneringen(bo1, { nieuwId }) === bo1);
+const live = P.synchroniseerBuyoutHerinneringen({ ...bo1, project: { ...bo1.project, liveDatum: "2027-03-01" } }, { nieuwId });
+test("campagne live later → einddatum en herinnering schuiven mee (geen dubbele taak)", live.items.filter(i => i.buyoutKey).length === 1 && live.items.find(i => i.buyoutKey).dueDate === "2028-01-29");
+const korter = P.synchroniseerBuyoutHerinneringen({ ...bo1, items: bo1.items.map(i => (i.id === "a" ? { ...i, bezetting: [{ ...i.bezetting[0], buyouts: [{ medium: "tv", duur: "6m" }] }] } : i)) }, { nieuwId });
+test("looptijd korter → herinnering eerder", korter.items.find(i => i.buyoutKey).dueDate === "2027-07-09");
+const weg = P.synchroniseerBuyoutHerinneringen({ ...bo1, items: bo1.items.map(i => (i.id === "a" ? { ...i, bezetting: [] } : i)) }, { nieuwId });
+test("buy-out of naam weg → open herinnering weg", !weg.items.some(i => i.buyoutKey));
+const afgevinkt = { ...bo1, items: bo1.items.map(i => (i.buyoutKey ? { ...i, checked: true } : i.id === "a" ? { ...i, bezetting: [] } : i)) };
+test("afgevinkte herinnering blijft staan", P.synchroniseerBuyoutHerinneringen(afgevinkt, { nieuwId }).items.some(i => i.buyoutKey));
+test("zonder oplever- of livedatum: geen herinnering", !P.synchroniseerBuyoutHerinneringen({ ...boLijst, project: {} }, { nieuwId }).items.some(i => i.buyoutKey));
+test("buy-outherinnering wordt niet als sjabloonstap voorgesteld", !P.berekenLeerVoorstellen(klein, { ...bo1, project: { ...bo1.project, stapIds: [] }, items: bo1.items.map(i => (i.buyoutKey ? { ...i, category: "post" } : i)) }).some(v => v.type === "toevoegen"));
+
 samenvatting();
