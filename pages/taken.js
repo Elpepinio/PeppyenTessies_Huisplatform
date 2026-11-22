@@ -24,6 +24,10 @@ import {
   vandaagStr, plusDagen, isoWeekdag, normaliseerHerhaling, herhalingLabel, vinkTaak, isInMijnDag,
   groepeerGepland, sorteerTaken, planDatum, ontleedSnelleInvoer, ontleedPlakImport, nieuweTaak, isGeldigePin,
 } from "../lib/taken-logica";
+import {
+  FASES, SOORTEN, STANDAARD_SJABLONEN, maakProjectUitSjabloon, registreerGebruik, verschuifProject, projectVoortgang,
+  berekenLeerVoorstellen, pasLeerVoorstellenToe, sorteerStappen, normaliseerStap, offsetTekst, timingHint, stapDatum,
+} from "../lib/projecten-logica";
 
 // ── Stijl (zelfde palet als de rest van Ons Huishouden) ─────────────
 const C = {
@@ -126,6 +130,23 @@ export default function TakenApp() {
   const werkLijsten = werk?.lists || [];
   const klanten = (werk?.klanten || []).filter(k => !k.gearchiveerd);
   const klantVan = (id) => (werk?.klanten || []).find(k => k.id === id);
+  // Nog nooit iets aan de sjablonen veranderd? Dan gelden de standaard-
+  // sjablonen (klein/groot commercial); bij de eerste wijziging worden ze
+  // als eigen kopie opgeslagen en vanaf dan aangepast/bijgeleerd.
+  const sjablonen = werk?.sjablonen || STANDAARD_SJABLONEN;
+
+  function bewaarSjablonen(next) {
+    const w = { ...werkRef.current, sjablonen: next };
+    werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
+    post("/api/taken/werk", { sjablonen: next });
+  }
+  function maakKlant(naam) {
+    const k = { id: uid(), naam: naam.trim(), kleur: KLANT_KLEUREN[(werkRef.current?.klanten || []).length % KLANT_KLEUREN.length] };
+    const next = { ...werkRef.current, klanten: [...(werkRef.current?.klanten || []), k] };
+    werkRef.current = next; setWerk(next); lastWriteRef.current = Date.now();
+    post("/api/taken/werk", { klanten: next.klanten });
+    return k.id;
+  }
 
   function meld(tekst, ongedaan = null) {
     setToast({ tekst, ongedaan });
@@ -376,7 +397,9 @@ export default function TakenApp() {
 
       {weergave.soort === "overzicht" && (
         <Overzicht
-          {...{ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, mailInfo, meldingen, aantal, vandaag }}
+          {...{ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, vandaag }}
+          openNieuwProject={(sjabloonId) => setSheet({ soort: "nieuwProject", sjabloonId })}
+          openSjablonen={() => setSheet("sjablonen")}
           open={(w) => { setKlantFilter(null); setWeergave(w); setVoltooidOpen(false); }}
           nieuweLijst={(ruimte) => setSheet({ soort: "nieuweLijst", ruimte })}
           openPin={(modus) => { setPinModus(modus); setSheet("pin"); }}
@@ -418,11 +441,21 @@ export default function TakenApp() {
           <LijstWeergave
             ruimte={weergave.ruimte} lijst={lijst}
             {...{ klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, vandaag, chronoRef }}
+            sjabloon={lijst.project ? sjablonen.find(t => t.id === lijst.project.sjabloonId) : null}
+            verschuif={(data) => {
+              wijzigLijst(weergave.ruimte, lijst.id, l => verschuifProject(l, data));
+              meld("📅 Planning verschoven — open taken schuiven mee");
+            }}
+            zetProject={(velden) => wijzigLijst(weergave.ruimte, lijst.id, l => ({ ...l, project: { ...l.project, ...velden } }))}
+            openLeren={() => setSheet({ soort: "leren", listId: lijst.id })}
             terug={() => setWeergave({ soort: "overzicht" })}
             vink={(i) => vink(weergave.ruimte, lijst.id, i.id)}
             ster={(i) => zetVelden(weergave.ruimte, lijst.id, i.id, { belangrijk: !i.belangrijk })}
             openTaak={(i) => setDetail({ ruimte: weergave.ruimte, listId: lijst.id, itemId: i.id })}
-            voegToe={(tekst) => voegToe(weergave.ruimte, lijst.id, tekst, weergave.ruimte === "werk" && klantFilter ? { klantId: klantFilter } : {})}
+            voegToe={(tekst, extra = {}) => voegToe(weergave.ruimte, lijst.id, tekst, {
+              ...(weergave.ruimte === "werk" && (klantFilter || lijst.project?.klantId) ? { klantId: klantFilter || lijst.project.klantId } : {}),
+              ...extra,
+            })}
             wijzig={(velden) => wijzigLijst(weergave.ruimte, lijst.id, l => ({ ...l, ...velden }))}
             verwijder={() => {
               if (!window.confirm(`Lijst "${lijst.name}" met ${(lijst.items || []).length} taken verwijderen?`)) return;
@@ -448,13 +481,7 @@ export default function TakenApp() {
           vink={() => vink(detail.ruimte, detail.listId, detail.itemId)}
           verwijder={() => verwijderTaak(detail.ruimte, detail.listId, detail.itemId)}
           verplaats={(naar) => verplaatsTaak(detail, naar)}
-          nieuweKlant={(naam) => {
-            const k = { id: uid(), naam: naam.trim(), kleur: KLANT_KLEUREN[(werk?.klanten || []).length % KLANT_KLEUREN.length] };
-            const next = { ...werkRef.current, klanten: [...(werkRef.current?.klanten || []), k] };
-            werkRef.current = next; setWerk(next); lastWriteRef.current = Date.now();
-            post("/api/taken/werk", { klanten: next.klanten });
-            return k.id;
-          }}
+          nieuweKlant={maakKlant}
         />
       )}
 
@@ -480,6 +507,42 @@ export default function TakenApp() {
           post("/api/taken/werk", { klanten: lijst });
         }} />
       )}
+      {sheet?.soort === "nieuwProject" && (
+        <NieuwProjectSheet
+          {...{ sjablonen, klanten, vandaag }} startSjabloonId={sheet.sjabloonId} nieuweKlant={maakKlant}
+          sluit={() => setSheet(null)}
+          maak={(sjabloon, opties) => {
+            const lijst = maakProjectUitSjabloon(sjabloon, { ...opties, vandaag, wie: ik, nieuwId: uid });
+            zetLijst("werk", lijst);
+            bewaarSjablonen(registreerGebruik(sjablonen, sjabloon.id));
+            setSheet(null);
+            setKlantFilter(null);
+            setWeergave({ soort: "lijst", ruimte: "werk", listId: lijst.id });
+            meld(`🎬 Project "${lijst.name}" gestart met ${lijst.items.length} taken`);
+          }}
+        />
+      )}
+      {sheet === "sjablonen" && (
+        <SjablonenSheet {...{ sjablonen }} sluit={() => setSheet(null)} bewaar={bewaarSjablonen}
+          startProject={(id) => setSheet({ soort: "nieuwProject", sjabloonId: id })} meld={meld} />
+      )}
+      {sheet?.soort === "leren" && (() => {
+        const lijst = lijstVan("werk", sheet.listId);
+        const sjabloon = lijst?.project ? sjablonen.find(t => t.id === lijst.project.sjabloonId) : null;
+        return (
+          <LeerSheet lijst={lijst} sjabloon={sjabloon} sluit={() => setSheet(null)}
+            toepassen={(voorstellen, gekozen, afronden) => {
+              if (sjabloon) {
+                const nieuw = pasLeerVoorstellenToe(sjabloon, lijst, voorstellen, gekozen, uid, { metTiming: !lijst.project.geleerdOp });
+                bewaarSjablonen(sjablonen.map(t => (t.id === sjabloon.id ? nieuw : t)));
+              }
+              wijzigLijst("werk", lijst.id, l => ({ ...l, project: { ...l.project, geleerdOp: Date.now(), afgerond: afronden || l.project.afgerond } }));
+              setSheet(null);
+              if (afronden) setWeergave({ soort: "overzicht" });
+              meld(gekozen.length ? `🧠 Sjabloon bijgewerkt (${gekozen.length} ${gekozen.length === 1 ? "aanpassing" : "aanpassingen"})` : "🧠 Timing vastgelegd voor een volgende keer");
+            }} />
+        );
+      })()}
       {sheet === "import" && (
         <ImportSheet
           {...{ thuisLijsten, werkLijsten, werkStaat, chronoRef, ik }}
@@ -527,8 +590,13 @@ export default function TakenApp() {
 // ════════════════════════════════════════════════════════════════════
 // OVERZICHT
 // ════════════════════════════════════════════════════════════════════
-function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, zetMeldingenAan, vergrendel, kopieerAdres }) {
+function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, openNieuwProject, openSjablonen, zetMeldingenAan, vergrendel, kopieerAdres }) {
   const openAantal = (l) => (l.items || []).filter(i => !i.checked).length;
+  const [afgerondOpen, setAfgerondOpen] = useState(false);
+  const projecten = werkLijsten.filter(l => l.project && !l.project.afgerond)
+    .sort((a, b) => (a.project.draaidag || "").localeCompare(b.project.draaidag || ""));
+  const afgerond = werkLijsten.filter(l => l.project?.afgerond);
+  const gewoon = werkLijsten.filter(l => !l.project);
   return (
     <>
       <header style={S.header}>
@@ -603,8 +671,47 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
         )}
         {werkStaat === "open" && (
           <>
+            {/* Projecten (uit een sjabloon) — op volgorde van draaidag */}
+            <p style={{ ...S.sectieKop, marginTop: 4 }}>🎬 Projecten</p>
             <div style={S.kaart}>
-              {werkLijsten.map(l => (
+              {projecten.map(l => {
+                const vg = projectVoortgang(l);
+                const klaar = vg.reduce((n, f) => n + f.klaar, 0), totaal = vg.reduce((n, f) => n + f.totaal, 0);
+                const klant = klantVan(l.project.klantId);
+                return (
+                  <button key={l.id} style={S.rij} onClick={() => open({ soort: "lijst", ruimte: "werk", listId: l.id })}>
+                    <span style={{ fontSize: 18, width: 22, textAlign: "center" }}>{l.icon || "🎬"}</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 15 }}>{l.name}</span>
+                      <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 2 }}>
+                        {klant && <span style={{ color: klant.kleur || C.groen, fontWeight: 700 }}>● {klant.naam} · </span>}
+                        Draaidag {datumKort(l.project.draaidag)} · {klaar}/{totaal} klaar
+                      </span>
+                      <span style={{ display: "flex", gap: 3, marginTop: 6 }}>
+                        {vg.map(f => (
+                          <span key={f.id} title={`${f.label}: ${f.klaar}/${f.totaal}`} style={{ flex: Math.max(1, f.totaal), height: 4, borderRadius: 4, background: "#EFE9DC", overflow: "hidden" }}>
+                            <span style={{ display: "block", height: "100%", width: `${f.totaal ? (100 * f.klaar) / f.totaal : 0}%`, background: C.groen }} />
+                          </span>
+                        ))}
+                      </span>
+                    </span>
+                    <ChevronRight size={16} color={C.licht} />
+                  </button>
+                );
+              })}
+              <button style={{ ...S.rij, color: C.groen }} onClick={() => openNieuwProject(null)}>
+                <Plus size={18} color={C.groen} /><span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Nieuw project uit sjabloon</span>
+              </button>
+              <button style={{ ...S.rij, borderBottom: "none" }} onClick={openSjablonen}>
+                <span style={{ fontSize: 16, width: 18, textAlign: "center" }}>📐</span>
+                <span style={{ flex: 1, fontSize: 14 }}>Sjablonen beheren</span>
+                <ChevronRight size={16} color={C.licht} />
+              </button>
+            </div>
+
+            <p style={{ ...S.sectieKop, marginTop: 4 }}>📋 Werklijsten</p>
+            <div style={S.kaart}>
+              {gewoon.map(l => (
                 <button key={l.id} style={S.rij} onClick={() => open({ soort: "lijst", ruimte: "werk", listId: l.id })}>
                   <span style={{ fontSize: 18, width: 22, textAlign: "center" }}>{l.icon || "💼"}</span>
                   <span style={{ flex: 1, fontSize: 15 }}>{l.name}</span>
@@ -616,6 +723,24 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                 <Plus size={18} color={C.groen} /><span style={{ fontSize: 14, fontWeight: 600 }}>Nieuwe werklijst</span>
               </button>
             </div>
+            {afgerond.length > 0 && (
+              <>
+                <button onClick={() => setAfgerondOpen(!afgerondOpen)} style={{ ...S.sectieKop, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit" }}>
+                  <ChevronDown size={14} style={{ transform: afgerondOpen ? "none" : "rotate(-90deg)" }} /> Afgeronde projecten · {afgerond.length}
+                </button>
+                {afgerondOpen && (
+                  <div style={S.kaart}>
+                    {afgerond.map(l => (
+                      <button key={l.id} style={S.rij} onClick={() => open({ soort: "lijst", ruimte: "werk", listId: l.id })}>
+                        <span style={{ fontSize: 18, width: 22, textAlign: "center", opacity: 0.6 }}>{l.icon || "🎬"}</span>
+                        <span style={{ flex: 1, fontSize: 14, color: C.muted }}>{l.name} · {datumKort(l.project.draaidag)}</span>
+                        <ChevronRight size={16} color={C.licht} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
 
             {/* Het persoonlijke e-mailadres staat bewust hier, op het overzicht:
                 zo is het altijd met één tik terug te vinden en te kopiëren. */}
@@ -707,7 +832,9 @@ function TaakRegel({ item, lijst, ruimte, toonLijst, klant, vink, ster, open, ex
         {item.checked && <Check size={14} color="#FAF6F0" strokeWidth={3} />}
       </button>
       <button onClick={open} style={{ flex: 1, minWidth: 0, background: "none", border: "none", textAlign: "left", cursor: "pointer", padding: 0, fontFamily: "inherit", color: "inherit" }}>
-        <span style={{ display: "block", fontSize: 15, lineHeight: 1.3, color: item.checked ? C.licht : C.tekst, textDecoration: item.checked ? "line-through" : "none", wordBreak: "break-word" }}>{item.name}</span>
+        <span style={{ display: "block", fontSize: 15, lineHeight: 1.3, color: item.checked ? C.licht : C.tekst, textDecoration: item.checked ? "line-through" : "none", wordBreak: "break-word" }}>
+          {SOORTEN[item.soort] && item.soort !== "taak" && <span title={SOORTEN[item.soort].label} style={{ marginRight: 5 }}>{SOORTEN[item.soort].icon}</span>}{item.name}
+        </span>
         {meta.length > 0 && (
           <span style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", fontSize: 12, color: C.muted, marginTop: 3 }}>{meta}</span>
         )}
@@ -720,7 +847,7 @@ function TaakRegel({ item, lijst, ruimte, toonLijst, klant, vink, ster, open, ex
   );
 }
 
-function InvoerBalk({ placeholder, voegToe, chronoRef }) {
+function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null }) {
   const [tekst, setTekst] = useState("");
   const voorbeeld = tekst.trim().length > 2 ? ontleedSnelleInvoer(tekst, chronoRef.current, new Date()) : null;
   const chips = [];
@@ -736,6 +863,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef }) {
   return (
     <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, padding: "10px 16px 24px", background: `linear-gradient(180deg, rgba(250,246,240,0) 0%, ${C.bg} 30%)`, zIndex: 20 }}>
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        {boven}
         {chips.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
             {chips.map(c => <span key={c} style={{ fontSize: 12, background: "#2D4A3E14", color: C.groen, borderRadius: 999, padding: "4px 10px", fontWeight: 600 }}>{c}</span>)}
@@ -861,8 +989,11 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid }) {
+function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren }) {
   const [menu, setMenu] = useState(false);
+  const isProject = !!lijst.project;
+  const eersteOpenFase = isProject ? (FASES.find(f => (lijst.items || []).some(i => i.category === f.id && !i.checked)) || FASES[0]).id : null;
+  const [nieuweFase, setNieuweFase] = useState(eersteOpenFase);
   const [naam, setNaam] = useState(lijst.name);
   useEffect(() => setNaam(lijst.name), [lijst.id, lijst.name]);
   const sortering = lijst.takenSortering || "handmatig";
@@ -879,7 +1010,7 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
         <button onClick={terug} aria-label="Terug" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex" }}><ChevronLeft size={22} color={C.groen} /></button>
         <span style={{ fontSize: 22 }}>{lijst.icon}</span>
         <h1 style={S.titel}>{lijst.name}</h1>
-        <span style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.rand2}`, borderRadius: 999, padding: "3px 8px" }}>{ruimte === "werk" ? "💼 Werk" : "🏠 Thuis"}</span>
+        {!isProject && <span style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.rand2}`, borderRadius: 999, padding: "3px 8px" }}>{ruimte === "werk" ? "💼 Werk" : "🏠 Thuis"}</span>}
         <button onClick={() => setMenu(!menu)} aria-label="Lijstopties" style={{ ...S.chip(menu), padding: "5px 10px" }}>•••</button>
       </header>
       <main style={S.main}>
@@ -908,8 +1039,22 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
             {lijst.mailInbox && <p style={S.hint}>📥 Hier komen taken binnen die je naar je taken-e-mailadres stuurt.</p>}
           </div>
         )}
-        {ruimte === "werk" && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
-        {open.length > 0 ? <div style={S.kaart}>{open.map(regel)}</div> : (
+        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren }} />}
+        {ruimte === "werk" && !isProject && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
+        {isProject && open.length > 0 ? (
+          [...FASES, { id: "__overig", label: "Overig", icon: "📌" }].map(f => {
+            const inFase = open.filter(i => (f.id === "__overig" ? !FASES.some(x => x.id === i.category) : i.category === f.id));
+            if (!inFase.length) return null;
+            const totaal = (lijst.items || []).filter(i => i.category === f.id).length;
+            const klaarN = (lijst.items || []).filter(i => i.category === f.id && i.checked).length;
+            return (
+              <div key={f.id}>
+                <p style={S.sectieKop}>{f.icon} {f.label} {f.id !== "__overig" && <span style={{ fontWeight: 400 }}>· {klaarN}/{totaal}</span>}</p>
+                <div style={S.kaart}>{inFase.map(regel)}</div>
+              </div>
+            );
+          })
+        ) : open.length > 0 ? <div style={S.kaart}>{open.map(regel)}</div> : (
           <p style={{ textAlign: "center", color: C.muted, padding: "36px 20px", fontSize: 15 }}>
             {klaar.length ? "Alles gedaan! 🎉" : "Nog geen taken. Typ hieronder — bijvoorbeeld \"vrijdag 10:00 offerte sturen\"."}
           </p>
@@ -923,8 +1068,67 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
           </>
         )}
       </main>
-      <InvoerBalk chronoRef={chronoRef} voegToe={voegToe} placeholder={ruimte === "werk" ? "Werktaak toevoegen — bv. 'vrijdag offerte sturen'" : "Taak toevoegen — bv. 'morgen 9:00 tandarts bellen'"} />
+      <InvoerBalk chronoRef={chronoRef}
+        voegToe={(tekst) => voegToe(tekst, isProject ? { category: nieuweFase } : {})}
+        placeholder={isProject ? `Taak toevoegen aan ${FASES.find(f => f.id === nieuweFase)?.label.toLowerCase()}…` : ruimte === "werk" ? "Werktaak toevoegen — bv. 'vrijdag offerte sturen'" : "Taak toevoegen — bv. 'morgen 9:00 tandarts bellen'"}
+        boven={isProject && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 6, overflowX: "auto" }}>
+            {FASES.map(f => <button key={f.id} style={{ ...S.chip(nieuweFase === f.id), padding: "5px 10px", fontSize: 12 }} onClick={() => setNieuweFase(f.id)}>{f.icon} {f.label}</button>)}
+          </div>
+        )} />
     </>
+  );
+}
+
+// Projectkop: klant, draaidag, oplevering, voortgang per fase en "leren".
+function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren }) {
+  const p = lijst.project;
+  const vg = projectVoortgang(lijst);
+  const klant = klantVan(p.klantId);
+  const [draai, setDraai] = useState(p.draaidag);
+  const [oplever, setOplever] = useState(p.opleverdatum);
+  useEffect(() => { setDraai(p.draaidag); setOplever(p.opleverdatum); }, [p.draaidag, p.opleverdatum]);
+  const gewijzigd = draai !== p.draaidag || oplever !== p.opleverdatum;
+  const alles = vg.reduce((n, f) => n + f.totaal, 0), klaar = vg.reduce((n, f) => n + f.klaar, 0);
+  return (
+    <div style={{ ...S.kaart, padding: 14 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select value={p.klantId || ""} onChange={e => zetProject({ klantId: e.target.value || null })} aria-label="Klant"
+          style={{ ...S.inp, width: "auto", padding: "6px 10px", fontSize: 13, color: klant?.kleur || C.tekst, fontWeight: 700 }}>
+          <option value="">Geen klant</option>
+          {klanten.map(k => <option key={k.id} value={k.id}>● {k.naam}</option>)}
+        </select>
+        <span style={{ fontSize: 12, color: C.muted }}>📐 {sjabloon?.naam || p.sjabloonNaam || "sjabloon verwijderd"}</span>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>🎬 DRAAIDAG
+          <input type="date" value={draai || ""} onChange={e => setDraai(e.target.value)} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
+        </label>
+        <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>📦 OPLEVERING
+          <input type="date" value={oplever || ""} onChange={e => setOplever(e.target.value)} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
+        </label>
+      </div>
+      {gewijzigd && draai && oplever && (
+        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: C.muted, flex: 1 }}>Open taken schuiven evenveel dagen mee.</span>
+          <button style={{ ...S.knop(C.bg, C.tekst), padding: "7px 12px" }} onClick={() => { setDraai(p.draaidag); setOplever(p.opleverdatum); }}>Annuleer</button>
+          <button style={{ ...S.knop(), padding: "7px 12px" }} onClick={() => verschuif({ draaidag: draai, opleverdatum: oplever })}>Planning verschuiven</button>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+        {vg.map(f => (
+          <div key={f.id} style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>{f.icon} {f.klaar}/{f.totaal}</div>
+            <div style={{ height: 5, borderRadius: 5, background: "#EFE9DC", overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${f.totaal ? (100 * f.klaar) / f.totaal : 0}%`, background: C.groen }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <button onClick={openLeren} style={{ ...S.knop(klaar === alles && alles ? C.groen : C.bg, klaar === alles && alles ? "#FAF6F0" : C.groen), width: "100%", marginTop: 12, border: `1px solid ${C.rand2}` }}>
+        🧠 {p.afgerond ? "Opnieuw leren van dit project" : klaar === alles && alles ? "Alles klaar — afronden en sjabloon laten leren" : "Afronden & sjabloon laten leren"}
+      </button>
+    </div>
   );
 }
 
@@ -1062,6 +1266,21 @@ function TaakDetail({ ruimte, lijst, taak, ik, klanten, status, meldingen, zetMe
               </div>
             )}
           </div>
+        )}
+
+        {/* Projecttaak: fase en soort (het sjabloon leert hiervan) */}
+        {lijst.project && (
+          <>
+            <p style={S.label}>Fase</p>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {FASES.map(f => <button key={f.id} style={S.chip(taak.category === f.id)} onClick={() => zet({ category: f.id })}>{f.icon} {f.label}</button>)}
+            </div>
+            <p style={S.label}>Soort</p>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {Object.entries(SOORTEN).map(([id, v]) => <button key={id} style={S.chip((taak.soort || "taak") === id)} onClick={() => zet({ soort: id })}>{v.icon} {v.label}</button>)}
+            </div>
+            {taak.sjabloonStapId && <p style={S.hint}>📐 Uit het sjabloon ({offsetTekst(taak)}). Pas je naam, fase of soort aan, dan stelt de app bij het afronden voor om dat in het sjabloon over te nemen.</p>}
+          </>
         )}
 
         {/* Toewijzen (thuis) / klant (werk) */}
@@ -1408,6 +1627,282 @@ function ImportSheet({ thuisLijsten, werkLijsten, werkStaat, chronoRef, sluit, i
         <button disabled={!totaal} onClick={() => importeer({ ruimte, listId, groepen: resultaat.groepen, perKopje, datums })}
           style={{ ...S.knop(), width: "100%", marginTop: 14, opacity: totaal ? 1 : 0.5 }}>
           {totaal ? `Importeer ${totaal} ${totaal === 1 ? "taak" : "taken"}` : "Plak eerst je taken"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// PROJECTSJABLONEN
+// ════════════════════════════════════════════════════════════════════
+function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuweKlant, sluit, maak }) {
+  const [sjabloonId, setSjabloonId] = useState(startSjabloonId || sjablonen[0]?.id);
+  const sjabloon = sjablonen.find(t => t.id === sjabloonId) || sjablonen[0];
+  const [naam, setNaam] = useState("");
+  const [klantId, setKlantId] = useState("");
+  const [nieuweKlantNaam, setNieuweKlantNaam] = useState("");
+  const [draaidag, setDraaidag] = useState(plusDagen(vandaag, 21));
+  const [oplever, setOplever] = useState(null); // null = automatisch (draaidag + doorlooptijd)
+  const [verledenNaarVandaag, setVerledenNaarVandaag] = useState(true);
+  if (!sjabloon) {
+    return (
+      <div style={S.sheetAchter} onClick={sluit}><div style={S.sheet} onClick={e => e.stopPropagation()}>
+        <SheetKop titel="Nieuw project" sluit={sluit} /><p>Er zijn nog geen sjablonen. Maak er eerst een bij Sjablonen beheren.</p>
+      </div></div>
+    );
+  }
+  const opleverdatum = oplever || (draaidag ? plusDagen(draaidag, sjabloon.standaardDoorlooptijd || 14) : "");
+  const voorbeeld = draaidag ? sorteerStappen(sjabloon.stappen, sjabloon.standaardDoorlooptijd || 14).map(st => ({ st, d: stapDatum(st, { draaidag, opleverdatum }) })) : [];
+  const teLaat = voorbeeld.filter(x => x.d < vandaag).length;
+  const kan = naam.trim() && draaidag && opleverdatum >= draaidag;
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()}>
+        <SheetKop titel="Nieuw project" sluit={sluit} />
+        <p style={{ ...S.label, marginTop: 6 }}>Sjabloon</p>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {sjablonen.map(t => <button key={t.id} style={S.chip(t.id === sjabloon.id)} onClick={() => { setSjabloonId(t.id); setOplever(null); }}>{t.icoon} {t.naam}</button>)}
+        </div>
+        {sjabloon.omschrijving && <p style={S.hint}>{sjabloon.omschrijving} · {sjabloon.stappen.length} stappen{sjabloon.geleerdVan ? ` · geleerd van ${sjabloon.geleerdVan} ${sjabloon.geleerdVan === 1 ? "project" : "projecten"}` : ""}</p>}
+
+        <p style={S.label}>Projectnaam</p>
+        <input style={S.inp} autoFocus placeholder="Bijv. Häcker keukencampagne" value={naam} onChange={e => setNaam(e.target.value)} />
+
+        <p style={S.label}><Tag size={14} /> Klant</p>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button style={S.chip(!klantId)} onClick={() => setKlantId("")}>Geen</button>
+          {klanten.map(k => <button key={k.id} style={{ ...S.chip(klantId === k.id), ...(klantId === k.id ? { background: k.kleur || C.groen, borderColor: k.kleur || C.groen } : {}) }} onClick={() => setKlantId(k.id)}>● {k.naam}</button>)}
+        </div>
+        <form onSubmit={e => { e.preventDefault(); if (nieuweKlantNaam.trim()) { setKlantId(nieuweKlant(nieuweKlantNaam)); setNieuweKlantNaam(""); } }} style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <input style={{ ...S.inp, padding: "8px 12px", fontSize: 14 }} placeholder="+ Nieuwe klant" value={nieuweKlantNaam} onChange={e => setNieuweKlantNaam(e.target.value)} />
+          {nieuweKlantNaam.trim() && <button type="submit" style={S.knop()}>Voeg toe</button>}
+        </form>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <label style={{ flex: 1 }}><span style={S.label}>🎬 (Eerste) draaidag</span>
+            <input type="date" style={S.inp} value={draaidag} onChange={e => setDraaidag(e.target.value)} />
+          </label>
+          <label style={{ flex: 1 }}><span style={S.label}>📦 Oplevering</span>
+            <input type="date" style={S.inp} value={opleverdatum} onChange={e => setOplever(e.target.value)} />
+          </label>
+        </div>
+        {opleverdatum && draaidag && opleverdatum < draaidag && <p style={{ ...S.hint, color: C.rood }}>De oplevering ligt vóór de draaidag.</p>}
+
+        {voorbeeld.length > 0 && (
+          <div style={{ background: C.bg, borderRadius: 12, padding: 10, marginTop: 12, maxHeight: 180, overflowY: "auto" }}>
+            {FASES.map(f => {
+              const st = voorbeeld.filter(x => x.st.fase === f.id);
+              if (!st.length) return null;
+              return (
+                <div key={f.id} style={{ marginBottom: 6 }}>
+                  <strong style={{ fontSize: 12 }}>{f.icon} {f.label}</strong>
+                  {st.map(({ st: s, d }) => (
+                    <div key={s.id} style={{ fontSize: 12, display: "flex", gap: 6, color: d < vandaag ? C.rood : C.tekst }}>
+                      <span style={{ width: 82, flexShrink: 0, color: d < vandaag ? C.rood : C.muted }}>{datumKort(d)}</span>
+                      <span>{SOORTEN[s.soort]?.icon} {s.tekst}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {teLaat > 0 && (
+          <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, fontSize: 14 }}>
+            <input type="checkbox" checked={verledenNaarVandaag} onChange={e => setVerledenNaarVandaag(e.target.checked)} />
+            {teLaat} {teLaat === 1 ? "stap ligt" : "stappen liggen"} al in het verleden — op vandaag zetten
+          </label>
+        )}
+        <button disabled={!kan} onClick={() => maak(sjabloon, { naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag })}
+          style={{ ...S.knop(), width: "100%", marginTop: 16, opacity: kan ? 1 : 0.5 }}>
+          🎬 Project starten ({sjabloon.stappen.length} taken)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SjablonenSheet({ sjablonen, sluit, bewaar, startProject, meld }) {
+  const [bewerkId, setBewerkId] = useState(null);
+  const bewerk = sjablonen.find(t => t.id === bewerkId);
+  if (bewerk) {
+    return <SjabloonEditor sjabloon={bewerk} terug={() => setBewerkId(null)} sluit={sluit}
+      bewaar={(nieuw) => { bewaar(sjablonen.map(t => (t.id === nieuw.id ? nieuw : t))); setBewerkId(null); meld("📐 Sjabloon bewaard"); }} />;
+  }
+  const ontbrekend = STANDAARD_SJABLONEN.filter(st => !sjablonen.some(t => t.id === st.id));
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()}>
+        <SheetKop titel="Projectsjablonen" sluit={sluit} />
+        <p style={{ ...S.hint, marginTop: 0 }}>
+          Vaste stappen voor terugkerende projecten, van pre-productie tot oplevering. Na elk project kun je de app laten leren:
+          wat je toevoegde, weghaalde of op een ander moment deed, wordt (als jij dat wilt) in het sjabloon overgenomen.
+        </p>
+        {sjablonen.map(t => {
+          const tellen = FASES.map(f => t.stappen.filter(s => s.fase === f.id).length);
+          return (
+            <div key={t.id} style={{ border: `1px solid ${C.rand}`, borderRadius: 14, padding: 12, marginTop: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 22 }}>{t.icoon}</span>
+                <strong style={{ flex: 1, fontSize: 15 }}>{t.naam}</strong>
+              </div>
+              <p style={{ ...S.hint, marginTop: 4 }}>
+                {FASES.map((f, i) => `${f.icon} ${tellen[i]}`).join("  ")} · {t.gebruikt || 0}× gebruikt{t.geleerdVan ? ` · 🧠 geleerd van ${t.geleerdVan}` : ""}
+              </p>
+              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                <button style={{ ...S.knop(), padding: "7px 12px" }} onClick={() => startProject(t.id)}>🎬 Nieuw project</button>
+                <button style={{ ...S.chip(false) }} onClick={() => setBewerkId(t.id)}>Bewerken</button>
+                <button style={{ ...S.chip(false) }} onClick={() => { const kopie = { ...t, id: uid(), naam: `${t.naam} (kopie)`, gebruikt: 0, geleerd: {}, geleerdVan: 0, stappen: t.stappen.map(s => ({ ...s, id: uid() })) }; bewaar([...sjablonen, kopie]); setBewerkId(kopie.id); }}>Dupliceren</button>
+                <button style={{ ...S.chip(false), color: C.rood }} onClick={() => { if (window.confirm(`Sjabloon "${t.naam}" verwijderen? Lopende projecten blijven bestaan.`)) bewaar(sjablonen.filter(x => x.id !== t.id)); }}>Verwijderen</button>
+              </div>
+            </div>
+          );
+        })}
+        <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+          <button style={S.knop(C.bg, C.groen)} onClick={() => {
+            const nieuw = { id: uid(), naam: "Nieuw sjabloon", icoon: "📐", omschrijving: "", standaardDoorlooptijd: 14, stappen: [{ id: uid(), fase: "pre", soort: "taak", tekst: "Eerste stap", anker: "draai", offset: -7 }] };
+            bewaar([...sjablonen, nieuw]); setBewerkId(nieuw.id);
+          }}>+ Nieuw sjabloon</button>
+          {ontbrekend.length > 0 && <button style={S.knop(C.bg, C.muted)} onClick={() => bewaar([...sjablonen, ...ontbrekend])}>Standaardsjablonen terugzetten</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SjabloonEditor({ sjabloon, terug, sluit, bewaar }) {
+  const [t, setT] = useState(() => ({ ...sjabloon, stappen: sjabloon.stappen.map(s => ({ ...s })) }));
+  const zetStap = (id, velden) => setT(x => ({ ...x, stappen: x.stappen.map(s => (s.id === id ? { ...s, ...velden } : s)) }));
+  const verplaats = (id, richting) => setT(x => {
+    const st = [...x.stappen];
+    const i = st.findIndex(s => s.id === id);
+    const j = i + richting;
+    if (j < 0 || j >= st.length || st[j].fase !== st[i].fase) return x;
+    [st[i], st[j]] = [st[j], st[i]];
+    return { ...x, stappen: st };
+  });
+  function opslaan() {
+    const stappen = t.stappen.map(s => normaliseerStap(s, uid));
+    bewaar({ ...t, naam: t.naam.trim() || "Sjabloon", stappen: sorteerStappen(stappen, +t.standaardDoorlooptijd || 14), standaardDoorlooptijd: Math.max(0, Math.round(+t.standaardDoorlooptijd || 14)), bijgewerktOp: Date.now() });
+  }
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+          <button onClick={terug} aria-label="Terug naar sjablonen" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex" }}><ChevronLeft size={20} color={C.groen} /></button>
+          <h2 style={{ margin: 0, flex: 1, fontSize: 18, color: C.groen }}>Sjabloon bewerken</h2>
+          <button style={{ ...S.knop(), padding: "8px 14px" }} onClick={opslaan}>Bewaar</button>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input style={{ ...S.inp, width: 64, textAlign: "center", fontSize: 20, padding: 8 }} value={t.icoon} onChange={e => setT({ ...t, icoon: e.target.value.slice(0, 4) })} aria-label="Icoon" />
+          <input style={S.inp} value={t.naam} onChange={e => setT({ ...t, naam: e.target.value })} aria-label="Naam sjabloon" />
+        </div>
+        <input style={{ ...S.inp, marginTop: 8, fontSize: 14 }} placeholder="Korte omschrijving (optioneel)" value={t.omschrijving || ""} onChange={e => setT({ ...t, omschrijving: e.target.value })} />
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 14 }}>
+          Oplevering standaard
+          <input type="number" min={0} max={365} style={{ ...S.inp, width: 74, padding: "6px 8px" }} value={t.standaardDoorlooptijd ?? 14} onChange={e => setT({ ...t, standaardDoorlooptijd: e.target.value })} />
+          dagen na de draaidag
+        </label>
+
+        {FASES.map(f => (
+          <div key={f.id}>
+            <p style={{ ...S.sectieKop, marginTop: 18 }}>{f.icon} {f.label}</p>
+            {t.stappen.filter(s => s.fase === f.id).map(s => {
+              const hint = timingHint(sjabloon, s.id);
+              return (
+                <div key={s.id} style={{ border: `1px solid ${C.rand}`, borderRadius: 12, padding: 8, marginBottom: 6 }}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <select value={s.soort} onChange={e => zetStap(s.id, { soort: e.target.value })} aria-label="Soort" style={{ ...S.inp, width: 52, padding: "6px 2px", fontSize: 16 }}>
+                      {Object.entries(SOORTEN).map(([id, v]) => <option key={id} value={id}>{v.icon} {v.label}</option>)}
+                    </select>
+                    <input value={s.tekst} onChange={e => zetStap(s.id, { tekst: e.target.value })} aria-label="Stap" style={{ ...S.inp, padding: "6px 10px", fontSize: 14 }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap", fontSize: 13 }}>
+                    <input type="number" value={Math.abs(+s.offset || 0)} min={0} max={365} onChange={e => zetStap(s.id, { offset: (+s.offset < 0 || (+s.offset === 0 && s.__voor) ? -1 : 1) * Math.abs(+e.target.value || 0) })} aria-label="Aantal dagen" style={{ ...S.inp, width: 62, padding: "5px 6px", fontSize: 13 }} />
+                    <span>dagen</span>
+                    <select value={+s.offset < 0 ? "voor" : "na"} onChange={e => zetStap(s.id, { offset: (e.target.value === "voor" ? -1 : 1) * Math.abs(+s.offset || 0) })} aria-label="Voor of na" style={{ ...S.inp, width: "auto", padding: "5px 6px", fontSize: 13 }}>
+                      <option value="voor">vóór</option><option value="na">na / op</option>
+                    </select>
+                    <select value={s.anker} onChange={e => zetStap(s.id, { anker: e.target.value })} aria-label="Ten opzichte van" style={{ ...S.inp, width: "auto", padding: "5px 6px", fontSize: 13 }}>
+                      <option value="draai">draaidag</option><option value="oplever">oplevering</option>
+                    </select>
+                    <span style={{ flex: 1 }} />
+                    <button onClick={() => verplaats(s.id, -1)} aria-label="Omhoog" style={{ ...S.chip(false), padding: "3px 8px" }}>↑</button>
+                    <button onClick={() => verplaats(s.id, 1)} aria-label="Omlaag" style={{ ...S.chip(false), padding: "3px 8px" }}>↓</button>
+                    <button onClick={() => setT(x => ({ ...x, stappen: x.stappen.filter(y => y.id !== s.id) }))} aria-label="Stap verwijderen" style={{ ...S.chip(false), padding: "3px 8px", color: C.rood }}><Trash2 size={13} /></button>
+                  </div>
+                  {hint && hint.mediaan !== +s.offset && (
+                    <p style={{ ...S.hint, marginTop: 4 }}>
+                      🧠 {hint.aantal === 1 ? "Vorige keer deed je dit" : `De afgelopen ${hint.aantal} keer deed je dit meestal`} {offsetTekst({ offset: hint.mediaan, anker: s.anker })}.{" "}
+                      <button onClick={() => zetStap(s.id, { offset: hint.mediaan })} style={{ background: "none", border: "none", color: C.groen, fontWeight: 700, cursor: "pointer", padding: 0, fontSize: 12, fontFamily: "inherit" }}>Neem over</button>
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+            <button onClick={() => setT(x => ({ ...x, stappen: [...x.stappen, { id: uid(), fase: f.id, soort: "taak", tekst: "", anker: f.id === "post" ? "oplever" : "draai", offset: f.id === "pre" ? -7 : f.id === "post" ? -3 : 0 }] }))}
+              style={{ ...S.chip(false), marginTop: 2 }}>+ Stap in {f.label.toLowerCase()}</button>
+          </div>
+        ))}
+        <button style={{ ...S.knop(), width: "100%", marginTop: 18 }} onClick={opslaan}>Sjabloon bewaren</button>
+      </div>
+    </div>
+  );
+}
+
+function LeerSheet({ lijst, sjabloon, sluit, toepassen }) {
+  const voorstellen = useMemo(() => (lijst && sjabloon ? berekenLeerVoorstellen(sjabloon, lijst) : []), [lijst, sjabloon]);
+  const [gekozen, setGekozen] = useState(() => new Set(voorstellen.map(v => v.id)));
+  const [afronden, setAfronden] = useState(!lijst?.project?.afgerond);
+  if (!lijst) return null;
+  const al = !!lijst.project.geleerdOp;
+  const open = (lijst.items || []).filter(i => !i.checked).length;
+  const beschrijf = (v) => {
+    if (v.type === "toevoegen") return <>➕ <strong>{v.stap.tekst}</strong> toevoegen aan {FASES.find(f => f.id === v.stap.fase)?.label.toLowerCase()} <span style={{ color: C.muted }}>({SOORTEN[v.stap.soort]?.icon} {offsetTekst(v.stap)})</span></>;
+    if (v.type === "verwijderen") return <>➖ <strong>{v.tekst}</strong> uit het sjabloon halen <span style={{ color: C.muted }}>(je haalde 'm in dit project weg)</span></>;
+    if (v.type === "wijzigen") {
+      const d = [];
+      if (v.velden.tekst) d.push(<span key="t">naam → <strong>{v.velden.tekst}</strong></span>);
+      if (v.velden.soort) d.push(<span key="s">soort → {SOORTEN[v.velden.soort].icon} {SOORTEN[v.velden.soort].label}</span>);
+      if (v.velden.fase) d.push(<span key="f">fase → {FASES.find(f => f.id === v.velden.fase)?.label}</span>);
+      return <>✏️ <strong>{v.oud.tekst}</strong>: {d.reduce((acc, x, i) => (i ? [...acc, ", ", x] : [x]), [])}</>;
+    }
+    return <>⏱ <strong>{v.tekst}</strong>: {offsetTekst({ offset: v.van, anker: v.anker })} → <strong>{offsetTekst({ offset: v.naar, anker: v.anker })}</strong> <span style={{ color: C.muted }}>(zo deed je het {v.aantalProjecten === 1 ? "dit project" : `in ${v.aantalProjecten} projecten`})</span></>;
+  };
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()}>
+        <SheetKop titel={`Leren van "${lijst.name}"`} sluit={sluit} />
+        {!sjabloon ? (
+          <p style={{ fontSize: 14 }}>Het sjabloon van dit project bestaat niet meer, dus er valt niets bij te werken. Je kunt het project wel afronden.</p>
+        ) : (
+          <>
+            <p style={{ ...S.hint, marginTop: 0 }}>
+              Zo deed je dit project anders dan het sjabloon <strong>{sjabloon.naam}</strong>. Vink aan wat je volgende keer standaard wilt.
+              {!al && " Wanneer je de stappen afrondde, wordt hoe dan ook onthouden: daarmee worden de deadlines steeds beter."}
+            </p>
+            {al && <p style={{ ...S.hint, color: C.oranje }}>Je hebt dit project al eens gebruikt om te leren; de timing telt daarom niet nog een keer mee.</p>}
+            {voorstellen.length === 0 ? (
+              <p style={{ fontSize: 14, background: C.bg, borderRadius: 12, padding: 12 }}>✅ Je volgde het sjabloon precies — er zijn geen aanpassingen voor te stellen.</p>
+            ) : (
+              <div style={{ marginTop: 8 }}>
+                {voorstellen.map(v => (
+                  <label key={v.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "9px 0", borderBottom: `1px solid ${C.rand}`, fontSize: 14, lineHeight: 1.4 }}>
+                    <input type="checkbox" style={{ marginTop: 3 }} checked={gekozen.has(v.id)} onChange={e => { const n = new Set(gekozen); e.target.checked ? n.add(v.id) : n.delete(v.id); setGekozen(n); }} />
+                    <span>{beschrijf(v)}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14, fontSize: 14 }}>
+          <input type="checkbox" checked={afronden} onChange={e => setAfronden(e.target.checked)} />
+          Project afronden (naar "Afgeronde projecten"){open ? ` — er staan nog ${open} open taken` : ""}
+        </label>
+        <button style={{ ...S.knop(), width: "100%", marginTop: 14 }} onClick={() => toepassen(voorstellen, [...gekozen].filter(id => voorstellen.some(v => v.id === id)), afronden)}>
+          {sjabloon && gekozen.size ? `🧠 ${gekozen.size} ${gekozen.size === 1 ? "aanpassing" : "aanpassingen"} overnemen` : afronden ? "Afronden" : "Klaar"}
         </button>
       </div>
     </div>

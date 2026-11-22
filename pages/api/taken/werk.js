@@ -32,6 +32,14 @@ export default async function handler(req, res) {
           .filter(k => k && k.id && String(k.naam || "").trim())
           .map(k => ({ id: String(k.id), naam: String(k.naam).trim().slice(0, 60), kleur: k.kleur || null, gearchiveerd: !!k.gearchiveerd }));
       }
+      // Projectsjablonen: hele set wordt vervangen (klein, en alleen jij
+      // bewerkt je eigen sjablonen). Grenzen houden de opslag behapbaar.
+      if (Array.isArray(inkomend.sjablonen)) {
+        volgend.sjablonen = inkomend.sjablonen
+          .filter(t => t && t.id && Array.isArray(t.stappen))
+          .slice(0, 40)
+          .map(t => ({ ...t, naam: String(t.naam || "Sjabloon").slice(0, 80), stappen: t.stappen.slice(0, 200) }));
+      }
       await schrijfWerkData(ctx.slug, volgend);
       try {
         await synchroniseerHerinneringen({ ruimte: "werk", slug: ctx.slug, eigenaar: ctx.user, lists: volgend.lists, req });
