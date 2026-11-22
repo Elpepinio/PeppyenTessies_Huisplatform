@@ -34,7 +34,12 @@ import {
   DELIVERABLE_KANALEN, FORMATEN, STANDAARD_FORMATEN, normaliseerDeliverables, deliverablesTekst,
   BUYOUT_MEDIA, BUYOUT_DUUR, buyoutSoort, standaardBuyouts, buyoutEinde,
   leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
+  draaidagenVan, zetDraaidagen, projectBegroting,
 } from "../lib/projecten-logica";
+import {
+  bouwCallsheet, callsheetGeheugen, samenvatting as callsheetSamenvatting, maakCallsheetWerkboek, callsheetBestandsnaam,
+  datumLang,
+} from "../lib/callsheet-logica";
 import { dagenTussen } from "../lib/taken-logica";
 
 // ── Stijl (zelfde palet als de rest van Ons Huishouden) ─────────────
@@ -172,6 +177,38 @@ export default function TakenApp() {
       ? onthoudPlanningNamen({ ...t, laatsteOnderdelen: opties.onderdelen || [], onderdelenBekend: metOnderdelen.project.onderdelenBekend, laatsteDeliverables: normaliseerDeliverables(opties.deliverables) }, opties.eigenPlanning)
       : t)));
     return metOnderdelen;
+  }
+  // ── Callsheets ────────────────────────────────────────────────────
+  // Per draaidag bewaard in het project; wat per klant / per werkruimte
+  // hetzelfde blijft wordt onthouden voor de volgende callsheet.
+  function bewaarCallsheet(listId, dagId, opgeslagen, cs, { onthoudNotes = false } = {}) {
+    wijzigLijst("werk", listId, l => ({ ...l, project: { ...l.project, callsheets: { ...(l.project.callsheets || {}), [dagId]: opgeslagen } } }));
+    const geh = callsheetGeheugen(cs);
+    const lijst = lijstVan("werk", listId);
+    const klantId = lijst?.project?.klantId;
+    let w = werkRef.current;
+    if (klantId) {
+      const klantenNu = (w?.klanten || []).map(k => (k.id === klantId ? { ...k, callsheet: { ...(k.callsheet || {}), ...geh.klant } } : k));
+      w = { ...w, klanten: klantenNu };
+      post("/api/taken/werk", { klanten: klantenNu });
+    }
+    const ins = { ...(w?.callsheet || {}), productieLogoId: geh.werkruimte.productieLogoId || w?.callsheet?.productieLogoId || null, ...(onthoudNotes ? { notes: opgeslagen.notes } : {}) };
+    w = { ...w, callsheet: ins };
+    werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
+    post("/api/taken/werk", { callsheet: ins });
+  }
+  function bewaarCallsheetInstellingen(velden) {
+    const ins = { ...(werkRef.current?.callsheet || {}), ...velden };
+    const w = { ...werkRef.current, callsheet: ins };
+    werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
+    post("/api/taken/werk", { callsheet: ins });
+  }
+  function voegLogoToe(logo) {
+    const logos = [...(werkRef.current?.logos || []), { id: uid(), ...logo }];
+    const w = { ...werkRef.current, logos };
+    werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
+    post("/api/taken/werk", { logos });
+    return logos[logos.length - 1].id;
   }
   function maakKlant(naam) {
     const k = { id: uid(), naam: naam.trim(), kleur: KLANT_KLEUREN[(werkRef.current?.klanten || []).length % KLANT_KLEUREN.length] };
@@ -511,6 +548,8 @@ export default function TakenApp() {
             zetProject={(velden) => wijzigLijst(weergave.ruimte, lijst.id, l => ({ ...l, project: { ...l.project, ...velden } }))}
             openLeren={() => setSheet({ soort: "leren", listId: lijst.id })}
             openOnderdelen={() => setSheet({ soort: "onderdelen", listId: lijst.id })}
+            zetDagen={(dagen) => { wijzigLijst(weergave.ruimte, lijst.id, l => zetDraaidagen(l, dagen, { nieuwId: uid, wie: ik })); meld("🎬 Draaidagen bijgewerkt"); }}
+            openCallsheet={(dagId) => setSheet({ soort: "callsheet", listId: lijst.id, dagId })}
             openAkkoord={() => setSheet({ soort: "akkoord", listId: lijst.id })}
             openAfwijzen={() => setSheet({ soort: "afwijzen", listId: lijst.id })}
             nagevraagd={() => { const n = (lijst.items || []).find(i => i.offerteNavraag && !i.checked); if (n) vink("werk", lijst.id, n.id); }}
@@ -614,6 +653,17 @@ export default function TakenApp() {
               setSheet(null);
               meld("🧩 Onderdelen bijgewerkt");
             }} />
+        );
+      })()}
+      {sheet?.soort === "callsheet" && (() => {
+        const lijst = lijstVan("werk", sheet.listId);
+        if (!lijst?.project) return null;
+        return (
+          <CallsheetSheet lijst={lijst} dagId={sheet.dagId} klant={klantVan(lijst.project.klantId)}
+            instellingen={werk?.callsheet || {}} logos={werk?.logos || []}
+            sluit={() => setSheet(null)}
+            kiesDag={(dagId) => setSheet({ ...sheet, dagId })}
+            bewaar={bewaarCallsheet} bewaarInstellingen={bewaarCallsheetInstellingen} voegLogoToe={voegLogoToe} meld={meld} />
         );
       })()}
       {sheet?.soort === "afwijzen" && (() => {
@@ -1154,7 +1204,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen }) {
+function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet }) {
   const [menu, setMenu] = useState(false);
   const isOfferte = projectStatus(lijst) === "offerte";
   const isProject = !!lijst.project && !isOfferte;
@@ -1205,7 +1255,7 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
             {lijst.mailInbox && <p style={S.hint}>📥 Hier komen taken binnen die je naar je taken-e-mailadres stuurt.</p>}
           </div>
         )}
-        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen }} />}
+        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet }} />}
         {isOfferte && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd }} />}
         {ruimte === "werk" && !isProject && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
         {isProject && open.length > 0 ? (
@@ -1248,7 +1298,7 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
 }
 
 // Projectkop: klant, draaidag, oplevering, voortgang per fase en "leren".
-function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen }) {
+function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet }) {
   const p = lijst.project;
   const vg = projectVoortgang(lijst);
   const klant = klantVan(p.klantId);
@@ -1272,13 +1322,14 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
         <p style={{ margin: "8px 0 0", fontSize: 13 }}>📦 <strong>Deliverables:</strong> {deliverablesTekst(p.deliverables)}</p>
       )}
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>🎬 DRAAIDAG
+        <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>🎬 {draaidagenVan(p).length > 1 ? "DRAAIDAG 1" : "DRAAIDAG"}
           <input type="date" value={draai || ""} onChange={e => setDraai(e.target.value)} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
         </label>
         <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>📦 OPLEVERING
           <input type="date" value={oplever || ""} onChange={e => setOplever(e.target.value)} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
         </label>
       </div>
+      <DraaidagenRegel p={p} zetDagen={zetDagen} openCallsheet={openCallsheet} />
       {/* Campagne live: startpunt van de buy-outs (leeg = opleverdatum). */}
       <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 12, color: C.muted, fontWeight: 700 }}>
         📡 CAMPAGNE LIVE
@@ -1315,6 +1366,7 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
         );
       })()}
       {bezettingOpen && <BezettingOverzicht lijst={lijst} />}
+      <BegrotingBlok lijst={lijst} zetProject={zetProject} />
       {projectStatus(lijst) === "lopend" && !lijst.project.afgerond && (
         <button onClick={openOnderdelen} style={{ ...S.knop(C.bg, C.groen), width: "100%", marginTop: 12, border: `1px solid ${C.rand2}` }}>
           🧩 Onderdelen aan/uit <span style={{ fontWeight: 400, color: C.muted }}>— cast, locaties, crew, hotel…</span>
@@ -1323,6 +1375,417 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
       <button onClick={openLeren} style={{ ...S.knop(klaar === alles && alles ? C.groen : C.bg, klaar === alles && alles ? "#FAF6F0" : C.groen), width: "100%", marginTop: 12, border: `1px solid ${C.rand2}` }}>
         🧠 {p.afgerond ? "Opnieuw leren van dit project" : klaar === alles && alles ? "Alles klaar — afronden en sjabloon laten leren" : "Afronden & sjabloon laten leren"}
       </button>
+    </div>
+  );
+}
+
+// ── Meerdere draaidagen: extra dagen toevoegen/verwijderen + callsheet per dag ──
+function DraaidagenRegel({ p, zetDagen, openCallsheet }) {
+  const dagen = draaidagenVan(p);
+  const [nieuw, setNieuw] = useState(false);
+  if (!p.draaidag) return null;
+  const voegToe = () => {
+    const laatste = dagen[dagen.length - 1]?.datum || p.draaidag;
+    zetDagen([...dagen, { id: uid(), datum: plusDagen(laatste, 1) }]);
+  };
+  return (
+    <div style={{ marginTop: 8 }}>
+      {dagen.length > 1 && dagen.slice(1).map((d, n) => (
+        <div key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+          <span style={{ fontSize: 11, color: C.muted, fontWeight: 700, width: 86 }}>🎬 DRAAIDAG {n + 2}</span>
+          <input type="date" value={d.datum} aria-label={`Draaidag ${n + 2}`}
+            onChange={e => e.target.value && zetDagen(dagen.map(x => (x.id === d.id ? { ...x, datum: e.target.value } : x)))}
+            style={{ ...S.inp, padding: "6px 8px", fontSize: 14, flex: 1 }} />
+          <button onClick={() => window.confirm(`Draaidag ${n + 2} weghalen?`) && zetDagen(dagen.filter(x => x.id !== d.id))} aria-label={`Draaidag ${n + 2} verwijderen`}
+            style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}><X size={16} color={C.licht} /></button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+        <button onClick={voegToe} style={{ ...S.chip(false), padding: "5px 10px", fontSize: 12 }}>+ Draaidag</button>
+        {dagen.map((d, n) => (
+          <button key={d.id} onClick={() => openCallsheet(d.id)} style={{ ...S.chip(false), padding: "5px 10px", fontSize: 12, borderColor: C.groen, color: C.groen, fontWeight: 700 }}>
+            📋 Callsheet{dagen.length > 1 ? ` dag ${n + 1}` : ""}{p.callsheets?.[d.id] ? " ✓" : ""}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Begroting: offerte tegenover de kosten van alle namen + overige posten ──
+const euro = (n) => `€ ${Number(n || 0).toLocaleString("nl-NL", { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 })}`;
+function BegrotingBlok({ lijst, zetProject }) {
+  const p = lijst.project;
+  const b = projectBegroting(lijst);
+  const [open, setOpen] = useState(false);
+  const [budget, setBudget] = useState(p.budget != null ? String(p.budget).replace(".", ",") : "");
+  if (!b.regels.length && !b.posten.length && b.offerte == null && !open) {
+    return (
+      <button onClick={() => setOpen(true)} style={{ ...S.rij, padding: "10px 0 0", borderBottom: "none" }}>
+        <span style={{ fontSize: 13, flex: 1, color: C.muted }}>💶 Begroting — offerte tegenover kosten</span>
+        <ChevronDown size={15} color={C.licht} style={{ transform: "rotate(-90deg)" }} />
+      </button>
+    );
+  }
+  const kleur = b.overschreden ? C.rood : b.marge != null && b.margePct < 15 ? C.oranje : C.groen;
+  const posten = p.kostenposten || [];
+  const zetPosten = (next) => zetProject({ kostenposten: next });
+  return (
+    <div>
+      <button onClick={() => setOpen(!open)} style={{ ...S.rij, padding: "10px 0 0", borderBottom: "none" }} aria-label="Begroting">
+        <span style={{ fontSize: 13, flex: 1 }}>
+          💶 <strong>{euro(b.inclOpties)}</strong> kosten{b.offerte != null ? <> van <strong>{euro(b.offerte)}</strong> · <span style={{ color: kleur, fontWeight: 700 }}>{b.overschreden ? `${euro(-b.marge)} over budget` : `marge ${euro(b.marge)} (${b.margePct}%)`}</span></> : ""}
+        </span>
+        <ChevronDown size={15} color={C.licht} style={{ transform: open ? "none" : "rotate(-90deg)" }} />
+      </button>
+      {b.overschreden && !open && <p style={{ ...S.hint, color: C.rood, fontWeight: 700 }}>⚠️ De kosten (incl. opties) zijn hoger dan de offerte.</p>}
+      {open && (
+        <div style={{ marginTop: 8, background: C.bg, borderRadius: 12, padding: 10 }}>
+          {p.offerte?.bedrag != null ? (
+            <p style={{ margin: "0 0 8px", fontSize: 13 }}>Offerte: <strong>{euro(p.offerte.bedrag)}</strong></p>
+          ) : (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8 }}>Budget / offerte €
+              <input value={budget} inputMode="decimal" placeholder="bv. 25.000" aria-label="Budget"
+                onChange={e => setBudget(e.target.value)} onBlur={() => zetProject({ budget: leesBedragInvoer(budget) })}
+                style={{ ...S.inp, padding: "6px 8px", fontSize: 14, width: 120 }} />
+            </label>
+          )}
+          {b.regels.map(r => (
+            <div key={r.id} style={{ display: "flex", gap: 8, fontSize: 13, padding: "4px 0", borderBottom: `1px solid ${C.rand}` }}>
+              <span style={{ width: 12 }}>{r.status === "bevestigd" ? "✅" : "○"}</span>
+              <span style={{ flex: 1, minWidth: 0 }}>{r.naam} <span style={{ color: C.muted }}>· {onderdeelVan(r.onderdeelId)?.label || r.taak}</span></span>
+              <span style={{ whiteSpace: "nowrap", textAlign: "right", color: r.bedrag == null ? C.oranje : C.tekst }}>
+                {r.bedrag == null ? "geen prijs" : euro(r.kosten.totaal)}
+                {r.bedrag != null && r.eenheid !== "totaal" && <span style={{ display: "block", fontSize: 11, color: C.muted }}>{r.kosten.aantal} × {prijsTekst(r.bedrag, r.eenheid)}{r.kosten.buyouts ? ` + buy-out ${euro(r.kosten.buyouts)}` : ""}</span>}
+                {r.bedrag != null && r.eenheid === "totaal" && r.kosten.buyouts > 0 && <span style={{ display: "block", fontSize: 11, color: C.muted }}>incl. buy-out {euro(r.kosten.buyouts)}</span>}
+              </span>
+            </div>
+          ))}
+          <p style={{ ...S.label, margin: "10px 0 4px" }}>Overige kosten</p>
+          {posten.map(k => <KostenpostRegel key={k.id} k={k} wijzig={(v) => zetPosten(posten.map(x => (x.id === k.id ? { ...x, ...v } : x)))} verwijder={() => zetPosten(posten.filter(x => x.id !== k.id))} />)}
+          <button onClick={() => zetPosten([...posten, { id: uid(), omschrijving: "", bedrag: null }])} style={{ ...S.chip(false), padding: "5px 10px", fontSize: 12 }}>+ Kostenpost (huur, reis, materiaal…)</button>
+          <div style={{ marginTop: 10, fontSize: 13, lineHeight: 1.7 }}>
+            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Bevestigd</span><strong>{euro(b.bevestigd)}</strong></div>
+            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Incl. opties / aangevraagd</span><strong>{euro(b.inclOpties)}</strong></div>
+            {b.buyouts > 0 && <div style={{ display: "flex", color: C.muted }}><span style={{ flex: 1 }}>waarvan buy-outs</span>{euro(b.buyouts)}</div>}
+            {b.offerte != null && <div style={{ display: "flex", color: kleur, fontWeight: 700 }}><span style={{ flex: 1 }}>{b.overschreden ? "Over budget" : "Marge"}</span>{euro(Math.abs(b.marge))} ({b.margePct}%)</div>}
+          </div>
+          {b.zonderPrijs > 0 && <p style={{ ...S.hint, color: C.oranje }}>{b.zonderPrijs} {b.zonderPrijs === 1 ? "naam heeft" : "namen hebben"} nog geen prijs — die tellen nog niet mee.</p>}
+          <p style={S.hint}>Dagprijzen tellen × {b.draaidagen} {b.draaidagen === 1 ? "draaidag" : "draaidagen"}, tenzij je bij de naam een ander aantal invult.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+function KostenpostRegel({ k, wijzig, verwijder }) {
+  const [oms, setOms] = useState(k.omschrijving || "");
+  const [bedrag, setBedrag] = useState(k.bedrag != null ? String(k.bedrag).replace(".", ",") : "");
+  return (
+    <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+      <input value={oms} placeholder="Omschrijving" aria-label="Omschrijving kostenpost" onChange={e => setOms(e.target.value)} onBlur={() => oms !== (k.omschrijving || "") && wijzig({ omschrijving: oms.trim() })}
+        style={{ ...S.inp, padding: "6px 8px", fontSize: 13 }} />
+      <input value={bedrag} inputMode="decimal" placeholder="€" aria-label="Bedrag kostenpost" onChange={e => setBedrag(e.target.value)} onBlur={() => wijzig({ bedrag: leesBedragInvoer(bedrag) })}
+        style={{ ...S.inp, padding: "6px 8px", fontSize: 13, width: 100 }} />
+      <button onClick={verwijder} aria-label="Kostenpost verwijderen" style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}><X size={15} color={C.licht} /></button>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CALLSHEET — per draaidag, vooraf ingevuld uit het project; download als
+// Excel in de opmaak van je eigen template.
+// ════════════════════════════════════════════════════════════════════
+const CS_INP = { ...S.inp, padding: "6px 8px", fontSize: 13 };
+function CsRijen({ rijen, velden, zet, nieuw, toevoegTekst = "+ Regel" }) {
+  return (
+    <div>
+      {rijen.map((r, n) => (
+        <div key={n} style={{ display: "flex", gap: 5, marginBottom: 5, alignItems: "center", ...(r.geel ? { background: "#FFF8C4", borderRadius: 8, padding: 3 } : {}) }}>
+          {velden.map(v => (
+            <input key={v.key} value={r[v.key] || ""} placeholder={v.placeholder} aria-label={v.placeholder}
+              onChange={e => zet(rijen.map((x, i) => (i === n ? { ...x, [v.key]: e.target.value } : x)))}
+              style={{ ...CS_INP, ...(v.breedte ? { width: v.breedte, flexShrink: 0 } : {}) }} />
+          ))}
+          <button onClick={() => zet(rijen.filter((_, i) => i !== n))} aria-label="Regel verwijderen" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><X size={14} color={C.licht} /></button>
+        </div>
+      ))}
+      {nieuw && <button onClick={() => zet([...rijen, nieuw()])} style={{ ...S.chip(false), padding: "4px 9px", fontSize: 12 }}>{toevoegTekst}</button>}
+    </div>
+  );
+}
+function CsSectie({ titel, children, extra }) {
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", background: "#404040", color: "#fff", borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 700, letterSpacing: 0.4 }}>
+        <span style={{ flex: 1 }}>{titel}</span>{extra}
+      </div>
+      <div style={{ marginTop: 6 }}>{children}</div>
+    </div>
+  );
+}
+function verkleinLogo(bestand) {
+  return new Promise((ok, fout) => {
+    const lezer = new FileReader();
+    lezer.onerror = fout;
+    lezer.onload = () => {
+      const img = new Image();
+      img.onerror = fout;
+      img.onload = () => {
+        const schaal = Math.min(1, 480 / img.width, 200 / img.height);
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.width * schaal)); c.height = Math.max(1, Math.round(img.height * schaal));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        ok({ dataUrl: c.toDataURL("image/png"), breedte: c.width, hoogte: c.height });
+      };
+      img.src = lezer.result;
+    };
+    lezer.readAsDataURL(bestand);
+  });
+}
+
+function CallsheetSheet({ lijst, dagId, klant, instellingen, logos, sluit, kiesDag, bewaar, bewaarInstellingen, voegLogoToe, meld }) {
+  const p = lijst.project;
+  const dagen = draaidagenVan(p);
+  const [wijz, setWijz] = useState(() => (p.callsheets || {})[dagId] || {});
+  const [vuil, setVuil] = useState(false);
+  const [notesOnthouden, setNotesOnthouden] = useState(false);
+  const [ins, setIns] = useState({ mijnNaam: "", mijnTelefoon: "", productiebedrijf: "", ...instellingen });
+  const [bezig, setBezig] = useState(false);
+  const [gegevensOpen, setGegevensOpen] = useState(!instellingen.mijnNaam);
+  useEffect(() => { setWijz((p.callsheets || {})[dagId] || {}); setVuil(false); }, [dagId]);
+  const cs = bouwCallsheet({ ...lijst, project: { ...p, callsheets: { ...(p.callsheets || {}), [dagId]: wijz } } }, dagId, { klant, instellingen: { ...instellingen, ...ins } });
+  const zet = (velden) => { setWijz(w => ({ ...w, ...velden })); setVuil(true); };
+  const kanDelen = typeof navigator !== "undefined" && !!navigator.canShare;
+
+  function opslaan() {
+    if (!vuil) return;
+    bewaar(lijst.id, cs.dagId, wijz, cs, { onthoudNotes: notesOnthouden && !!wijz.notes });
+    setVuil(false);
+  }
+  function bewaarIns() {
+    const velden = { mijnNaam: ins.mijnNaam.trim(), mijnTelefoon: ins.mijnTelefoon.trim(), productiebedrijf: ins.productiebedrijf.trim() };
+    if (["mijnNaam", "mijnTelefoon", "productiebedrijf"].some(k => (instellingen[k] || "") !== velden[k])) bewaarInstellingen(velden);
+  }
+  async function maakExcel(delen) {
+    setBezig(true);
+    try {
+      opslaan();
+      const ExcelJS = (await import("exceljs")).default;
+      const logoData = {};
+      for (const slot of ["productie", "agency", "klant"]) {
+        const l = logos.find(x => x.id === cs.logos[slot]);
+        if (l) logoData[slot] = { base64: l.dataUrl.split(",")[1], extension: /jpeg/.test(l.dataUrl) ? "jpeg" : "png", breedte: l.breedte, hoogte: l.hoogte };
+      }
+      const wb = maakCallsheetWerkboek(cs, ExcelJS, logoData);
+      const buf = await wb.xlsx.writeBuffer();
+      const naam = callsheetBestandsnaam(cs);
+      const type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      const file = typeof File !== "undefined" ? new File([buf], naam, { type }) : null;
+      if (delen && file && navigator.canShare?.({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: naam.replace(/\.xlsx$/, "").replace(/_/g, " ") }); } catch (e) { if (e?.name !== "AbortError") throw e; }
+      } else {
+        const url = URL.createObjectURL(new Blob([buf], { type }));
+        const a = document.createElement("a");
+        a.href = url; a.download = naam; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        meld("📋 Callsheet gedownload");
+      }
+    } catch (e) {
+      console.error(e);
+      meld("⚠️ Callsheet maken mislukt");
+    } finally { setBezig(false); }
+  }
+  async function uploadLogo(slot, bestand) {
+    if (!bestand) return;
+    try {
+      const l = await verkleinLogo(bestand);
+      const id = voegLogoToe({ naam: bestand.name.replace(/\.[^.]+$/, "").slice(0, 60), ...l });
+      zet({ logos: { ...(wijz.logos || {}), [slot]: id } });
+    } catch { meld("⚠️ Dit plaatje kon niet worden gelezen"); }
+  }
+  const sluitEnBewaar = () => { opslaan(); bewaarIns(); sluit(); };
+  const sam = callsheetSamenvatting(cs);
+  const castDetails = wijz.castDetails || {};
+
+  return (
+    <div style={S.sheetAchter} onClick={sluitEnBewaar}>
+      <div style={{ ...S.sheet, paddingBottom: 0 }} onClick={e => e.stopPropagation()} role="dialog" aria-label="Callsheet">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <h2 style={{ margin: 0, fontSize: 19, flex: 1 }}>📋 Callsheet</h2>
+          <button onClick={sluitEnBewaar} aria-label="Sluiten" style={{ background: "none", border: "none", cursor: "pointer", padding: 6 }}><X size={20} color={C.licht} /></button>
+        </div>
+        <p style={{ ...S.hint, marginTop: 2 }}>{datumLang(cs.datum)}{cs.aantalDagen > 1 ? ` · draaidag ${cs.dagNr} van ${cs.aantalDagen}` : ""}. Vooraf ingevuld uit het project — alles is aan te passen.</p>
+        {dagen.length > 1 && (
+          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+            {dagen.map((d, n) => (
+              <button key={d.id} onClick={() => { opslaan(); kiesDag(d.id); }} style={{ ...S.chip(d.id === cs.dagId), padding: "5px 10px", fontSize: 12 }}>Dag {n + 1}</button>
+            ))}
+          </div>
+        )}
+
+        <div style={{ marginTop: 10, background: C.bg, borderRadius: 12, padding: "8px 10px", fontSize: 12, lineHeight: 1.6 }}>
+          {sam.map((s, i) => <div key={i}><strong>{s.split(":")[0]}:</strong>{s.slice(s.indexOf(":") + 1)}</div>)}
+        </div>
+
+        <button onClick={() => setGegevensOpen(!gegevensOpen)} style={{ ...S.rij, padding: "10px 0 0", borderBottom: "none" }}>
+          <span style={{ fontSize: 13, flex: 1, fontWeight: 700 }}>⚙️ Jouw gegevens <span style={{ fontWeight: 400, color: C.muted }}>— voor elke callsheet</span></span>
+          <ChevronDown size={15} color={C.licht} style={{ transform: gegevensOpen ? "none" : "rotate(-90deg)" }} />
+        </button>
+        {gegevensOpen && (
+          <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+            <input value={ins.mijnNaam} placeholder="Jouw naam" aria-label="Jouw naam" onChange={e => setIns({ ...ins, mijnNaam: e.target.value })} onBlur={bewaarIns} style={{ ...CS_INP, flex: "1 1 140px", width: "auto" }} />
+            <input value={ins.mijnTelefoon} type="tel" placeholder="Jouw telefoon" aria-label="Jouw telefoon" onChange={e => setIns({ ...ins, mijnTelefoon: e.target.value })} onBlur={bewaarIns} style={{ ...CS_INP, flex: "1 1 120px", width: "auto" }} />
+            <input value={ins.productiebedrijf} placeholder="Productiebedrijf" aria-label="Productiebedrijf" onChange={e => setIns({ ...ins, productiebedrijf: e.target.value })} onBlur={bewaarIns} style={{ ...CS_INP, flex: "1 1 140px", width: "auto" }} />
+          </div>
+        )}
+
+        <CsSectie titel="KOP">
+          <input value={cs.titel} aria-label="Titel" onChange={e => zet({ titel: e.target.value })} style={{ ...CS_INP, fontWeight: 700, marginBottom: 5 }} />
+          <div style={{ display: "flex", gap: 5 }}>
+            <input value={cs.plaats} placeholder="Plaats, bv. Ostercappeln (Duitsland)" aria-label="Plaats" onChange={e => zet({ plaats: e.target.value })} style={CS_INP} />
+            <input value={cs.setTelefoon} placeholder="Set telefoon" aria-label="Set telefoon" onChange={e => zet({ setTelefoon: e.target.value })} style={CS_INP} />
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            {[["productie", "Productie"], ["agency", "Bureau"], ["klant", "Klant"]].map(([slot, label]) => {
+              const huidig = logos.find(l => l.id === cs.logos[slot]);
+              return (
+                <div key={slot} style={{ flex: 1, minWidth: 0, background: C.bg, borderRadius: 10, padding: 6, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 700 }}>LOGO {label.toUpperCase()}</div>
+                  <div style={{ height: 40, display: "flex", alignItems: "center", justifyContent: "center", margin: "4px 0" }}>
+                    {huidig ? <img src={huidig.dataUrl} alt={huidig.naam} style={{ maxHeight: 40, maxWidth: "100%" }} /> : <span style={{ fontSize: 11, color: C.licht }}>geen</span>}
+                  </div>
+                  <select value={cs.logos[slot] || ""} aria-label={`Logo ${label}`} onChange={e => { if (e.target.value === "__upload") { document.getElementById(`logo-${slot}`).click(); return; } zet({ logos: { ...(wijz.logos || {}), [slot]: e.target.value || null } }); }}
+                    style={{ ...CS_INP, padding: "4px", fontSize: 11 }}>
+                    <option value="">Geen</option>
+                    {logos.map(l => <option key={l.id} value={l.id}>{l.naam}</option>)}
+                    <option value="__upload">＋ Uploaden…</option>
+                  </select>
+                  <input id={`logo-${slot}`} type="file" accept="image/png,image/jpeg" style={{ display: "none" }} onChange={e => { uploadLogo(slot, e.target.files?.[0]); e.target.value = ""; }} />
+                </div>
+              );
+            })}
+          </div>
+        </CsSectie>
+
+        <CsSectie titel="LOCATIES">
+          <CsRijen rijen={cs.locaties} zet={(locaties) => zet({ locaties })} nieuw={() => ({ label: "Locatie", naam: "", adres: "" })}
+            velden={[{ key: "label", placeholder: "Soort", breedte: 92 }, { key: "naam", placeholder: "Naam" }, { key: "adres", placeholder: "Adres" }]} />
+          <input value={cs.reistijd} placeholder="Reistijd, bv. Hotel → fabriek: 20 minuten rijden" aria-label="Reistijd" onChange={e => zet({ reistijd: e.target.value })} style={{ ...CS_INP, marginTop: 5 }} />
+        </CsSectie>
+
+        <CsSectie titel="PRODUCTIE">
+          <CsRijen rijen={cs.productie} zet={(productie) => zet({ productie })} nieuw={() => ({ functie: "", naam: "" })}
+            velden={[{ key: "functie", placeholder: "Functie", breedte: 140 }, { key: "naam", placeholder: "Naam" }]} />
+          <textarea value={cs.factuur} rows={3} placeholder={"Factuurgegevens (bedrijf, adres, BTW)"} aria-label="Factuurgegevens" onChange={e => zet({ factuur: e.target.value })} style={{ ...CS_INP, marginTop: 5, resize: "vertical" }} />
+          <input value={cs.po} placeholder="PO nummer" aria-label="PO nummer" onChange={e => zet({ po: e.target.value })} style={{ ...CS_INP, marginTop: 5, width: 160 }} />
+        </CsSectie>
+
+        <CsSectie titel="CALLS">
+          <CsRijen rijen={cs.calls} zet={(calls) => zet({ calls })} nieuw={() => ({ wat: "", tijd: "", locatie: "" })}
+            velden={[{ key: "wat", placeholder: "Call", breedte: 110 }, { key: "tijd", placeholder: "Tijd", breedte: 96 }, { key: "locatie", placeholder: "Locatie" }]} />
+        </CsSectie>
+
+        <CsSectie titel="CAST CALL">
+          {cs.cast.filter(c => c.bezettingId).map(c => (
+            <div key={c.bezettingId} style={{ background: c.geel ? "#FFF8C4" : C.bg, borderRadius: 10, padding: 6, marginBottom: 5 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{c.naam}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))", gap: 5 }}>
+                {[["calltijd", "Calltijd"], ["visagie", "Visagie"], ["kleding", "Kleding"], ["draaiklaar", "Draaiklaar"], ["rol", "Rol"]].map(([k, ph]) => (
+                  <input key={k} value={c[k] || ""} placeholder={ph} aria-label={`${ph} ${c.naam}`}
+                    onChange={e => zet({ castDetails: { ...castDetails, [c.bezettingId]: { ...(castDetails[c.bezettingId] || {}), [k]: e.target.value } } })} style={CS_INP} />
+                ))}
+              </div>
+            </div>
+          ))}
+          <CsRijen rijen={wijz.castExtra || []} zet={(castExtra) => zet({ castExtra })} nieuw={() => ({ naam: "", calltijd: "", rol: "", geel: false })} toevoegTekst="+ Cast"
+            velden={[{ key: "naam", placeholder: "Naam" }, { key: "calltijd", placeholder: "Calltijd", breedte: 80 }, { key: "rol", placeholder: "Rol", breedte: 110 }]} />
+          {!cs.cast.some(c => c.bezettingId) && <p style={S.hint}>Cast-namen uit het project (acteurs, figuranten) verschijnen hier vanzelf.</p>}
+        </CsSectie>
+
+        <CsSectie titel="DRAAISCHEMA" extra={<button onClick={() => zet({ schema: [...cs.schema, { pauze: true, wat: "LUNCH", tijd: "12:30 – 13:00" }] })} style={{ background: "none", border: "1px solid #999", color: "#fff", borderRadius: 999, fontSize: 11, padding: "1px 8px", cursor: "pointer", fontFamily: "inherit" }}>+ Pauze</button>}>
+          {cs.schema.map((s, n) => {
+            const zetS = (v) => zet({ schema: cs.schema.map((x, i) => (i === n ? { ...x, ...v } : x)) });
+            const weg = () => zet({ schema: cs.schema.filter((_, i) => i !== n) });
+            return s.pauze ? (
+              <div key={n} style={{ display: "flex", gap: 5, marginBottom: 5, background: "#D9D9D9", borderRadius: 8, padding: 4 }}>
+                <input value={s.wat || ""} aria-label="Pauze" onChange={e => zetS({ wat: e.target.value })} style={{ ...CS_INP, fontWeight: 700, width: 110, flexShrink: 0 }} />
+                <input value={s.tijd || ""} placeholder="Tijd" aria-label="Pauze tijd" onChange={e => zetS({ tijd: e.target.value })} style={CS_INP} />
+                <button onClick={weg} aria-label="Regel verwijderen" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><X size={14} color={C.muted} /></button>
+              </div>
+            ) : (
+              <div key={n} style={{ marginBottom: 6, background: C.bg, borderRadius: 8, padding: 4 }}>
+                <div style={{ display: "flex", gap: 5 }}>
+                  <input value={s.tijd || ""} placeholder="08:00 – 09:00" aria-label="Tijd" onChange={e => zetS({ tijd: e.target.value })} style={{ ...CS_INP, width: 110, flexShrink: 0 }} />
+                  <input value={s.wat || ""} placeholder="Wat (shot, opbouw…)" aria-label="Wat" onChange={e => zetS({ wat: e.target.value })} style={CS_INP} />
+                  <button onClick={weg} aria-label="Regel verwijderen" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><X size={14} color={C.licht} /></button>
+                </div>
+                <div style={{ display: "flex", gap: 5, marginTop: 4, paddingRight: 22 }}>
+                  <input value={s.cast || ""} placeholder="Cast" aria-label="Cast" onChange={e => zetS({ cast: e.target.value })} style={{ ...CS_INP, width: 110, flexShrink: 0 }} />
+                  <input value={s.notes || ""} placeholder="Notes" aria-label="Notes" onChange={e => zetS({ notes: e.target.value })} style={CS_INP} />
+                </div>
+              </div>
+            );
+          })}
+          <button onClick={() => zet({ schema: [...cs.schema, { tijd: "", wat: "", cast: "", notes: "" }] })} style={{ ...S.chip(false), padding: "4px 9px", fontSize: 12 }}>+ Regel</button>
+        </CsSectie>
+
+        <CsSectie titel="BELANGRIJKE NOTES">
+          {cs.notes.map((n, i) => (
+            <div key={i} style={{ display: "flex", gap: 5, marginBottom: 5 }}>
+              <input value={n} aria-label={`Note ${i + 1}`} onChange={e => zet({ notes: cs.notes.map((x, j) => (j === i ? e.target.value : x)) })} style={{ ...CS_INP, color: "#C00000", fontWeight: 700 }} />
+              <button onClick={() => zet({ notes: cs.notes.filter((_, j) => j !== i) })} aria-label="Note verwijderen" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><X size={14} color={C.licht} /></button>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={() => zet({ notes: [...cs.notes, ""] })} style={{ ...S.chip(false), padding: "4px 9px", fontSize: 12 }}>+ Note</button>
+            {wijz.notes && (
+              <label style={{ fontSize: 12, color: C.muted, display: "flex", alignItems: "center", gap: 4 }}>
+                <input type="checkbox" checked={notesOnthouden} onChange={e => { setNotesOnthouden(e.target.checked); setVuil(true); }} /> Als standaard gebruiken
+              </label>
+            )}
+            {wijz.notes && <button onClick={() => { const { notes, ...rest } = wijz; setWijz(rest); setVuil(true); }} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>standaard terugzetten</button>}
+          </div>
+        </CsSectie>
+
+        <CsSectie titel="CREW & KLANT">
+          {cs.crew.filter(c => c.bezettingId).map(c => (
+            <div key={c.bezettingId} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, padding: "5px 6px", borderRadius: 8, marginBottom: 3, background: c.geel ? "#FFF8C4" : C.bg }}>
+              <span style={{ width: 110, color: C.muted, flexShrink: 0 }}>{c.functie}</span>
+              <span style={{ flex: 1, fontWeight: 700 }}>{c.naam}</span>
+              <span style={{ color: c.telefoon ? C.tekst : C.licht }}>{c.telefoon || "geen tel."}</span>
+              <button onClick={() => zet({ afwezig: [...(wijz.afwezig || []), c.bezettingId] })} aria-label={`${c.naam} niet op deze dag`} title="Niet op deze draaidag"
+                style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><X size={14} color={C.licht} /></button>
+            </div>
+          ))}
+          {cs.crew.filter(c => !c.bezettingId && c.naam === (ins.mijnNaam || instellingen.mijnNaam) && !(wijz.crewExtra || []).includes(c)).map(c => (
+            <div key="ik" style={{ display: "flex", gap: 6, fontSize: 13, padding: "5px 6px", borderRadius: 8, marginBottom: 3, background: C.bg }}>
+              <span style={{ width: 110, color: C.muted, flexShrink: 0 }}>{c.functie}</span><span style={{ flex: 1, fontWeight: 700 }}>{c.naam}</span><span>{c.telefoon}</span>
+            </div>
+          ))}
+          {(wijz.afwezig || []).length > 0 && (
+            <button onClick={() => zet({ afwezig: [] })} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", padding: "2px 0 6px", fontFamily: "inherit", textDecoration: "underline" }}>
+              {(wijz.afwezig || []).length} {(wijz.afwezig || []).length === 1 ? "naam" : "namen"} niet op deze dag — terugzetten
+            </button>
+          )}
+          <CsRijen rijen={wijz.crewExtra || []} zet={(crewExtra) => zet({ crewExtra })} nieuw={() => ({ functie: "", naam: "", telefoon: "" })} toevoegTekst="+ Crew"
+            velden={[{ key: "functie", placeholder: "Functie", breedte: 100 }, { key: "naam", placeholder: "Naam" }, { key: "telefoon", placeholder: "Telefoon", breedte: 110 }]} />
+          <p style={{ ...S.label, margin: "10px 0 4px" }}>Bureau & klant op set</p>
+          <CsRijen rijen={cs.klantOpSet} zet={(klantOpSet) => zet({ klantOpSet })} nieuw={() => ({ organisatie: klant?.naam || "", naam: "", telefoon: "" })} toevoegTekst="+ Persoon"
+            velden={[{ key: "organisatie", placeholder: "Organisatie", breedte: 100 }, { key: "naam", placeholder: "Naam" }, { key: "telefoon", placeholder: "Telefoon", breedte: 110 }]} />
+        </CsSectie>
+
+        <CsSectie titel="CAMERA / DATA">
+          <input value={cs.camera} placeholder="Camera / formaten" aria-label="Camera" onChange={e => zet({ camera: e.target.value })} style={{ ...CS_INP, marginBottom: 5 }} />
+          <input value={cs.data} placeholder="Data, bv. SSD-schijven beschikbaar via productie" aria-label="Data" onChange={e => zet({ data: e.target.value })} style={CS_INP} />
+        </CsSectie>
+        <p style={S.hint}>Geel = nog niet bevestigd; dat blijft geel gemarkeerd in de Excel. Bureau, factuurgegevens, klant op set en logo's worden per klant onthouden.</p>
+
+        <div style={{ position: "sticky", bottom: 0, margin: "14px -18px 0", padding: "10px 18px max(22px, env(safe-area-inset-bottom))", background: C.kaart, borderTop: `1px solid ${C.rand}`, display: "flex", gap: 8 }}>
+          <button style={{ ...S.knop(C.bg, C.tekst), flex: 1, border: `1px solid ${C.rand2}` }} onClick={() => { opslaan(); meld("💾 Callsheet bewaard"); }} disabled={!vuil}>{vuil ? "Bewaren" : "Bewaard ✓"}</button>
+          {kanDelen && <button style={{ ...S.knop(C.bg, C.groen), flex: 1, border: `1px solid ${C.rand2}` }} disabled={bezig} onClick={() => maakExcel(true)}>📤 Delen</button>}
+          <button style={{ ...S.knop(), flex: 1.3 }} disabled={bezig} onClick={() => maakExcel(false)}>{bezig ? "Bezig…" : "⬇︎ Excel"}</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2332,7 +2795,7 @@ function BezettingEditor({ taak, wijzigLaatste, contacten, onthoud, project = {}
               </p>
             )}
             {regels.map(b => (
-              <BezettingRegel key={b.id} b={b} contacten={contacten} opleverdatum={buyoutStart(project)} wijzig={(v) => wijzig(b.id, v)} verwijder={() => pasAan(lijst => lijst.filter(x => x.id !== b.id))}
+              <BezettingRegel key={b.id} b={b} contacten={contacten} opleverdatum={buyoutStart(project)} aantalDagen={draaidagenVan(project).length || 1} wijzig={(v) => wijzig(b.id, v)} verwijder={() => pasAan(lijst => lijst.filter(x => x.id !== b.id))}
                 onthoud={(volledig) => { const contactId = onthoud(volledig); if (contactId && contactId !== b.contactId) wijzig(b.id, { contactId }); }} />
             ))}
             <button onClick={() => pasAan(lijst => [...lijst, nieuweBezetting({ onderdeelId: sec.id, buyouts: standaardBuyouts(project.deliverables, sec.id), eenheid: isLocatie || sec.id === "hotel" || sec.id === "verzekering" || sec.id === "catering" ? "totaal" : "dag" }, uid)])}
@@ -2346,15 +2809,24 @@ function BezettingEditor({ taak, wijzigLaatste, contacten, onthoud, project = {}
   );
 }
 
-function BezettingRegel({ b, contacten, wijzig, verwijder, onthoud, opleverdatum }) {
+function BezettingRegel({ b, contacten, wijzig, verwijder, onthoud, opleverdatum, aantalDagen = 1 }) {
   const [naam, setNaam] = useState(b.naam || "");
   const [bedrag, setBedrag] = useState(b.bedrag != null ? String(b.bedrag).replace(".", ",") : "");
   const [notitie, setNotitie] = useState(b.notitie || "");
+  const [telefoon, setTelefoon] = useState(b.telefoon || "");
+  const [adres, setAdres] = useState(b.adres || "");
+  const [aantal, setAantal] = useState(b.aantal != null ? String(b.aantal).replace(".", ",") : "");
   const [focus, setFocus] = useState(false);
-  useEffect(() => { setNaam(b.naam || ""); setBedrag(b.bedrag != null ? String(b.bedrag).replace(".", ",") : ""); setNotitie(b.notitie || ""); }, [b.id]);
+  useEffect(() => {
+    setNaam(b.naam || ""); setBedrag(b.bedrag != null ? String(b.bedrag).replace(".", ",") : ""); setNotitie(b.notitie || "");
+    setTelefoon(b.telefoon || ""); setAdres(b.adres || ""); setAantal(b.aantal != null ? String(b.aantal).replace(".", ",") : "");
+  }, [b.id]);
+  const isPlek = /^loc-/.test(b.onderdeelId || "") || b.onderdeelId === "hotel";
+  const isPersoon = /^crew-/.test(b.onderdeelId || "") || ["acteurs", "edelfiguranten", "figuranten"].includes(b.onderdeelId);
   // Actuele invoer (ook binnen een vertraagde blur-afhandeling).
   const nu = useRef({});
-  nu.current = { naam: naam.trim(), bedrag: leesBedragInvoer(bedrag), notitie: notitie.trim(), eenheid: b.eenheid, status: b.status };
+  const aantalGetal = aantal.trim() === "" ? null : (Number(aantal.replace(",", ".")) || null);
+  nu.current = { naam: naam.trim(), bedrag: leesBedragInvoer(bedrag), notitie: notitie.trim(), telefoon: telefoon.trim(), adres: adres.trim(), aantal: aantalGetal, eenheid: b.eenheid, status: b.status };
   const suggesties = contactSuggesties(contacten, b.onderdeelId, naam).filter(c => c.naam !== naam).slice(0, 5);
   const bekend = contacten.find(c => c.naam.trim().toLowerCase() === naam.trim().toLowerCase());
   const vorige = bekend?.prijzen?.[b.onderdeelId];
@@ -2363,11 +2835,15 @@ function BezettingRegel({ b, contacten, wijzig, verwijder, onthoud, opleverdatum
     const p = c.prijzen?.[b.onderdeelId];
     const velden = {
       naam: c.naam, contactId: c.id, notitie: notitie || c.notitie || "",
+      ...(!telefoon && c.telefoon ? { telefoon: c.telefoon } : {}),
+      ...(!adres && c.adres ? { adres: c.adres } : {}),
       ...(b.bedrag == null && p?.bedrag != null ? { bedrag: p.bedrag, eenheid: p.eenheid } : {}),
       // Eerdere buy-outafspraak overnemen als er nog niets is ingevuld.
       ...(p?.buyouts && !(b.buyouts || []).some(x => x.duur || x.bedrag != null) ? { buyouts: p.buyouts } : {}),
     };
     setNaam(c.naam); if (velden.bedrag != null) setBedrag(String(velden.bedrag).replace(".", ",")); setNotitie(velden.notitie);
+    if (velden.telefoon) setTelefoon(velden.telefoon);
+    if (velden.adres) setAdres(velden.adres);
     setFocus(false);
     wijzig(velden);
     onthoud({ ...b, ...velden });
@@ -2376,7 +2852,7 @@ function BezettingRegel({ b, contacten, wijzig, verwijder, onthoud, opleverdatum
   // een oude waarde overschrijven.
   function bewaarVeld(veld) {
     const waarde = nu.current[veld];
-    if (waarde === (veld === "bedrag" ? b.bedrag : (b[veld] || ""))) return;
+    if (waarde === (veld === "bedrag" || veld === "aantal" ? (b[veld] ?? null) : (b[veld] || ""))) return;
     wijzig({ [veld]: waarde });
     if (nu.current.naam) onthoud({ ...b, ...nu.current });
   }
@@ -2418,7 +2894,22 @@ function BezettingRegel({ b, contacten, wijzig, verwijder, onthoud, opleverdatum
           style={{ ...S.inp, padding: "6px 6px", fontSize: 13, width: "auto" }}>
           {EENHEDEN.map(e => <option key={e.id} value={e.id}>{e.label}</option>)}
         </select>
-        <input value={notitie} placeholder="Tel., e-mail, afspraak…" aria-label="Notitie" onChange={e => setNotitie(e.target.value)} onBlur={() => bewaarVeld("notitie")}
+        {b.eenheid !== "totaal" && (
+          <input value={aantal} inputMode="decimal" placeholder={`× ${b.eenheid === "dag" || !b.eenheid ? aantalDagen : 1}`} aria-label="Aantal" title="Aantal dagen / uren / stuks"
+            onChange={e => setAantal(e.target.value)} onBlur={() => bewaarVeld("aantal")}
+            style={{ ...S.inp, padding: "6px 6px", fontSize: 13, width: 48, textAlign: "center" }} />
+        )}
+      </div>
+      {isPlek && (
+        <input value={adres} placeholder="Adres (voor de callsheet + route)" aria-label="Adres" onChange={e => setAdres(e.target.value)} onBlur={() => bewaarVeld("adres")}
+          style={{ ...S.inp, padding: "6px 8px", fontSize: 13, marginTop: 6 }} />
+      )}
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        {(isPersoon || isPlek) && (
+          <input value={telefoon} type="tel" placeholder="Telefoon" aria-label="Telefoon" onChange={e => setTelefoon(e.target.value)} onBlur={() => bewaarVeld("telefoon")}
+            style={{ ...S.inp, padding: "6px 8px", fontSize: 13, width: 140, flexShrink: 0 }} />
+        )}
+        <input value={notitie} placeholder="E-mail, afspraak…" aria-label="Notitie" onChange={e => setNotitie(e.target.value)} onBlur={() => bewaarVeld("notitie")}
           style={{ ...S.inp, padding: "6px 8px", fontSize: 13 }} />
       </div>
       {buyoutSoort(b.onderdeelId) && (

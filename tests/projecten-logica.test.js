@@ -232,6 +232,7 @@ boek = P.onthoudContact(boek, { onderdeelId: "loc-interieur", naam: "Studio Noor
 const sug = P.contactSuggesties(boek, "crew-camera", "");
 test("suggesties: eerst wie deze rol eerder deed, met laatste prijs", sug[0].naam === "Sanne de Vries" && sug[0].zelfdeRol && sug[0].laatstePrijs.bedrag === 500);
 test("suggesties filteren op getypte tekst", P.contactSuggesties(boek, "crew-camera", "noord").map(c => c.naam).join() === "Studio Noord");
+test("telefoon en adres worden onthouden (voor de callsheet)", (() => { const b = P.onthoudContact(boek, { onderdeelId: "loc-interieur", naam: "Studio Noord", telefoon: "013-1234567", adres: "Noordweg 1, Tilburg" }, { datum: "2027-03-02", nieuwId }).contacten; const c = b.find(x => x.naam === "Studio Noord"); return c.telefoon === "013-1234567" && c.adres === "Noordweg 1, Tilburg" && c.prijzen["loc-interieur"].bedrag === 900; })());
 test("lege naam wordt niet onthouden", P.onthoudContact(boek, { naam: "  " }, { nieuwId }).contacten.length === boek.length);
 
 sectie("Postproductie-onderdelen");
@@ -322,5 +323,39 @@ const afgevinkt = { ...bo1, items: bo1.items.map(i => (i.buyoutKey ? { ...i, che
 test("afgevinkte herinnering blijft staan", P.synchroniseerBuyoutHerinneringen(afgevinkt, { nieuwId }).items.some(i => i.buyoutKey));
 test("zonder oplever- of livedatum: geen herinnering", !P.synchroniseerBuyoutHerinneringen({ ...boLijst, project: {} }, { nieuwId }).items.some(i => i.buyoutKey));
 test("buy-outherinnering wordt niet als sjabloonstap voorgesteld", !P.berekenLeerVoorstellen(klein, { ...bo1, project: { ...bo1.project, stapIds: [] }, items: bo1.items.map(i => (i.buyoutKey ? { ...i, category: "post" } : i)) }).some(v => v.type === "toevoegen"));
+
+sectie("Meerdere draaidagen");
+const mdBasis = P.maakProjectUitSjabloon(groot, { naam: "MD", draaidag: "2027-01-20", opleverdatum: "2027-02-17", vandaag: "2026-11-22", nieuwId });
+test("oud project zonder lijst draaidagen: één dag uit project.draaidag", P.draaidagenVan(mdBasis.project).length === 1 && P.draaidagenVan(mdBasis.project)[0].datum === "2027-01-20");
+const md = P.zetDraaidagen(mdBasis, [{ datum: "2027-01-21" }, { datum: "2027-01-20" }, { datum: "2027-01-22" }, { datum: "2027-01-21" }], { nieuwId });
+const dd = md.items.filter(i => i.draaidagId);
+test("dagen gesorteerd, dubbele weg, eerste = project.draaidag", md.project.draaidagen.map(d => d.datum).join() === "2027-01-20,2027-01-21,2027-01-22" && md.project.draaidag === "2027-01-20");
+test("sjabloonstap 'Draaidagen' wordt dag 1, plus taken voor dag 2 en 3", dd.length === 3 && dd[0].sjabloonStapId === "g-draai" && dd.map(i => i.name).join() === "Draaidag 1,Draaidag 2,Draaidag 3");
+test("draaidagtaken in productie, met offset t.o.v. dag 1", dd.every(i => i.category === "productie") && dd.map(i => i.offset).join() === "0,1,2");
+const mdVerschoven = P.verschuifProject(md, { draaidag: "2027-01-27" });
+test("planning verschuiven: alle draaidagen schuiven als blok mee", mdVerschoven.project.draaidagen.map(d => d.datum).join() === "2027-01-27,2027-01-28,2027-01-29" && mdVerschoven.items.filter(i => i.draaidagId).map(i => i.dueDate).join() === "2027-01-27,2027-01-28,2027-01-29");
+const md2 = P.zetDraaidagen(md, md.project.draaidagen.filter(d => d.datum !== "2027-01-21"), { nieuwId });
+test("dag verwijderen: open taak weg, nummering opnieuw", md2.items.filter(i => i.draaidagId).map(i => i.name).join() === "Draaidag 1,Draaidag 2" && md2.items.filter(i => i.draaidagId)[1].dueDate === "2027-01-22");
+const md1 = P.zetDraaidagen(md2, [md2.project.draaidagen[0]], { nieuwId });
+test("terug naar één dag: één draaidagtaak", md1.items.filter(i => i.draaidagId).length === 1);
+test("zonder dagen: niets veranderen", P.zetDraaidagen(md, [], { nieuwId }) === md);
+
+sectie("Begroting — offerte tegenover kosten");
+test("dagprijs zonder aantal = aantal draaidagen", P.bezettingKosten({ bedrag: 450, eenheid: "dag" }, 3).totaal === 1350);
+test("eigen aantal gaat voor", P.bezettingKosten({ bedrag: 450, eenheid: "dag", aantal: 2 }, 3).totaal === 900);
+test("totaalprijs: altijd 1×", P.bezettingKosten({ bedrag: 900, eenheid: "totaal", aantal: 5 }, 3).totaal === 900);
+test("uurprijs × uren", P.bezettingKosten({ bedrag: 60, eenheid: "uur", aantal: 7.5 }, 1).totaal === 450);
+test("buy-outs tellen mee", P.bezettingKosten({ bedrag: 650, eenheid: "dag", buyouts: [{ bedrag: 1500 }, { bedrag: null }] }, 2).totaal === 2800);
+const bg = P.projectBegroting({ items: [
+  { name: "Crew", bezetting: [{ naam: "Sanne", status: "bevestigd", bedrag: 450, eenheid: "dag" }, { naam: "Joris", status: "optie", bedrag: 400, eenheid: "dag" }, { naam: "", bedrag: 999 }] },
+  { name: "Cast", bezetting: [{ naam: "Eva", status: "bevestigd", bedrag: 650, eenheid: "dag", buyouts: [{ medium: "tv", bedrag: 1500 }] }, { naam: "Piet", status: "optie" }] },
+], project: { draaidagen: [{ id: "a", datum: "2027-01-20" }, { id: "b", datum: "2027-01-21" }], offerte: { bedrag: 6000 }, kostenposten: [{ id: "k", omschrijving: "Reiskosten", bedrag: 300 }] } });
+test("bevestigde kosten (2 draaidagen) + overige posten", bg.bevestigd === 900 + 2800 + 300);
+test("incl. opties", bg.inclOpties === 900 + 800 + 2800 + 300);
+test("marge en percentage t.o.v. offerte", bg.offerte === 6000 && bg.marge === 6000 - 4800 && bg.margePct === 20 && !bg.overschreden);
+test("namen zonder prijs worden geteld", bg.zonderPrijs === 1);
+test("buy-outs apart zichtbaar", bg.buyouts === 1500);
+test("over het budget → waarschuwing", P.projectBegroting({ items: [{ bezetting: [{ naam: "X", bedrag: 7000, eenheid: "totaal" }] }], project: { budget: 5000 } }).overschreden === true);
+test("zonder offerte/budget: geen marge", P.projectBegroting({ items: [], project: {} }).marge === null);
 
 samenvatting();

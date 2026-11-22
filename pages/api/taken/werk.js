@@ -30,7 +30,11 @@ export default async function handler(req, res) {
       if (Array.isArray(inkomend.klanten)) {
         volgend.klanten = inkomend.klanten
           .filter(k => k && k.id && String(k.naam || "").trim())
-          .map(k => ({ id: String(k.id), naam: String(k.naam).trim().slice(0, 60), kleur: k.kleur || null, gearchiveerd: !!k.gearchiveerd }));
+          .map(k => ({
+            id: String(k.id), naam: String(k.naam).trim().slice(0, 60), kleur: k.kleur || null, gearchiveerd: !!k.gearchiveerd,
+            // Callsheet-geheugen per klant (bureau, factuurgegevens, klant op set, logo's).
+            ...(k.callsheet && typeof k.callsheet === "object" ? { callsheet: k.callsheet } : {}),
+          }));
       }
       // Projectsjablonen: hele set wordt vervangen (klein, en alleen jij
       // bewerkt je eigen sjablonen). Grenzen houden de opslag behapbaar.
@@ -43,6 +47,17 @@ export default async function handler(req, res) {
       // Contactenboek (namen + prijsafspraken, onthouden over projecten heen).
       if (Array.isArray(inkomend.contacten)) {
         volgend.contacten = inkomend.contacten.filter(c => c && c.id && String(c.naam || "").trim()).slice(0, 1000);
+      }
+      // Callsheet-instellingen (jouw naam/telefoon, productiebedrijf, vaste notes).
+      if (inkomend.callsheet && typeof inkomend.callsheet === "object") {
+        volgend.callsheet = inkomend.callsheet;
+      }
+      // Logobibliotheek voor callsheets: kleine, in de browser verkleinde afbeeldingen.
+      if (Array.isArray(inkomend.logos)) {
+        volgend.logos = inkomend.logos
+          .filter(l => l && l.id && /^data:image\/(png|jpeg);base64,/.test(String(l.dataUrl || "")) && String(l.dataUrl).length < 400000)
+          .slice(0, 40)
+          .map(l => ({ id: String(l.id), naam: String(l.naam || "Logo").slice(0, 60), dataUrl: l.dataUrl, breedte: Number(l.breedte) || 0, hoogte: Number(l.hoogte) || 0 }));
       }
       await schrijfWerkData(ctx.slug, volgend);
       try {
