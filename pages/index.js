@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { BUILD_INFO } from "../lib/build-info";
 import { Home, List, Wallet, LogOut, Lock, KeyRound, Settings, Eye, EyeOff } from "lucide-react";
+import { DndContext, MouseSensor, TouchSensor, KeyboardSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
+import { SortableContext, rectSortingStrategy, arrayMove, useSortable, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 // Klein samenvattingsblokje bovenaan het dashboard: actieve medicaties +
 // eerstvolgende afspraak, zodat je niet apart de Gezondheid-tool hoeft te
@@ -192,6 +195,82 @@ const TOOLS = [
   },
 ];
 
+// Eén dashboardtegel. Buiten de bewerkmodus een gewone link; lang
+// ingedrukt houden (± ½ s) start de bewerkmodus, net als op het
+// iPhone-beginscherm. In de bewerkmodus wiebelt de tegel en is hij te slepen.
+const LANG_DRUKKEN_MS = 500;
+function Tegel({ tool, idx, bewerken, sleept, startBewerken }) {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: tool.href, disabled: !bewerken });
+  const timer = useRef(null);
+  const start = useRef(null);
+  const negeerKlik = useRef(false);
+
+  function drukStart(e) {
+    if (bewerken) return;
+    start.current = { x: e.clientX, y: e.clientY };
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      negeerKlik.current = true;   // de klik die na het loslaten volgt niet als "openen" tellen
+      try { navigator.vibrate?.(12); } catch {}
+      startBewerken();
+    }, LANG_DRUKKEN_MS);
+  }
+  function drukBeweeg(e) {
+    if (!start.current) return;
+    if (Math.abs(e.clientX - start.current.x) > 10 || Math.abs(e.clientY - start.current.y) > 10) drukStop(); // scrollen, geen lang drukken
+  }
+  function drukStop() {
+    clearTimeout(timer.current);
+    start.current = null;
+  }
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const inhoud = (
+    <>
+      <div style={{ ...S.tileIcon, background: tool.color }}>
+        <span style={{ fontSize: 22, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" }}>{tool.emoji}</span>
+      </div>
+      <p style={S.tileLabel}>{tool.label}</p>
+      <p style={S.tileDesc}>{tool.description}</p>
+    </>
+  );
+  // Geen tekstselectie of het iOS-"voorvertoning/kopieer"-menu bij lang drukken.
+  const geenCallout = { WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none" };
+
+  return (
+    <div ref={setNodeRef}
+      style={{
+        position: "relative",
+        transform: CSS.Transform.toString(transform),
+        transition,
+        zIndex: sleept ? 10 : "auto",
+        touchAction: bewerken ? "manipulation" : "auto",
+      }}>
+      {bewerken ? (
+        <div {...attributes} {...listeners} aria-label={`${tool.label} — sleep om te verplaatsen`}
+          className="tegel-wiebel"
+          style={{
+            ...S.tile, ...geenCallout, cursor: sleept ? "grabbing" : "grab",
+            animation: sleept ? "none" : `wiebel ${0.26 + (idx % 3) * 0.03}s ease-in-out ${(idx % 4) * -0.07}s infinite`,
+            boxShadow: sleept ? "0 14px 30px rgba(45,42,38,0.22)" : "none",
+            transform: sleept ? "scale(1.05)" : undefined,
+            opacity: 1,
+          }}>
+          {inhoud}
+        </div>
+      ) : (
+        <Link href={tool.href} draggable={false}
+          style={{ ...S.tile, ...geenCallout }}
+          onPointerDown={drukStart} onPointerMove={drukBeweeg} onPointerUp={drukStop} onPointerCancel={drukStop} onPointerLeave={drukStop}
+          onContextMenu={e => e.preventDefault()}
+          onClick={e => { if (negeerKlik.current) { e.preventDefault(); negeerKlik.current = false; } }}>
+          {inhoud}
+        </Link>
+      )}
+    </div>
+  );
+}
+
 export default function Platform() {
   const [status, setStatus]               = useState("laden");
   const [name, setName]                   = useState("");
@@ -258,11 +337,25 @@ export default function Platform() {
     })();
   }, [status]);
 
-  async function verschuifTool(idx, richting) {
-    const next = [...toolVolgorde];
-    const naarIdx = idx + richting;
-    if (naarIdx < 0 || naarIdx >= next.length) return;
-    [next[idx], next[naarIdx]] = [next[naarIdx], next[idx]];
+  // ── Herschikken zoals op de iPhone: tegel lang ingedrukt houden → alle
+  //    tegels gaan wiebelen → slepen naar de nieuwe plek → "Klaar".
+  //    Slepen via @dnd-kit (staat al in de app, ook gebruikt in Schetsboek).
+  //    Op touch pas na een korte houd-tijd, zodat gewoon scrollen blijft werken.
+  const sleepSensoren = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const [sleeptNu, setSleeptNu] = useState(null);
+  function naSlepen({ active, over }) {
+    setSleeptNu(null);
+    if (!over || active.id === over.id) return;
+    const van = toolVolgorde.indexOf(active.id);
+    const naar = toolVolgorde.indexOf(over.id);
+    if (van < 0 || naar < 0) return;
+    bewaarVolgorde(arrayMove(toolVolgorde, van, naar));
+  }
+  async function bewaarVolgorde(next) {
     setToolVolgorde(next);
     try {
       await fetch("/api/instellingen", {
@@ -686,10 +779,14 @@ export default function Platform() {
           <h1 style={S.title}>Onze tools</h1>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button style={{ ...S.iconBtn, background: bewerkVolgorde ? "#2D4A3E" : "#FFFFFF", border: bewerkVolgorde ? "none" : "1px solid #EFE9DC" }}
-            onClick={() => setBewerkVolgorde(v => !v)} title="Volgorde aanpassen">
-            <span style={{ fontSize: 16, color: bewerkVolgorde ? "#FAF6F0" : "#8C8576" }}>⇅</span>
-          </button>
+          {bewerkVolgorde ? (
+            <button style={{ ...S.iconBtn, width: "auto", padding: "0 16px", background: "#2D4A3E", border: "none", color: "#FAF6F0", fontWeight: 700, fontSize: 14 }}
+              onClick={() => setBewerkVolgorde(false)}>Klaar</button>
+          ) : (
+            <button style={S.iconBtn} onClick={() => setBewerkVolgorde(true)} title="Tegels herschikken" aria-label="Tegels herschikken">
+              <span style={{ fontSize: 16, color: "#8C8576" }}>⇅</span>
+            </button>
+          )}
           <button style={S.iconBtn} onClick={() => setShowInstellingen(v => !v)} aria-label="Instellingen">
             <Settings size={18} color="#8C8576" />
           </button>
@@ -702,7 +799,7 @@ export default function Platform() {
       {bewerkVolgorde && (
         <div style={{ margin: "0 20px 12px", background: "#2D4A3E", borderRadius: 14, padding: "10px 14px" }}>
           <p style={{ margin: 0, fontSize: 13, color: "#FAF6F0", opacity: 0.9 }}>
-            ⇅ Gebruik de pijltjes op de tegels om de volgorde aan te passen
+            Sleep de tegels naar de plek waar je ze wilt hebben. Tik op <strong>Klaar</strong> als je klaar bent.
           </p>
         </div>
       )}
@@ -922,36 +1019,19 @@ export default function Platform() {
 
       <main style={S.grid}>
         <div style={{ gridColumn: "1 / -1" }}><GezondheidWidget /></div>
-        {gesorteerdeTools.map((tool, idx) => (
-          <div key={tool.href} style={{ position: "relative" }}>
-            {bewerkVolgorde ? (
-              <div style={{ ...S.tile, cursor: "default", opacity: 1 }}>
-                <div style={{ ...S.tileIcon, background: tool.color }}>
-                  <span style={{ fontSize: 22, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" }}>{tool.emoji}</span>
-                </div>
-                <p style={S.tileLabel}>{tool.label}</p>
-                <p style={S.tileDesc}>{tool.description}</p>
-                {/* Pijltjes */}
-                <div style={{ position: "absolute", top: 8, right: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-                  <button
-                    style={{ background: idx === 0 ? "#E4DCCB" : "#2D4A3E", color: idx === 0 ? "#B8B2A8" : "#FAF6F0", border: "none", borderRadius: 7, width: 26, height: 26, fontSize: 13, cursor: idx === 0 ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                    onClick={() => verschuifTool(idx, -1)} disabled={idx === 0}>↑</button>
-                  <button
-                    style={{ background: idx === gesorteerdeTools.length - 1 ? "#E4DCCB" : "#2D4A3E", color: idx === gesorteerdeTools.length - 1 ? "#B8B2A8" : "#FAF6F0", border: "none", borderRadius: 7, width: 26, height: 26, fontSize: 13, cursor: idx === gesorteerdeTools.length - 1 ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                    onClick={() => verschuifTool(idx, 1)} disabled={idx === gesorteerdeTools.length - 1}>↓</button>
-                </div>
-              </div>
-            ) : (
-              <Link href={tool.href} style={S.tile}>
-                <div style={{ ...S.tileIcon, background: tool.color }}>
-                  <span style={{ fontSize: 22, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" }}>{tool.emoji}</span>
-                </div>
-                <p style={S.tileLabel}>{tool.label}</p>
-                <p style={S.tileDesc}>{tool.description}</p>
-              </Link>
-            )}
-          </div>
-        ))}
+        <DndContext sensors={sleepSensoren} collisionDetection={closestCenter}
+          onDragStart={({ active }) => setSleeptNu(active.id)} onDragCancel={() => setSleeptNu(null)} onDragEnd={naSlepen}>
+          <SortableContext items={toolVolgorde} strategy={rectSortingStrategy} disabled={!bewerkVolgorde}>
+            {gesorteerdeTools.map((tool, idx) => (
+              <Tegel key={tool.href} tool={tool} idx={idx} bewerken={bewerkVolgorde} sleept={sleeptNu === tool.href}
+                startBewerken={() => setBewerkVolgorde(true)} />
+            ))}
+          </SortableContext>
+        </DndContext>
+        <style>{`
+          @keyframes wiebel { 0% { transform: rotate(-1.1deg); } 50% { transform: rotate(1.1deg); } 100% { transform: rotate(-1.1deg); } }
+          @media (prefers-reduced-motion: reduce) { .tegel-wiebel { animation: none !important; } }
+        `}</style>
       </main>
 
       <p style={{ textAlign: "center", fontSize: 10, color: "#C2BCAE", padding: "0 20px 24px" }}>
