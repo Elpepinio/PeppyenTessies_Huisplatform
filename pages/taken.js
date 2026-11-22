@@ -34,11 +34,11 @@ import {
   DELIVERABLE_KANALEN, FORMATEN, STANDAARD_FORMATEN, normaliseerDeliverables, deliverablesTekst,
   BUYOUT_MEDIA, BUYOUT_DUUR, buyoutSoort, standaardBuyouts, buyoutEinde,
   leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
-  draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond,
+  draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond, bezettingKosten,
   maakAanvraag, aanvraagNaarOfferte, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte } from "../lib/intake-logica";
-import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam } from "../lib/offerte-pdf-logica";
+import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam, vulBezettingUitOfferte, werkelijkUitBezetting } from "../lib/offerte-pdf-logica";
 
 // Marge-doel (standaard minimaal 20%, streven 25%), overal in de projecten nodig.
 const MargeContext = createContext({ minimum: 20, doel: 25, zet: () => {} });
@@ -233,8 +233,24 @@ export default function TakenApp() {
         ...(opties.budget != null && l.project.budget == null && l.project.offerte?.bedrag == null ? { budget: opties.budget } : {}),
         ...(opties.liveDatum && !l.project.liveDatum ? { liveDatum: opties.liveDatum } : {}) } };
     }
+    if (l.project.offerte?.specificatie) l = vulBezettingUitOfferte(l, l.project.offerte.specificatie, { nieuwId: uid }).lijst;
     zetLijst("werk", l);
     return l;
+  }
+  // Bestaand project: rollen uit de offerte aanzetten en open plekken maken.
+  function vulPlekkenUitOfferte(listId) {
+    const l0 = lijstVan("werk", listId);
+    const spec = l0?.project?.offerte?.specificatie;
+    if (!spec) return;
+    const probeer = vulBezettingUitOfferte(l0, spec, { nieuwId: uid });
+    const nodig = probeer.nodigeOnderdelen.filter(id => !(l0.project.onderdelen || []).includes(id));
+    const plan = leesPlanningUitTaken(l0);
+    const l1 = nodig.length
+      ? pasOnderdelenToe(l0, [...(l0.project.onderdelen || []), ...nodig], { vandaag, meetings: plan.meetings, wie: ik, nieuwId: uid })
+      : l0;
+    const r = vulBezettingUitOfferte(l1, spec, { nieuwId: uid });
+    zetLijst("werk", r.lijst);
+    meld(`👥 ${r.toegevoegd} plekken klaargezet uit de offerte${nodig.length ? ` (${nodig.length} onderdelen aangezet)` : ""}`);
   }
   function maakKlant(naam) {
     const k = { id: uid(), naam: naam.trim(), kleur: KLANT_KLEUREN[(werkRef.current?.klanten || []).length % KLANT_KLEUREN.length] };
@@ -580,6 +596,7 @@ export default function TakenApp() {
             openCallsheet={(dagId) => setSheet({ soort: "callsheet", listId: lijst.id, dagId })}
             openOfferteVanAanvraag={() => setSheet({ soort: "offerteVanAanvraag", listId: lijst.id })}
             meld={meld}
+            vulPlekken={() => vulPlekkenUitOfferte(lijst.id)}
             zetOpzet={(opzet) => {
               const wasExtern = lijst.project?.opzet?.postDoorOns === false;
               wijzigLijst(weergave.ruimte, lijst.id, l => pasOpzetToe(l, opzet, { vandaag, wie: ik, nieuwId: uid }));
@@ -1296,7 +1313,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld }) {
+function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken }) {
   const [menu, setMenu] = useState(false);
   const isAanvraag = projectStatus(lijst) === "aanvraag";
   const isOfferte = projectStatus(lijst) === "offerte" || isAanvraag;
@@ -1348,7 +1365,7 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
             {lijst.mailInbox && <p style={S.hint}>📥 Hier komen taken binnen die je naar je taken-e-mailadres stuurt.</p>}
           </div>
         )}
-        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld }} />}
+        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken }} />}
         {isAanvraag && <AanvraagKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag }} />}
         {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld }} />}
         {ruimte === "werk" && !isProject && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
@@ -1392,7 +1409,7 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
 }
 
 // Projectkop: klant, draaidag, oplevering, voortgang per fase en "leren".
-function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld }) {
+function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken }) {
   const p = lijst.project;
   const vg = projectVoortgang(lijst);
   const klant = klantVan(p.klantId);
@@ -1451,17 +1468,18 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
       </div>
       {(() => {
         const sam = bezettingSamenvatting(lijst.items);
-        if (!sam.aantal) return null;
+        const openPlekken = (lijst.items || []).flatMap(i => (i.bezetting || []).filter(b => !b.naam && b.offerte)).length;
+        if (!sam.aantal && !openPlekken) return null;
         const bedragen = Object.entries(sam.perEenheid).map(([e, b]) => prijsTekst(b, e)).join(" + ");
         return (
           <button onClick={() => setBezettingOpen(!bezettingOpen)} style={{ ...S.rij, padding: "10px 0 0", borderBottom: "none" }}>
-            <span style={{ fontSize: 13, flex: 1 }}>👥 <strong>{sam.bevestigd}/{sam.aantal}</strong> bevestigd{bedragen ? ` · ${bedragen}` : ""}</span>
+            <span style={{ fontSize: 13, flex: 1 }}>👥 <strong>{sam.bevestigd}/{sam.aantal + openPlekken}</strong> bevestigd{openPlekken ? <span style={{ color: C.oranje, fontWeight: 700 }}> · {openPlekken} nog te regelen</span> : ""}{bedragen ? ` · ${bedragen}` : ""}</span>
             <ChevronDown size={15} color={C.licht} style={{ transform: bezettingOpen ? "none" : "rotate(-90deg)" }} />
           </button>
         );
       })()}
       {bezettingOpen && <BezettingOverzicht lijst={lijst} />}
-      <SpecificatieBlok lijst={lijst} klantNaam={klant?.naam} zetProject={zetProject} meld={meld} />
+      <SpecificatieBlok lijst={lijst} klantNaam={klant?.naam} zetProject={zetProject} meld={meld} vulPlekken={vulPlekken} />
       <BegrotingBlok lijst={lijst} zetProject={zetProject} />
       {p.intake?.tekst && <IntakeBlok intake={p.intake} zetTekst={(tekst) => zetProject({ intake: { ...p.intake, tekst } })} />}
       {projectStatus(lijst) === "lopend" && !lijst.project.afgerond && (
@@ -2123,7 +2141,7 @@ function SpecificatieSamenvatting({ spec }) {
 
 // In de offerte- en projectkop: specificatie bekijken, werkelijke kosten
 // per post invullen en het kostenoverzicht als Excel downloaden/delen.
-function SpecificatieBlok({ lijst, klantNaam, zetProject, meld }) {
+function SpecificatieBlok({ lijst, klantNaam, zetProject, meld, vulPlekken }) {
   const p = lijst.project;
   const o = p.offerte || {};
   const spec = o.specificatie;
@@ -2135,7 +2153,11 @@ function SpecificatieBlok({ lijst, klantNaam, zetProject, meld }) {
     meld?.(`📄 ${nieuw.aantalPosten} posten ingelezen — ${euro(nieuw.totaal)}`);
   };
   if (!spec) return <div style={{ marginTop: 10 }}><OffertePdfKnop onGelezen={zetSpec} /></div>;
-  const st = specificatieStand(spec, o.werkelijk || {});
+  // Werkelijk = wat je per post invult, anders wat uit de namen + prijsafspraken volgt.
+  const auto = werkelijkUitBezetting(lijst, spec);
+  const werkelijkAlles = { ...auto, ...(o.werkelijk || {}) };
+  const st = specificatieStand(spec, werkelijkAlles);
+  const heeftPlekken = (lijst.items || []).some(i => (i.bezetting || []).some(b => b.offerte));
   const zetWerkelijk = (sleutel, bedrag) => {
     const w = { ...(lijst.project.offerte?.werkelijk || {}) };
     if (bedrag == null) delete w[sleutel]; else w[sleutel] = bedrag;
@@ -2154,9 +2176,14 @@ function SpecificatieBlok({ lijst, klantNaam, zetProject, meld }) {
         <ChevronDown size={15} color={C.licht} style={{ transform: open ? "none" : "rotate(-90deg)" }} />
       </button>
       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-        <button style={{ ...S.knop(), flex: 1, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, o.werkelijk, { projectNaam: lijst.name, klantNaam, meld, marge: md })}>⬇︎ Kostenoverzicht (Excel)</button>
-        {kanDelen && <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, o.werkelijk, { projectNaam: lijst.name, klantNaam, delen: true, meld, marge: md })}>📤 Delen</button>}
+        <button style={{ ...S.knop(), flex: 1, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, werkelijkAlles, { projectNaam: lijst.name, klantNaam, meld, marge: md })}>⬇︎ Kostenoverzicht (Excel)</button>
+        {kanDelen && <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, werkelijkAlles, { projectNaam: lijst.name, klantNaam, delen: true, meld, marge: md })}>📤 Delen</button>}
       </div>
+      {vulPlekken && !heeftPlekken && (
+        <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, width: "100%", marginTop: 6, padding: "8px 10px", fontSize: 13 }} onClick={vulPlekken}>
+          👥 Crew, cast en locaties uit de offerte klaarzetten
+        </button>
+      )}
       {open && (
         <div style={{ marginTop: 8, background: C.bg, borderRadius: 12, padding: 10 }}>
           <div style={{ display: "flex", fontSize: 11, color: C.muted, fontWeight: 700, padding: "0 0 4px" }}>
@@ -2170,7 +2197,7 @@ function SpecificatieBlok({ lijst, klantNaam, zetProject, meld }) {
                 <span style={{ width: 84, textAlign: "right", fontSize: 13, color: k.verschil == null ? C.licht : k.verschil < 0 ? C.rood : C.groen }}>{k.werkelijk == null ? "—" : euro(k.werkelijk)}</span>
               </button>
               {kopOpen === ki && k.posten.map(pp => (
-                <SpecPostRegel key={pp.sleutel} post={pp} zet={(b) => zetWerkelijk(pp.sleutel, b)} />
+                <SpecPostRegel key={pp.sleutel} post={pp} handmatig={(o.werkelijk || {})[pp.sleutel] != null} auto={auto[pp.sleutel]} zet={(b) => zetWerkelijk(pp.sleutel, b)} />
               ))}
             </div>
           ))}
@@ -2180,7 +2207,7 @@ function SpecificatieBlok({ lijst, klantNaam, zetProject, meld }) {
             {st.margeIngevuldPct != null && <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Marge op ingevulde posten (doel ≥ {md.doel}%, min. {md.minimum}%)</span><strong style={{ color: kleur }}>{String(st.margeIngevuldPct).replace(".", ",")}%</strong></div>}
             <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Verwachte eindkosten</span><strong>{euro(st.prognose)}</strong></div>
           </div>
-          <p style={S.hint}>Tik op een kopje om per post de werkelijke kosten in te vullen. Ze komen ook in de Excel.</p>
+          <p style={S.hint}>Tik op een kopje om per post de werkelijke kosten in te vullen. 🔗 = automatisch uit de namen en prijsafspraken in het project. Alles komt ook in de Excel.</p>
           <OffertePdfKnop label="📄 Andere PDF inlezen" stijl={{ marginTop: 8, padding: "7px 10px", fontSize: 13 }}
             onGelezen={(nieuw) => { if (!Object.keys(o.werkelijk || {}).length || window.confirm("De ingevulde werkelijke kosten worden gewist. Doorgaan?")) zetSpec(nieuw); }} />
         </div>
@@ -2204,9 +2231,10 @@ function MargeDoelInstelling() {
     </div>
   );
 }
-function SpecPostRegel({ post, zet }) {
-  const [w, setW] = useState(post.werkelijk != null ? String(post.werkelijk).replace(".", ",") : "");
-  useEffect(() => setW(post.werkelijk != null ? String(post.werkelijk).replace(".", ",") : ""), [post.sleutel]);
+function SpecPostRegel({ post, zet, handmatig = false, auto }) {
+  const begin = handmatig && post.werkelijk != null ? String(post.werkelijk).replace(".", ",") : "";
+  const [w, setW] = useState(begin);
+  useEffect(() => setW(begin), [post.sleutel, handmatig]);
   const verschil = post.werkelijk != null ? post.totaal - post.werkelijk : null;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0 4px 10px", fontSize: 12 }}>
@@ -2215,8 +2243,8 @@ function SpecPostRegel({ post, zet }) {
         <span style={{ display: "block", color: C.muted, fontSize: 11 }}>{post.aantal} {post.eenheid} × {euro(post.prijs)}{verschil ? ` · ${verschil > 0 ? "−" : "+"}${euro(Math.abs(verschil))}` : ""}</span>
       </span>
       <span style={{ width: 74, textAlign: "right" }}>{euro(post.totaal)}</span>
-      <input value={w} inputMode="decimal" placeholder="€" aria-label={`Werkelijk ${post.naam}`} onChange={e => setW(e.target.value)}
-        onBlur={() => { const b = w.trim() === "" ? null : leesBedragInvoer(w); if (b !== post.werkelijk) zet(b); }}
+      <input value={w} inputMode="decimal" placeholder={auto != null ? `🔗 ${Number(auto).toLocaleString("nl-NL", { maximumFractionDigits: 2 })}` : "€"} aria-label={`Werkelijk ${post.naam}`} onChange={e => setW(e.target.value)}
+        onBlur={() => { const b = w.trim() === "" ? null : leesBedragInvoer(w); if (b !== (handmatig ? post.werkelijk : null)) zet(b); }}
         style={{ ...S.inp, padding: "5px 6px", fontSize: 13, width: 84, textAlign: "right", background: "#FFF8DC" }} />
     </div>
   );
@@ -3362,7 +3390,7 @@ function BezettingRegel({ b, contacten, wijzig, verwijder, onthoud, opleverdatum
   return (
     <div style={{ background: C.kaart, border: `1px solid ${C.rand}`, borderRadius: 10, padding: 8, marginBottom: 6 }}>
       <div style={{ display: "flex", gap: 6, alignItems: "center", position: "relative" }}>
-        <input value={naam} placeholder="Naam (persoon, bedrijf of locatie)" aria-label="Naam"
+        <input value={naam} placeholder={b.offerte ? `Naam — ${b.offerte.label}` : "Naam (persoon, bedrijf of locatie)"} aria-label="Naam"
           onChange={e => setNaam(e.target.value)} onFocus={() => setFocus(true)}
           onBlur={() => setTimeout(() => { setFocus(false); bewaarVeld("naam"); }, 150)}
           style={{ ...S.inp, padding: "7px 10px", fontSize: 14 }} />
@@ -3415,6 +3443,7 @@ function BezettingRegel({ b, contacten, wijzig, verwijder, onthoud, opleverdatum
         <input value={notitie} placeholder="E-mail, afspraak…" aria-label="Notitie" onChange={e => setNotitie(e.target.value)} onBlur={() => bewaarVeld("notitie")}
           style={{ ...S.inp, padding: "6px 8px", fontSize: 13 }} />
       </div>
+      {b.offerte && <OffertePlekHint b={b} aantalDagen={aantalDagen} />}
       {buyoutSoort(b.onderdeelId) && (
         <BuyoutEditor b={b} opleverdatum={opleverdatum} wijzig={(buyouts) => { wijzig({ buyouts }); if (nu.current.naam) onthoud({ ...b, ...nu.current, buyouts }); }} />
       )}
@@ -3432,15 +3461,31 @@ function BezettingRegel({ b, contacten, wijzig, verwijder, onthoud, opleverdatum
   );
 }
 
+// Wat er in de offerte voor deze plek begroot is, en hoe de afspraak zich
+// daartoe verhoudt (marge volgens je marge-doel).
+function OffertePlekHint({ b, aantalDagen }) {
+  const md = useContext(MargeContext);
+  const kosten = b.bedrag != null ? bezettingKosten(b, aantalDagen).totaal : null;
+  const pct = kosten != null && b.offerte.begroot ? Math.round((1000 * (b.offerte.begroot - kosten)) / b.offerte.begroot) / 10 : null;
+  const st = margeStatus(pct, md);
+  return (
+    <p style={{ ...S.hint, marginTop: 6 }}>
+      📄 Offerte: {b.offerte.tekst} = <strong>{euro(b.offerte.begroot)}</strong>
+      {kosten != null && <span style={{ color: MARGE_KLEUR[st] || C.muted, fontWeight: 700 }}> · afspraak {euro(kosten)} → {pct < 0 ? `${euro(kosten - b.offerte.begroot)} boven de offerte` : `marge ${String(pct).replace(".", ",")}%`}</span>}
+      {kosten == null && <span> · max. {euro(b.offerte.begroot * (1 - md.minimum / 100))} voor {md.minimum}% marge</span>}
+    </p>
+  );
+}
+
 function BezettingOverzicht({ lijst }) {
-  const regels = (lijst.items || []).flatMap(i => (i.bezetting || []).filter(b => b.naam).map(b => ({ ...b, taak: i.name })));
+  const regels = (lijst.items || []).flatMap(i => (i.bezetting || []).filter(b => b.naam || b.offerte).map(b => ({ ...b, taak: i.name })));
   const groepNaam = (b) => (b.onderdeelId?.startsWith("crew-") ? `Crew · ${onderdeelVan(b.onderdeelId)?.label || ""}` : onderdeelVan(b.onderdeelId)?.label || b.taak);
   return (
     <div style={{ marginTop: 8, background: C.bg, borderRadius: 12, padding: 10 }}>
       {regels.map(b => (
         <div key={b.id} style={{ display: "flex", gap: 8, fontSize: 13, padding: "4px 0", borderBottom: `1px solid ${C.rand}` }}>
-          <span style={{ width: 12 }}>{b.status === "bevestigd" ? "✅" : b.status === "aangevraagd" ? "⏳" : "○"}</span>
-          <span style={{ flex: 1, minWidth: 0 }}><strong>{b.naam}</strong> <span style={{ color: C.muted }}>· {groepNaam(b)}</span></span>
+          <span style={{ width: 12 }}>{!b.naam ? "·" : b.status === "bevestigd" ? "✅" : b.status === "aangevraagd" ? "⏳" : "○"}</span>
+          <span style={{ flex: 1, minWidth: 0 }}>{b.naam ? <strong>{b.naam}</strong> : <span style={{ color: C.oranje, fontWeight: 700 }}>{b.offerte?.label} — nog regelen</span>} <span style={{ color: C.muted }}>· {groepNaam(b)}</span>{b.offerte && <span style={{ display: "block", fontSize: 11, color: C.muted }}>offerte: {euro(b.offerte.begroot)}</span>}</span>
           <span style={{ color: C.muted, whiteSpace: "nowrap", textAlign: "right" }}>
             {prijsTekst(b.bedrag, b.eenheid)}
             {(b.buyouts || []).filter(x => x.duur || x.bedrag != null).map((x, i) => (

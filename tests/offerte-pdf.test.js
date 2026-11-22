@@ -82,6 +82,46 @@ test("per kopje werkelijk en verschil", st.kopjes[1].werkelijk === 1800 && st.ko
 test("marge op ingevulde posten: (200−160)/(2000+1440) = 1,2%", st.margeIngevuldPct === 1.2 && st.begrootIngevuld === 3440);
 test("prognose: werkelijk waar ingevuld, anders begroot", st.prognose === 13587.5 - 200 + 160 && st.marge === 40 && st.ingevuld === 2);
 
+sectie("Offerte → wat er geregeld moet worden");
+const spec2 = L.compacteSpecificatie(L.leesOfferte([
+  "Specificatie",
+  { tekst: "Preproductie 1x 1.390,00 € 1.390,00", x: 120 },
+  { tekst: "Cameraman - senior (per uur) Voorbereiden 6 uur € 90,00 € 540,00", x: 135 },
+  { tekst: "Producer 1 dag € 850,00 € 850,00", x: 135 },
+  { tekst: "Productie (crew lange draaidag) 1 dag 3.400,00 € 3.400,00", x: 120 },
+  { tekst: "Cameraman - high end (dagprijs) 1 dag € 1.000,00 € 1.000,00", x: 135 },
+  { tekst: "Belichter - senior (dagprijs) 1 dag € 850,00 € 850,00", x: 135 },
+  { tekst: "Belichter (dagprijs) 1 dag € 700,00 € 700,00", x: 135 },
+  { tekst: "Cameraset 1 dag € 850,00 € 850,00", x: 135 },
+  { tekst: "Casting 1 prijs 7.200,00 € 7.200,00", x: 120 },
+  { tekst: "Edelfigurant Binnenkijker 01 begroot 2 stuks € 1.600,00 € 3.200,00", x: 135 },
+  { tekst: "Figuranten 3 stuks € 1.350,00 € 4.050,00", x: 135 },
+  { tekst: "Regiefee 1 prijs € -50,00 € -50,00", x: 135 },
+  { tekst: "Totaal exclusief BTW € 11.990,00", x: 380 },
+].map(r => (typeof r === "string" ? { tekst: r, x: 120 } : r))));
+const plekken = L.plekkenUitOfferte(spec2);
+const vind = (label) => plekken.find(p => p.label === label);
+test("cameraman: voorbereiding + draaidag = één plek", vind("Cameraman") && vind("Cameraman").posten.length === 2 && vind("Cameraman").begroot === 1540 && vind("Cameraman").eenheid === "dag" && vind("Cameraman").aantal === 1);
+test("tweede belichter in hetzelfde kopje = tweede plek", vind("Belichter") && vind("Belichter (2)") && vind("Belichter (2)").begroot === 700);
+test("apparatuur (cameraset) is geen plek", !plekken.some(p => /cameraset/i.test(p.label)));
+test("cast '2 stuks' = twee mensen à € 1.600", plekken.filter(p => p.onderdeelId === "edelfiguranten").length === 2 && plekken.filter(p => p.onderdeelId === "edelfiguranten").every(p => p.begroot === 1600 && p.eenheid === "totaal"));
+test("3 figuranten", plekken.filter(p => p.onderdeelId === "figuranten").length === 3);
+test("negatieve posten (korting) geen plek", !plekken.some(p => p.begroot <= 0));
+let proj = L.maakProjectUitSjabloon(L.STANDAARD_SJABLONEN[1], { naam: "P", draaidag: "2026-12-10", opleverdatum: "2026-12-24", vandaag: "2026-11-22", nieuwId: (() => { let i = 0; return () => `n${++i}`; })() });
+let nid = 100; const nieuwId2 = () => `b${++nid}`;
+proj = L.pasOnderdelenToe(proj, ["crew-camera", "crew-belichter", "edelfiguranten", "figuranten"], { vandaag: "2026-11-22", deliverables: { tvc: ["16x9"], online: ["9x16"] }, nieuwId: nieuwId2 });
+const r = L.vulBezettingUitOfferte(proj, spec2, { nieuwId: nieuwId2 });
+const bez = r.lijst.items.flatMap(i => i.bezetting || []);
+test("open plekken bij de juiste taken (producer staat uit → overgeslagen)", r.toegevoegd === 8 && r.overgeslagen === 1 && bez.every(b => b.naam === "" && b.offerte));
+test("buy-outs voor cast klaargezet volgens deliverables", bez.find(b => b.onderdeelId === "edelfiguranten").buyouts.length === 2);
+test("nog een keer = niets dubbel", L.vulBezettingUitOfferte(r.lijst, spec2, { nieuwId: nieuwId2 }).toegevoegd === 0);
+// Namen + prijzen invullen → werkelijke kosten per post
+const ingevuld = { ...r.lijst, items: r.lijst.items.map(i => ({ ...i, bezetting: (i.bezetting || []).map(b => (b.offerte.label === "Cameraman" ? { ...b, naam: "Tom", bedrag: 900, aantal: 1.5 } : b.onderdeelId === "edelfiguranten" ? { ...b, naam: "X", bedrag: 1500, buyouts: [] } : b)) })) };
+const w = L.werkelijkUitBezetting(ingevuld, spec2);
+test("cameraman 1,5 × 900 = 1.350, verdeeld naar rato over voorbereiding en draaidag", w["0.0"] === 473.38 && w["1.0"] === 876.62);
+test("twee edelfiguranten op één post opgeteld", w["2.0"] === 3000);
+test("zonder prijs geen werkelijk", w["1.1"] === undefined);
+
 if (ExcelJS) {
   sectie("Offerte-PDF — Excel kostenoverzicht");
   const wb = L.maakKostenWerkboek(o, ExcelJS, { projectNaam: "Keukens", klantNaam: "Keuken Kampioen", werkelijk: { "1.0": 1800 } });
