@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
+import { werkContext, leesWerkData, sleutels } from "../../lib/werk-opslag";
 
 const redis = Redis.fromEnv();
 
@@ -41,8 +42,19 @@ export default async function handler(req, res) {
       } catch { /* individuele sleutel overslaan bij leesfout, rest gaat door */ }
     }));
 
+    // De werkruimte staat bewust NIET onder huishouden:* (anders kon iedereen
+    // in huis hem via een back-up inzien). Alleen je EIGEN werkruimte gaat
+    // mee, en alleen als die op dit toestel ontgrendeld is.
+    const werk = await werkContext(req);
+    let werkruimteMee = null;
+    if (werk.ontgrendeld && werk.slug) {
+      data[sleutels.data(werk.slug)] = await leesWerkData(werk.slug);
+      werkruimteMee = werk.user;
+    }
+
     return res.status(200).json({
       gemaaktOp: new Date().toISOString(),
+      werkruimteMee,
       aantalSleutels: Object.keys(data).length,
       data,
     });

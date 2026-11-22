@@ -1,5 +1,13 @@
 import { Redis } from "@upstash/redis";
 import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
+import { synchroniseerHerinneringen } from "../../lib/herinneringen";
+
+// Na elke opslag: herinneringen van thuis-to-do's bij QStash bijwerken
+// (best effort — een storing daar mag het opslaan nooit tegenhouden).
+async function syncThuisHerinneringen(lists, req) {
+  try { await synchroniseerHerinneringen({ ruimte: "thuis", lists: (lists || []).filter(l => l.type === "todo"), req }); }
+  catch (e) { console.error("Herinneringen thuis:", e?.message); }
+}
 
 const redis = Redis.fromEnv();
 const DATA_KEY = "huishouden:lijsten";
@@ -72,6 +80,7 @@ export default async function handler(req, res) {
           ? currLists.map(l => l.id === bijgewerkt.id ? bijgewerkt : l)
           : [...currLists, bijgewerkt];
         await redis.set(DATA_KEY, JSON.stringify({ ...curr, lists: nieuweLists }));
+        await syncThuisHerinneringen(nieuweLists, req);
         return res.status(200).json({ ok: true });
       }
 
@@ -109,10 +118,12 @@ export default async function handler(req, res) {
       const incomingIds = new Set(incomingLists.map(l => l.id));
       const teBewaren = currLists.filter(l => !incomingIds.has(l.id) && !deletedListIds.has(l.id));
 
+      const alleLijsten = [...mergedLists, ...teBewaren];
       await redis.set(DATA_KEY, JSON.stringify({
         ...incoming,
-        lists: [...mergedLists, ...teBewaren],
+        lists: alleLijsten,
       }));
+      await syncThuisHerinneringen(alleLijsten, req);
       return res.status(200).json({ ok: true });
     } catch (e) {
       return res.status(500).json({ error: "Kon data niet opslaan" });

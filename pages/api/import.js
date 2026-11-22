@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
+import { werkContext, sleutels } from "../../lib/werk-opslag";
 
 const redis = Redis.fromEnv();
 
@@ -20,6 +21,10 @@ export default async function handler(req, res) {
 
     let hersteld = 0;
     const fouten = [];
+    // Een werkruimte uit de back-up mag alleen terug naar de EIGEN, op dit
+    // toestel ontgrendelde werkruimte — nooit over die van een ander heen.
+    const werk = await werkContext(req);
+    const eigenWerkSleutel = werk.ontgrendeld && werk.slug ? sleutels.data(werk.slug) : null;
 
     await Promise.all(Object.entries(data).map(async ([key, waarde]) => {
       // huishouden:account bewust NOOIT terugzetten: een export bevat dat
@@ -27,7 +32,8 @@ export default async function handler(req, res) {
       // dus terugschrijven zou het huidige, werkende account kapotmaken.
       // Inloggegevens horen sowieso niet bij een data-herstel thuis.
       if (key === "huishouden:account") return;
-      if (!key.startsWith("huishouden:")) return; // veiligheidsgrendel: nooit buiten onze eigen sleutels schrijven
+      const isEigenWerk = eigenWerkSleutel && key === eigenWerkSleutel;
+      if (!key.startsWith("huishouden:") && !isEigenWerk) return; // veiligheidsgrendel: nooit buiten onze eigen sleutels schrijven
 
       try {
         const opTeSlaan = typeof waarde === "string" ? waarde : JSON.stringify(waarde);

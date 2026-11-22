@@ -58,6 +58,13 @@ const TOOLS = [
     color: "#2D4A3E",
   },
   {
+    href: "/taken",
+    label: "Taken",
+    description: "Mijn dag, herinneringen en werktaken — de vervanger van Microsoft To Do",
+    emoji: "✅",
+    color: "#2C6E8C",
+  },
+  {
     href: "/budget",
     label: "Budget",
     description: "Huishouduitgaven, budgetten en spaardoelen",

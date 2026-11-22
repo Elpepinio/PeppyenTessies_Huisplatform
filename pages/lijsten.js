@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
+import { rolHerhalendeTaakDoor, normaliseerHerhaling, volgendeHerhalingsDatum, herhalingLabel } from "../lib/taken-logica";
 import { Plus, Check, CheckCheck, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift, MoreHorizontal } from "lucide-react";
 
 // ---- Constanten ----
@@ -294,6 +295,8 @@ function formatVervaldatum(datumStr) {
 // dag dat je 'm afvinkt, want anders schuift een taak die je een paar dagen
 // laat liggen steeds verder door.
 function volgendeHerhaling(huidigeDatumStr, type) {
+  // Uitgebreide herhaling (object, ingesteld via Taken) → gedeelde logica.
+  if (type && typeof type === "object") return volgendeHerhalingsDatum(huidigeDatumStr || vandaagStr(), type);
   const basis = huidigeDatumStr ? new Date(...huidigeDatumStr.split("-").map((v,i)=>i===1?+v-1:+v)) : new Date();
   const volgende = new Date(basis);
   if (type === "dagelijks") volgende.setDate(volgende.getDate() + 1);
@@ -707,8 +710,9 @@ export default function LijstenApp() {
         // schuift meteen door naar de volgende keer i.p.v. afgevinkt te
         // blijven staan — dat is hoe herhalende taken in de meeste
         // to-do-apps werken.
-        if (!i.checked && i.herhaling) {
-          return { ...i, dueDate: volgendeHerhaling(i.dueDate, i.herhaling), lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
+        if (!i.checked && normaliseerHerhaling(i.herhaling)) {
+          // Gedeelde logica met Taken: datum én herinnering schuiven door.
+          return { ...rolHerhalendeTaakDoor(i, vandaagStr()), lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
         }
         return { ...i, checked: !i.checked, lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
       }),
@@ -798,8 +802,9 @@ export default function LijstenApp() {
     updateList(listId, l => ({
       ...l, items: l.items.map(i => {
         if (i.id !== itemId) return i;
-        if (!i.checked && i.herhaling) {
-          return { ...i, dueDate: volgendeHerhaling(i.dueDate, i.herhaling), lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
+        if (!i.checked && normaliseerHerhaling(i.herhaling)) {
+          // Gedeelde logica met Taken: datum én herinnering schuiven door.
+          return { ...rolHerhalendeTaakDoor(i, vandaagStr()), lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
         }
         return { ...i, checked: !i.checked, lastActionBy: huidigeGebruiker, lastActionAt: Date.now() };
       }),
@@ -1371,9 +1376,13 @@ export default function LijstenApp() {
                 </div>
                 {taak.herhaling && (
                   <p style={{ fontSize: 11, color: "#8C8576", margin: "-10px 0 16px" }}>
-                    Zodra je 'm afvinkt, schuift de vervaldatum automatisch door naar de volgende keer i.p.v. dat de taak afgevinkt blijft staan.
+                    {herhalingLabel(taak.herhaling)} — zodra je 'm afvinkt, schuift de vervaldatum automatisch door naar de volgende keer i.p.v. dat de taak afgevinkt blijft staan.
                   </p>
                 )}
+                <Link href={`/taken?lijst=${encodeURIComponent(activeList.id)}&taak=${encodeURIComponent(taak.id)}&ruimte=thuis`}
+                  style={{ display: "block", fontSize: 12, color: "#2D4A3E", background: "#2D4A3E0D", borderRadius: 10, padding: "8px 12px", margin: "0 0 16px", textDecoration: "none" }}>
+                  🔔 Herinnering op een tijdstip of uitgebreidere herhaling (werkdagen, om de 2 weken…)? Open in <strong>Taken</strong> →
+                </Link>
 
                 <p style={{ fontSize: 12, color: "#8C8576", fontWeight: 600, margin: "0 0 6px" }}>Toewijzen aan</p>
                 <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
@@ -1662,7 +1671,7 @@ export default function LijstenApp() {
                             </span>
                           )}
                           {item.herhaling && (
-                            <span style={{ fontSize: 11, color: "#8C8576" }} title={`Herhaalt ${item.herhaling}`}>🔁</span>
+                            <span style={{ fontSize: 11, color: "#8C8576" }} title={herhalingLabel(item.herhaling)}>🔁</span>
                           )}
                           {item.assignedTo && (
                             <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 8, background: "#2D4A3E14", color: "#2D4A3E" }}>

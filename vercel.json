@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/abonnementen-check",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/taken-dagelijks",
+      "schedule": "0 5 * * *"
     }
   ]
 }

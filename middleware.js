@@ -7,6 +7,13 @@ const SESSION_COOKIE = "huis_session";
 // de hoofdpagina (regelt zelf setup/login/overzicht) en de auth-API's.
 const PUBLIC_PATHS = ["/", "/api/auth/setup", "/api/auth/login", "/api/auth/me", "/api/auth/logout"];
 
+// Aanroepen van buitenaf, zonder sessiecookie. Elk van deze routes
+// controleert zelf of het verzoek echt is: de cron via CRON_SECRET, de
+// herinnering via de QStash-handtekening, de e-mail via de Resend-
+// handtekening. Zonder deze uitzondering kwam de dagelijkse cron (ook die
+// van Abonnementen) nooit langs de sessiecontrole.
+const EXTERNE_PATHS = ["/api/taken/herinnering", "/api/taken/via-mail"];
+
 // @upstash/redis gebruikt de fetch-based REST API, dus dit werkt ook in de
 // Edge runtime van de middleware (i.t.t. bijv. bcryptjs, dat Node-specifieke
 // crypto nodig heeft en daarom niet hier maar in de API-routes wordt gebruikt).
@@ -21,6 +28,8 @@ export async function middleware(req) {
 
   const isPublic =
     PUBLIC_PATHS.some((p) => pathname === p) ||
+    EXTERNE_PATHS.includes(pathname) ||
+    pathname.startsWith("/api/cron/") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/icon-") ||
     pathname === "/manifest.json" ||

@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import { isValidSession, getSessionTokenFromReq } from "../../lib/auth";
+import { isValidSession, getSessionTokenFromReq, getSessionUser } from "../../lib/auth";
 
 const redis = Redis.fromEnv();
 const SUBS_KEY = "huishouden:push-subscriptions";
@@ -9,6 +9,8 @@ const SUBS_KEY = "huishouden:push-subscriptions";
 // Subscriptions worden op hun endpoint-URL gededupliceerd (elk toestel/
 // browllerprofiel heeft een uniek endpoint), zodat opnieuw aanmelden geen
 // dubbele meldingen oplevert.
+// Per toestel wordt ook onthouden WIE er ingelogd is (`user`), zodat een
+// werkherinnering van Pepijn alleen op Pepijns toestellen verschijnt.
 export default async function handler(req, res) {
   const token = getSessionTokenFromReq(req);
   if (!await isValidSession(token)) return res.status(401).json({ error: "Niet ingelogd" });
@@ -19,7 +21,8 @@ export default async function handler(req, res) {
     const data = await redis.get(SUBS_KEY);
     const lijst = data ? (typeof data === "string" ? JSON.parse(data) : data) : [];
     const zonderDeze = lijst.filter(s => s.endpoint !== subscription.endpoint);
-    await redis.set(SUBS_KEY, JSON.stringify([...zonderDeze, subscription]));
+    const user = await getSessionUser(token);
+    await redis.set(SUBS_KEY, JSON.stringify([...zonderDeze, { ...subscription, user: user || null }]));
     return res.status(200).json({ ok: true });
   }
 

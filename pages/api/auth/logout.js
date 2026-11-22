@@ -1,4 +1,5 @@
 import { destroySession, sessionCookieHeader, getSessionTokenFromReq } from "../../../lib/auth";
+import { vergrendel } from "../../../lib/werk-opslag";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -8,6 +9,7 @@ export default async function handler(req, res) {
 
   try {
     const token = getSessionTokenFromReq(req);
+    await vergrendel(token); // werkruimte op dit toestel weer op slot
     await destroySession(token);
     res.setHeader("Set-Cookie", sessionCookieHeader(null, { clear: true }));
     return res.status(200).json({ ok: true });
