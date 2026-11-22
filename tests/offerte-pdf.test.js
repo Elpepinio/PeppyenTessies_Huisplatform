@@ -107,6 +107,11 @@ test("apparatuur (cameraset) is geen plek", !plekken.some(p => /cameraset/i.test
 test("cast '2 stuks' = twee mensen à € 1.600", plekken.filter(p => p.onderdeelId === "edelfiguranten").length === 2 && plekken.filter(p => p.onderdeelId === "edelfiguranten").every(p => p.begroot === 1600 && p.eenheid === "totaal"));
 test("3 figuranten", plekken.filter(p => p.onderdeelId === "figuranten").length === 3);
 test("negatieve posten (korting) geen plek", !plekken.some(p => p.begroot <= 0));
+test("drone crew + drone = één plek bij de rol Drone", (() => {
+  const s = L.compacteSpecificatie(L.leesOfferte(["Specificatie", { tekst: "Drone crew 1x 2.750,00 € 2.750,00", x: 120 }, { tekst: "Drone Crew 1 dag € 1.750,00 € 1.750,00", x: 135 }, { tekst: "Drone 1 dag € 1.000,00 € 1.000,00", x: 135 }, { tekst: "Totaal exclusief BTW € 2.750,00", x: 380 }]));
+  const pl = L.plekkenUitOfferte(s);
+  return pl.length === 1 && pl[0].onderdeelId === "crew-drone" && pl[0].begroot === 2750 && L.onderdeelVan("crew-drone").label.startsWith("Drone");
+})());
 let proj = L.maakProjectUitSjabloon(L.STANDAARD_SJABLONEN[1], { naam: "P", draaidag: "2026-12-10", opleverdatum: "2026-12-24", vandaag: "2026-11-22", nieuwId: (() => { let i = 0; return () => `n${++i}`; })() });
 let nid = 100; const nieuwId2 = () => `b${++nid}`;
 proj = L.pasOnderdelenToe(proj, ["crew-camera", "crew-belichter", "edelfiguranten", "figuranten"], { vandaag: "2026-11-22", deliverables: { tvc: ["16x9"], online: ["9x16"] }, nieuwId: nieuwId2 });
