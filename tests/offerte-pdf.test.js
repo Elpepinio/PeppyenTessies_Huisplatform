@@ -75,12 +75,62 @@ test("doel nooit onder het minimum", L.normaliseerMarge({ minimum: 30, doel: 10 
 test("kostenplafond: 100.000 bij 20% → 80.000", L.kostenPlafond(100000, 20) === 80000 && L.kostenPlafond(96847.5, 25) === 72635.63);
 test("korte projectnaam uit 'betreft'", L.korteProjectnaam("Online commercial Keukenkampioen (algemene offerte) 4 binnenkijkers - 1 lange dag - 2 normale draaidagen") === "Online commercial Keukenkampioen 4 binnenkijkers");
 
+sectie("Nacalculatie");
+const specN = L.compacteSpecificatie(o);
+const nac = L.maakNacalculatie(specN, { "1.0": 1600, "1.1": 770, "2.0": 900 }, L.eigenPostSleutels(specN), { datum: "2026-12-20" });
+test("eigen werk niet in de nacalculatie-posten", nac.posten.length === 2 && !nac.posten.some(p => /Monteren/.test(p.naam)));
+test("verschil per post in %", nac.posten.find(p => p.naam === "Geluidsset").verschilPct === 10 && nac.posten.find(p => p.naam === "Cameraset").verschilPct === -20);
+test("categorie via de rol, anders korte naam", L.postCategorie("Cateringskosten begroot") === "catering" && L.postCategorie("Cameraman - senior") === "crew-camera" && L.postCategorie("Cameraset") === "cameraset");
+const projN = (naam, cat, b, w) => ({ name: naam, project: { nacalculatie: { posten: [{ naam: "Catering", categorie: cat, begroot: b, werkelijk: w }] } } });
+const inz = L.nacalculatieInzichten([projN("A", "catering", 1000, 1100), projN("B", "catering", 2000, 2400), projN("C", "props", 500, 450)]);
+test("inzicht: catering gemiddeld +15% over 2 projecten; props (1×) nog niet", inz.length === 1 && inz[0].categorie === "catering" && inz[0].gemiddeldPct === 15 && inz[0].aantal === 2);
+const specCat = L.compacteSpecificatie(L.leesOfferte(["Specificatie", { tekst: "Overig 1x 1.000,00 € 1.000,00", x: 120 }, { tekst: "Cateringskosten 20 prijs € 50,00 € 1.000,00", x: 135 }, { tekst: "Totaal exclusief BTW € 1.000,00", x: 380 }]));
+test("inzicht getoond bij een nieuwe offerte met catering", L.inzichtenVoorOfferte(specCat, inz).length === 1 && L.inzichtenVoorOfferte(specN, inz).length === 0);
+
+sectie("Cijfers over het jaar");
+const pl = (naam, o, extra = {}) => ({ name: naam, project: { status: o.akkoordOp ? "lopend" : o.afgewezenOp ? "afgewezen" : "offerte", klantId: extra.klantId || "kk", offerte: o, ...extra } });
+const lijstenC = [
+  pl("A", { verstuurdOp: "2026-01-10", akkoordOp: "2026-02-01", bedrag: 20000 }, { nacalculatie: { winst: 5000, offerte: 20000 } }),
+  pl("B", { verstuurdOp: "2026-03-01", akkoordOp: "2026-03-20", bedrag: 10000 }, { klantId: "hk", nacalculatie: { winst: 1500, offerte: 10000 } }),
+  pl("C", { verstuurdOp: "2026-04-01", afgewezenOp: "2026-04-20", bedrag: 30000, reden: "Te duur" }),
+  pl("D", { verstuurdOp: "2026-11-01", bedrag: 15000 }),
+  pl("E", { verstuurdOp: "2025-11-01", akkoordOp: "2025-12-01", bedrag: 99000 }),
+];
+const cf = L.projectCijfers(lijstenC, { jaar: 2026, klanten: [{ id: "kk", naam: "Keuken Kampioen" }, { id: "hk", naam: "Häcker" }] });
+test("omzet uit akkoord in dit jaar (niet vorig jaar)", cf.omzet === 30000 && cf.akkoord === 2 && cf.maanden[1].omzet === 20000 && cf.maanden[2].omzet === 10000);
+test("scoringskans: 2 van 3 beslist; op bedrag 30k van 60k", cf.scoringPct === 67 && cf.scoringBedragPct === 50);
+test("open offertes: aantal en waarde", cf.openAantal === 1 && cf.openWaarde === 15000);
+test("winst uit nacalculaties: 6.500 op 30.000 = 21,7%", cf.winst === 6500 && cf.winstPct === 21.7 && cf.winstProjecten === 2);
+test("klanten op omzet, met afwijzingen", cf.klanten[0].naam === "Keuken Kampioen" && cf.klanten[0].omzet === 20000 && cf.klanten[0].afgewezen === 1);
+test("redenen van afwijzing", cf.redenen[0].reden === "Te duur");
+test("jaren met data", L.cijferJaren(lijstenC, 2026).join() === "2026,2025");
+
+sectie("Sjabloon voorstellen bij akkoord");
+const SJ = L.STANDAARD_SJABLONEN;
+test("zonder geschiedenis: € 96.847 → groot", L.kiesSjabloon(SJ, [], { bedrag: 96847.5 }).id === "commercial-groot");
+test("zonder geschiedenis: € 8.000 en 1 dag → klein", L.kiesSjabloon(SJ, [], { bedrag: 8000, draaidagen: 1 }).id === "commercial-klein");
+test("zonder geschiedenis: 2 draaidagen → groot", L.kiesSjabloon(SJ, [], { draaidagen: 2 }).id === "commercial-groot");
+const hist = [12000, 15000, 14000, 60000, 80000].map((b, i) => ({ project: { sjabloonId: b > 20000 ? "commercial-groot" : "commercial-klein", offerte: { bedrag: b }, status: "lopend" } }));
+test("met geschiedenis: € 13.000 lijkt op je kleine projecten → klein", (() => { const r = L.kiesSjabloon(SJ, hist, { bedrag: 13000 }); return r.id === "commercial-klein" && /vergelijkbare/.test(r.reden); })());
+test("met geschiedenis: € 70.000 → groot", L.kiesSjabloon(SJ, hist, { bedrag: 70000 }).id === "commercial-groot");
+test("niets bekend → eerste sjabloon, geen reden", L.kiesSjabloon(SJ, [], {}).reden === null);
+
 sectie("Offerte-PDF — begroot tegenover werkelijk");
 const spec = L.compacteSpecificatie(o);
 const st = L.specificatieStand(spec, { "1.0": 1800, "2.0": 1600 });
 test("per kopje werkelijk en verschil", st.kopjes[1].werkelijk === 1800 && st.kopjes[1].verschil === 200 && st.kopjes[2].verschil === -160);
-test("marge op ingevulde posten: (200−160)/(2000+1440) = 1,2%", st.margeIngevuldPct === 1.2 && st.begrootIngevuld === 3440);
-test("prognose: werkelijk waar ingevuld, anders begroot", st.prognose === 13587.5 - 200 + 160 && st.marge === 40 && st.ingevuld === 2);
+test("zonder eigen werk: marge op ingevulde posten (200−160)/(2000+1440) = 1,2%", st.margeIngevuldPct === 1.2 && st.begrootIngevuld === 3440);
+test("korting is geen kostenbesparing: prognose zonder de −200", st.prognose === 13587.5 + 40 + 200 - 200 + 160);
+
+sectie("Eigen werk telt als winst");
+test("gok op naam: montage/projectbegeleiding wel, afmixen/cameraset niet", L.isEigenPost("Monteren Postproductie") && L.isEigenPost("Projectbegeleiding en communicatie") && L.isEigenPost("Productiefee") && !L.isEigenPost("Afmixen") && !L.isEigenPost("Cameraset") && !L.isEigenPost("Cameraman - senior"));
+const eigen = L.eigenPostSleutels(spec);
+test("in de testofferte: monteren eigen werk", eigen.has("2.0") && !eigen.has("1.0"));
+test("keuze per project wint, daarna wat geleerd is", L.eigenPostSleutels(spec, { "2.0": false }).has("2.0") === false && L.eigenPostSleutels(spec, {}, { cameraset: true }).has("1.0"));
+const st2 = L.specificatieStand(spec, {}, eigen);
+test("eigen werk kost niets: winst = eigen werk − kortingen", st2.eigenTotaal === 1627.5 && st2.winst === 1627.5 - 40 - 200);
+const st3 = L.specificatieStand(spec, { "1.0": 1600 }, eigen);
+test("marge op ingekochte posten: cameraset 2.000 → 1.600 = 20%", st3.margeIngevuldPct === 20 && st3.winst === 1627.5 - 240 + 400);
 
 sectie("Offerte → wat er geregeld moet worden");
 const spec2 = L.compacteSpecificatie(L.leesOfferte([
@@ -132,14 +182,16 @@ if (ExcelJS) {
   const wb = L.maakKostenWerkboek(o, ExcelJS, { projectNaam: "Keukens", klantNaam: "Keuken Kampioen", werkelijk: { "1.0": 1800 } });
   const ws = wb.worksheets[0];
   const kop = ws.getRow(5).values.slice(1).join("|");
-  test("kolommen", kop === "Post|Omschrijving|Aantal|Eenheid|Prijs|Begroot|Werkelijk|Verschil|Prognose|Leverancier / naam|Betaald|Opmerking");
+  test("kolommen", kop === "Post|Omschrijving|Aantal|Eenheid|Prijs|Begroot|Werkelijk|Verschil|Prognose|Leverancier / naam|Betaald|Opmerking|Eigen werk");
   test("titel", ws.getCell("A1").value === "KOSTENOVERZICHT KEUKEN KAMPIOEN – KEUKENS");
   let camRij = 0; ws.eachRow((r, n) => { if (r.getCell(1).value === "Cameraset") camRij = n; });
   test("begroot = aantal × prijs als formule", ws.getCell(`F${camRij}`).value.formula === `C${camRij}*E${camRij}`);
   test("werkelijk ingevuld uit de app", ws.getCell(`G${camRij}`).value === 1800);
-  test("verschil en prognose als formule", /F\d+-G\d+/.test(ws.getCell(`H${camRij}`).value.formula) && /IF\(G\d+="",F\d+,G\d+\)/.test(ws.getCell(`I${camRij}`).value.formula));
+  test("verschil en prognose als formule (eigen werk/korting = 0)", /F\d+-G\d+/.test(ws.getCell(`H${camRij}`).value.formula) && /M\d+="ja",F\d+<0\),0,F\d+\),G\d+/.test(ws.getCell(`I${camRij}`).value.formula));
+  let montRij = 0; ws.eachRow((r, n) => { if (r.getCell(1).value === "Monteren Postproductie") montRij = n; });
+  test("eigen werk: monteren = ja, cameraset = nee", ws.getCell(`M${montRij}`).value === "ja" && ws.getCell(`M${camRij}`).value === "nee");
   test("subtotaal per kopje", ws.getCell(`F${camRij - 1}`).value.formula.startsWith("SUM(F"));
-  let margeOk = false; ws.eachRow(r => { if (r.getCell(1).value === "Verwachte marge t.o.v. de offerte") margeOk = /F\d+-I\d+/.test(r.getCell(9).value.formula); });
+  let margeOk = false; ws.eachRow(r => { if (r.getCell(1).value === "Verwachte winst (eigen werk + marge op inkoop)") margeOk = /F\d+-I\d+/.test(r.getCell(9).value.formula); });
   test("verwachte marge", margeOk);
   test("betaald: keuzelijst ja/nee/deels", ws.getCell(`K${camRij}`).dataValidation?.formulae?.[0] === '"ja,nee,deels"');
   test("herberekenen bij openen", wb.calcProperties.fullCalcOnLoad === true);

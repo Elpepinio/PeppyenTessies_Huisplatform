@@ -1,3 +1,4 @@
+import { laadPdfjs } from "../lib/pdf-worker";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Plus, X, ChevronLeft, AlertCircle, Check, Clock, ExternalLink, Pencil } from "lucide-react";
@@ -73,8 +74,7 @@ async function comprimeerFoto(file, max = 1100) {
 // side via pdfjs-dist (zelfde aanpak als bij Bonnetjes) — zo hoeft een PDF
 // niet apart behandeld te worden, hij wordt gewoon als "foto" opgeslagen.
 async function pdfEerstePaginaNaarFoto(file, max = 1100) {
-  const pdfjsLib = await import("pdfjs-dist/build/pdf.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+  const pdfjsLib = await laadPdfjs();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   const page = await pdf.getPage(1);

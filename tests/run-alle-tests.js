@@ -22,4 +22,5 @@ for (const bestand of testBestanden) {
 }
 
 const geslaagd = samenvatting() && !crashte;
+if (crashte) console.log("❌ LET OP: minstens één testbestand crashte — niet alle tests zijn gedraaid (zie 💥 hierboven).");
 process.exit(geslaagd ? 0 : 1);

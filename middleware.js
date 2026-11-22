@@ -32,6 +32,7 @@ export async function middleware(req) {
     pathname.startsWith("/api/cron/") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/icon-") ||
+    pathname.startsWith("/pdfjs/") || // pdf.js-worker: statisch, geen gegevens
     pathname === "/manifest.json" ||
     pathname === "/favicon.ico";
 

@@ -12,6 +12,7 @@
 // (pushmelding), uitgebreide herhaling, klanten/projecten, snel invoeren in
 // gewoon Nederlands, taken via e-mail en plakken vanuit een andere app.
 // ════════════════════════════════════════════════════════════════════
+import { laadPdfjs } from "../lib/pdf-worker";
 import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import Link from "next/link";
 import Head from "next/head";
@@ -34,11 +35,11 @@ import {
   DELIVERABLE_KANALEN, FORMATEN, STANDAARD_FORMATEN, normaliseerDeliverables, deliverablesTekst,
   BUYOUT_MEDIA, BUYOUT_DUUR, buyoutSoort, standaardBuyouts, buyoutEinde,
   leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
-  draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond, bezettingKosten,
+  draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond, bezettingKosten, kiesSjabloon,
   maakAanvraag, aanvraagNaarOfferte, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte } from "../lib/intake-logica";
-import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam, vulBezettingUitOfferte, werkelijkUitBezetting } from "../lib/offerte-pdf-logica";
+import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam, vulBezettingUitOfferte, werkelijkUitBezetting, eigenPostSleutels, postNaamSleutel, maakNacalculatie, nacalculatieInzichten, inzichtenVoorOfferte, projectCijfers, cijferJaren } from "../lib/offerte-pdf-logica";
 
 // Marge-doel (standaard minimaal 20%, streven 25%), overal in de projecten nodig.
 const MargeContext = createContext({ minimum: 20, doel: 25, zet: () => {} });
@@ -205,8 +206,37 @@ export default function TakenApp() {
     post("/api/taken/werk", { callsheet: ins });
   }
   const marge = normaliseerMarge(werk?.projectInstellingen?.marge);
+  // Zodra de werkruimte open is: PDF-lezer en Excel-maker alvast op de
+  // achtergrond laden, zodat de service worker ze bewaart en ze ook zonder
+  // internet werken (op set, in het buitenland). Niet bij databesparing.
+  const werkOpen = !!werk;
+  useEffect(() => {
+    if (!werkOpen || typeof window === "undefined" || navigator.connection?.saveData) return;
+    const t = setTimeout(() => {
+      laadPdfjs().then(p => fetch(p.GlobalWorkerOptions.workerSrc)).catch(() => {});
+      import("exceljs").catch(() => {});
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [werkOpen]);
   function zetMarge(m) {
     const pi = { ...(werkRef.current?.projectInstellingen || {}), marge: normaliseerMarge(m) };
+    const w = { ...werkRef.current, projectInstellingen: pi };
+    werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
+    post("/api/taken/werk", { projectInstellingen: pi });
+  }
+  // Nacalculatie van een project met ingelezen offerte (werkelijk = ingevuld
+  // per post, anders uit de namen + prijsafspraken; eigen werk telt niet als kosten).
+  function nacalculatieVan(l) {
+    const o = l?.project?.offerte;
+    if (!o?.specificatie) return null;
+    const werkelijk = { ...werkelijkUitBezetting(l, o.specificatie), ...(o.werkelijk || {}) };
+    const eigen = eigenPostSleutels(o.specificatie, o.eigen || {}, werkRef.current?.projectInstellingen?.eigenPosten || {});
+    return maakNacalculatie(o.specificatie, werkelijk, eigen, { datum: vandaag });
+  }
+  const inzichten = useMemo(() => nacalculatieInzichten(werk?.lists || []), [werk?.lists]);
+  function zetEigenGeleerd(naamSleutel, waarde) {
+    const pi = { ...(werkRef.current?.projectInstellingen || {}) };
+    pi.eigenPosten = { ...(pi.eigenPosten || {}), [naamSleutel]: waarde };
     const w = { ...werkRef.current, projectInstellingen: pi };
     werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
     post("/api/taken/werk", { projectInstellingen: pi });
@@ -530,7 +560,7 @@ export default function TakenApp() {
   const detailTaak = detailLijst?.items?.find(i => i.id === detail.itemId);
 
   return (
-    <MargeContext.Provider value={{ ...marge, zet: zetMarge }}>
+    <MargeContext.Provider value={{ ...marge, zet: zetMarge, eigenGeleerd: werk?.projectInstellingen?.eigenPosten || {}, zetEigenGeleerd, inzichten }}>
     <div style={S.app}>
       <Head><title>Taken — Ons Huishouden</title></Head>
 
@@ -540,6 +570,8 @@ export default function TakenApp() {
           openNieuwProject={(sjabloonId) => setSheet({ soort: "nieuwProject", sjabloonId })}
           openOfferte={() => setSheet("offerte")}
           openAanvraag={() => setSheet("aanvraag")}
+          openCijfers={() => setSheet("cijfers")}
+          openBackup={() => setSheet("backup")}
           openAkkoord={(listId) => setSheet({ soort: "akkoord", listId })}
           openAfwijzen={(listId) => setSheet({ soort: "afwijzen", listId })}
           openSjablonen={() => setSheet("sjablonen")}
@@ -666,6 +698,8 @@ export default function TakenApp() {
           post("/api/taken/werk", { klanten: lijst });
         }} />
       )}
+      {sheet === "backup" && <BackupSheet sluit={() => setSheet(null)} meld={meld} naHerstel={() => { lastWriteRef.current = 0; verversAlles(true); }} />}
+      {sheet === "cijfers" && <CijfersSheet lijsten={werk?.lists || []} klanten={werk?.klanten || []} sluit={() => setSheet(null)} />}
       {sheet === "aanvraag" && (
         <AanvraagSheet {...{ klanten, vandaag }} alleKlanten={werk?.klanten || []} nieuweKlant={maakKlant} sluit={() => setSheet(null)}
           maak={({ naam, klantId, tekst }) => {
@@ -708,6 +742,11 @@ export default function TakenApp() {
         if (!lijst) return null;
         return (
           <NieuwProjectSheet {...{ sjablonen, klanten, vandaag }} vanOfferte={lijst} nieuweKlant={maakKlant} sluit={() => setSheet(null)}
+            voorstel={(() => {
+              const spec = lijst.project?.offerte?.specificatie;
+              const h = spec ? herkenUitOfferte(spec, { vandaag }) : leesIntake(lijst.project?.intake?.tekst || "", { vandaag });
+              return kiesSjabloon(sjablonen, werk?.lists || [], { bedrag: lijst.project?.offerte?.bedrag ?? lijst.project?.budget ?? null, draaidagen: h.draaidagen || null });
+            })()}
             maak={(sjabloon, opties) => {
               const nu = Date.now();
               rondStartAf(startMetOnderdelen(offerteAkkoord(lijstVan("werk", lijst.id), sjabloon, { ...opties, akkoordOp: vandaag, vandaag, wie: ik, nu, nieuwId: uid }), sjabloon, opties), opties);
@@ -778,13 +817,16 @@ export default function TakenApp() {
         const lijst = lijstVan("werk", sheet.listId);
         const sjabloon = lijst?.project ? sjablonen.find(t => t.id === lijst.project.sjabloonId) : null;
         return (
-          <LeerSheet lijst={lijst} sjabloon={sjabloon} sluit={() => setSheet(null)}
+          <LeerSheet lijst={lijst} sjabloon={sjabloon} sluit={() => setSheet(null)} nacalculatie={nacalculatieVan(lijst)}
             toepassen={(voorstellen, gekozen, afronden) => {
               if (sjabloon) {
                 const nieuw = pasLeerVoorstellenToe(sjabloon, lijst, voorstellen, gekozen, uid, { metTiming: !lijst.project.geleerdOp });
                 bewaarSjablonen(sjablonen.map(t => (t.id === sjabloon.id ? nieuw : t)));
               }
-              wijzigLijst("werk", lijst.id, l => ({ ...l, project: { ...l.project, geleerdOp: Date.now(), afgerond: afronden || l.project.afgerond } }));
+              wijzigLijst("werk", lijst.id, l => {
+                const nac = afronden ? nacalculatieVan(l) : null;
+                return { ...l, project: { ...l.project, geleerdOp: Date.now(), afgerond: afronden || l.project.afgerond, ...(nac ? { nacalculatie: nac } : {}) } };
+              });
               setSheet(null);
               if (afronden) setWeergave({ soort: "overzicht" });
               meld(gekozen.length ? `🧠 Sjabloon bijgewerkt (${gekozen.length} ${gekozen.length === 1 ? "aanpassing" : "aanpassingen"})` : "🧠 Timing vastgelegd voor een volgende keer");
@@ -839,7 +881,7 @@ export default function TakenApp() {
 // ════════════════════════════════════════════════════════════════════
 // OVERZICHT
 // ════════════════════════════════════════════════════════════════════
-function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, openNieuwProject, openSjablonen, openOfferte, openAanvraag, openAkkoord, openAfwijzen, zetMeldingenAan, vergrendel, kopieerAdres }) {
+function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, openNieuwProject, openSjablonen, openOfferte, openAanvraag, openCijfers, openBackup, openAkkoord, openAfwijzen, zetMeldingenAan, vergrendel, kopieerAdres }) {
   const openAantal = (l) => (l.items || []).filter(i => !i.checked).length;
   const [afgerondOpen, setAfgerondOpen] = useState(false);
   const offertes = werkLijsten.filter(l => projectStatus(l) === "offerte" && !l.project.afgerond)
@@ -910,6 +952,11 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
         )}
         {werkStaat === "open" && (
           <>
+            <button onClick={openCijfers} style={{ ...S.kaart, ...S.rij, border: `1px solid ${C.rand}`, background: C.kaart, padding: "12px 14px", marginBottom: 10 }}>
+              <span style={{ fontSize: 18 }}>📊</span>
+              <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Cijfers <span style={{ fontWeight: 400, color: C.muted }}>— omzet, scoringskans, winst, klanten</span></span>
+              <ChevronRight size={16} color={C.licht} />
+            </button>
             {/* Aanvragen: eerste telefoongesprek, offerte moet nog de deur uit */}
             <p style={{ ...S.sectieKop, marginTop: 4 }}>📞 Aanvragen</p>
             <div style={S.kaart}>
@@ -1076,6 +1123,12 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                 <Tag size={18} color={C.groen} />
                 <span style={{ flex: 1, fontSize: 15 }}>Klanten & projecten</span>
                 <span style={{ fontSize: 13, color: C.muted }}>{klanten.length || ""}</span>
+                <ChevronRight size={16} color={C.licht} />
+              </button>
+              <button style={S.rij} onClick={openBackup}>
+                <span style={{ fontSize: 17, width: 18, textAlign: "center" }}>💾</span>
+                <span style={{ flex: 1, fontSize: 15 }}>Back-up</span>
+                <span style={{ fontSize: 12, color: C.muted }}>dagelijks automatisch</span>
                 <ChevronRight size={16} color={C.licht} />
               </button>
               <button style={S.rij} onClick={() => openPin("wijzig")}>
@@ -2072,8 +2125,7 @@ function OpzetRegel({ p, zetOpzet }) {
 // een kostenoverzicht in Excel: begroot tegenover werkelijk per post.
 // ════════════════════════════════════════════════════════════════════
 async function leesOffertePdfBestand(file) {
-  const pdfjsLib = await import("pdfjs-dist/build/pdf.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+  const pdfjsLib = await laadPdfjs();
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const paginas = [];
   for (let n = 1; n <= pdf.numPages; n++) {
@@ -2095,10 +2147,10 @@ async function deelOfDownload(buf, naam, { delen = false, meld } = {}) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
   meld?.("⬇︎ Excel gedownload");
 }
-async function downloadKostenoverzicht(spec, werkelijk, { projectNaam, klantNaam, delen, meld, marge }) {
+async function downloadKostenoverzicht(spec, werkelijk, { projectNaam, klantNaam, delen, meld, marge, eigen }) {
   try {
     const ExcelJS = (await import("exceljs")).default;
-    const wb = maakKostenWerkboek(spec, ExcelJS, { projectNaam, klantNaam, werkelijk: werkelijk || {}, marge: marge ? { minimum: marge.minimum, doel: marge.doel } : undefined });
+    const wb = maakKostenWerkboek(spec, ExcelJS, { projectNaam, klantNaam, werkelijk: werkelijk || {}, marge: marge ? { minimum: marge.minimum, doel: marge.doel } : undefined, eigen });
     await deelOfDownload(await wb.xlsx.writeBuffer(), kostenBestandsnaam(spec, projectNaam), { delen, meld });
   } catch (e) { console.error(e); meld?.("⚠️ Excel maken mislukt"); }
 }
@@ -2147,6 +2199,7 @@ function SpecificatieBlok({ lijst, klantNaam, zetProject, meld, vulPlekken }) {
   const spec = o.specificatie;
   const [open, setOpen] = useState(false);
   const [kopOpen, setKopOpen] = useState(null);
+  const md = useContext(MargeContext);
   const kanDelen = typeof navigator !== "undefined" && !!navigator.canShare;
   const zetSpec = (nieuw) => {
     zetProject({ offerte: { ...(lijst.project.offerte || {}), specificatie: compacteSpecificatie(nieuw), werkelijk: {}, ...(o.bedrag == null ? { bedrag: nieuw.totaal } : {}) } });
@@ -2156,29 +2209,44 @@ function SpecificatieBlok({ lijst, klantNaam, zetProject, meld, vulPlekken }) {
   // Werkelijk = wat je per post invult, anders wat uit de namen + prijsafspraken volgt.
   const auto = werkelijkUitBezetting(lijst, spec);
   const werkelijkAlles = { ...auto, ...(o.werkelijk || {}) };
-  const st = specificatieStand(spec, werkelijkAlles);
+  // Eigen werk: keuze in dit project, anders wat je eerder koos voor die postnaam, anders een gok.
+  const eigen = eigenPostSleutels(spec, o.eigen || {}, md.eigenGeleerd || {});
+  const st = specificatieStand(spec, werkelijkAlles, eigen);
+  const zetEigen = (pp, waarde) => {
+    zetProject({ offerte: { ...(lijst.project.offerte || {}), eigen: { ...(lijst.project.offerte?.eigen || {}), [pp.sleutel]: waarde } } });
+    md.zetEigenGeleerd?.(postNaamSleutel(pp.naam), waarde);
+  };
   const heeftPlekken = (lijst.items || []).some(i => (i.bezetting || []).some(b => b.offerte));
   const zetWerkelijk = (sleutel, bedrag) => {
     const w = { ...(lijst.project.offerte?.werkelijk || {}) };
     if (bedrag == null) delete w[sleutel]; else w[sleutel] = bedrag;
     zetProject({ offerte: { ...(lijst.project.offerte || {}), werkelijk: w } });
   };
-  const md = useContext(MargeContext);
   const status = margeStatus(st.margeIngevuldPct, md);
   const kleur = status ? MARGE_KLEUR[status] : C.groen;
   return (
     <div style={{ marginTop: 10 }}>
       <button onClick={() => setOpen(!open)} style={{ ...S.rij, padding: "4px 0", borderBottom: "none" }} aria-label="Offerte-specificatie">
         <span style={{ fontSize: 13, flex: 1 }}>
-          📄 <strong>Offerte{spec.nummer ? ` ${spec.nummer}` : ""}</strong> · {st.posten} posten · {euro(st.begroot)}
-          {st.ingevuld > 0 && <span style={{ color: kleur, fontWeight: 700 }}> · marge {String(st.margeIngevuldPct).replace(".", ",")}% op {st.ingevuld} {st.ingevuld === 1 ? "post" : "posten"}</span>}
+          📄 <strong>Offerte{spec.nummer ? ` ${spec.nummer}` : ""}</strong> · {euro(st.begroot)} · winst min. <strong>{euro(st.winst)}</strong> ({String(st.winstPct).replace(".", ",")}%)
+          {st.margeIngevuldPct != null && <span style={{ color: kleur, fontWeight: 700 }}> · inkoop {String(st.margeIngevuldPct).replace(".", ",")}%</span>}
         </span>
         <ChevronDown size={15} color={C.licht} style={{ transform: open ? "none" : "rotate(-90deg)" }} />
       </button>
       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-        <button style={{ ...S.knop(), flex: 1, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, werkelijkAlles, { projectNaam: lijst.name, klantNaam, meld, marge: md })}>⬇︎ Kostenoverzicht (Excel)</button>
-        {kanDelen && <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, werkelijkAlles, { projectNaam: lijst.name, klantNaam, delen: true, meld, marge: md })}>📤 Delen</button>}
+        <button style={{ ...S.knop(), flex: 1, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, werkelijkAlles, { projectNaam: lijst.name, klantNaam, meld, marge: md, eigen })}>⬇︎ Kostenoverzicht (Excel)</button>
+        {kanDelen && <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, werkelijkAlles, { projectNaam: lijst.name, klantNaam, delen: true, meld, marge: md, eigen })}>📤 Delen</button>}
       </div>
+      {(() => {
+        const iz = inzichtenVoorOfferte(spec, md.inzichten || []);
+        if (!iz.length || p.afgerond) return null;
+        return (
+          <div style={{ marginTop: 6, fontSize: 12, background: "#FFF8DC", borderRadius: 10, padding: "6px 10px", lineHeight: 1.5 }}>
+            <strong>📊 Uit je nacalculaties:</strong>
+            {iz.slice(0, 4).map(x => <div key={x.categorie}>{onderdeelVan(x.categorie)?.label || x.naam}: gemiddeld <strong style={{ color: x.gemiddeldPct > 0 ? C.rood : C.groen }}>{x.gemiddeldPct > 0 ? "+" : ""}{String(x.gemiddeldPct).replace(".", ",")}%</strong> t.o.v. begroot ({x.aantal} projecten)</div>)}
+          </div>
+        );
+      })()}
       {vulPlekken && !heeftPlekken && (
         <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, width: "100%", marginTop: 6, padding: "8px 10px", fontSize: 13 }} onClick={vulPlekken}>
           👥 Crew, cast en locaties uit de offerte klaarzetten
@@ -2197,17 +2265,18 @@ function SpecificatieBlok({ lijst, klantNaam, zetProject, meld, vulPlekken }) {
                 <span style={{ width: 84, textAlign: "right", fontSize: 13, color: k.verschil == null ? C.licht : k.verschil < 0 ? C.rood : C.groen }}>{k.werkelijk == null ? "—" : euro(k.werkelijk)}</span>
               </button>
               {kopOpen === ki && k.posten.map(pp => (
-                <SpecPostRegel key={pp.sleutel} post={pp} handmatig={(o.werkelijk || {})[pp.sleutel] != null} auto={auto[pp.sleutel]} zet={(b) => zetWerkelijk(pp.sleutel, b)} />
+                <SpecPostRegel key={pp.sleutel} post={pp} handmatig={(o.werkelijk || {})[pp.sleutel] != null} auto={auto[pp.sleutel]} zet={(b) => zetWerkelijk(pp.sleutel, b)} zetEigen={(v) => zetEigen(pp, v)} />
               ))}
             </div>
           ))}
           <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.7, borderTop: `1px solid ${C.rand2}`, paddingTop: 6 }}>
+            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Eigen werk (blijft bij jou)</span><strong>{euro(st.eigenTotaal)}</strong></div>
             <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Werkelijk ingevuld ({st.ingevuld}/{st.posten})</span><strong>{euro(st.werkelijk)}</strong></div>
-            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Verschil op ingevulde posten</span><strong style={{ color: st.verschil < 0 ? C.rood : C.groen }}>{euro(st.verschil)}</strong></div>
-            {st.margeIngevuldPct != null && <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Marge op ingevulde posten (doel ≥ {md.doel}%, min. {md.minimum}%)</span><strong style={{ color: kleur }}>{String(st.margeIngevuldPct).replace(".", ",")}%</strong></div>}
-            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Verwachte eindkosten</span><strong>{euro(st.prognose)}</strong></div>
+            {st.margeIngevuldPct != null && <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Marge op inkoop (doel ≥ {md.doel}%, min. {md.minimum}%)</span><strong style={{ color: kleur }}>{String(st.margeIngevuldPct).replace(".", ",")}%</strong></div>}
+            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Verwachte kosten</span><strong>{euro(st.prognose)}</strong></div>
+            <div style={{ display: "flex", fontWeight: 700 }}><span style={{ flex: 1 }}>Verwachte winst (minimaal)</span><span>{euro(st.winst)} · {String(st.winstPct).replace(".", ",")}%</span></div>
           </div>
-          <p style={S.hint}>Tik op een kopje om per post de werkelijke kosten in te vullen. 🔗 = automatisch uit de namen en prijsafspraken in het project. Alles komt ook in de Excel.</p>
+          <p style={S.hint}>Tik op een kopje om per post de werkelijke kosten in te vullen. 🔗 = automatisch uit de namen en prijsafspraken. <strong>Eigen</strong> = werk dat je zelf doet: dat kost niets extra en telt als winst (tik om te wisselen; de app onthoudt het per postnaam). Nog niet ingevulde inkoop telt voorzichtig als "kost wat begroot is".</p>
           <OffertePdfKnop label="📄 Andere PDF inlezen" stijl={{ marginTop: 8, padding: "7px 10px", fontSize: 13 }}
             onGelezen={(nieuw) => { if (!Object.keys(o.werkelijk || {}).length || window.confirm("De ingevulde werkelijke kosten worden gewist. Doorgaan?")) zetSpec(nieuw); }} />
         </div>
@@ -2231,13 +2300,37 @@ function MargeDoelInstelling() {
     </div>
   );
 }
-function SpecPostRegel({ post, zet, handmatig = false, auto }) {
+function NacalculatieBlok({ n }) {
+  const md = useContext(MargeContext);
+  const st = margeStatus(n.margeInkoopPct, md);
+  const opvallend = [...n.posten].filter(p => Math.abs(p.verschilPct) >= 5).sort((a, b) => Math.abs(b.verschilPct) - Math.abs(a.verschilPct)).slice(0, 5);
+  return (
+    <div style={{ marginTop: 14, background: C.bg, borderRadius: 12, padding: 12, fontSize: 13, lineHeight: 1.6 }}>
+      <p style={{ ...S.label, margin: "0 0 4px" }}>📊 Nacalculatie</p>
+      <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Offerte</span><strong>{euro(n.offerte)}</strong></div>
+      <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Kosten (ingevuld of begroot)</span><strong>{euro(n.kosten)}</strong></div>
+      <div style={{ display: "flex", fontWeight: 700 }}><span style={{ flex: 1 }}>Winst incl. eigen werk</span><span>{euro(n.winst)} · {String(n.winstPct).replace(".", ",")}%</span></div>
+      {n.margeInkoopPct != null && <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Marge op inkoop</span><strong style={{ color: MARGE_KLEUR[st] }}>{String(n.margeInkoopPct).replace(".", ",")}%</strong></div>}
+      {opvallend.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          {opvallend.map(p => <div key={p.naam} style={{ display: "flex", fontSize: 12 }}><span style={{ flex: 1 }}>{p.naam}</span><span style={{ color: p.verschilPct > 0 ? C.rood : C.groen, fontWeight: 700 }}>{p.verschilPct > 0 ? "+" : ""}{String(p.verschilPct).replace(".", ",")}%</span></div>)}
+        </div>
+      )}
+      <p style={{ ...S.hint, marginBottom: 0 }}>Wordt bij afronden bewaard. Posten die vaker afwijken zie je terug bij je volgende offertes.</p>
+    </div>
+  );
+}
+function SpecPostRegel({ post, zet, handmatig = false, auto, zetEigen }) {
   const begin = handmatig && post.werkelijk != null ? String(post.werkelijk).replace(".", ",") : "";
   const [w, setW] = useState(begin);
   useEffect(() => setW(begin), [post.sleutel, handmatig]);
   const verschil = post.werkelijk != null ? post.totaal - post.werkelijk : null;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0 4px 10px", fontSize: 12 }}>
+      <button onClick={() => zetEigen?.(!post.eigen)} aria-label={`${post.naam}: ${post.eigen ? "eigen werk" : "inkoop"}`} aria-pressed={post.eigen}
+        style={{ fontSize: 10, fontWeight: 700, borderRadius: 999, padding: "2px 6px", border: `1px solid ${post.eigen ? C.groen : C.rand2}`, background: post.eigen ? C.groen : "transparent", color: post.eigen ? "#fff" : C.muted, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+        {post.eigen ? "eigen" : "inkoop"}
+      </button>
       <span style={{ flex: 1, minWidth: 0 }}>
         {post.naam}
         <span style={{ display: "block", color: C.muted, fontSize: 11 }}>{post.aantal} {post.eenheid} × {euro(post.prijs)}{verschil ? ` · ${verschil > 0 ? "−" : "+"}${euro(Math.abs(verschil))}` : ""}</span>
@@ -2246,6 +2339,184 @@ function SpecPostRegel({ post, zet, handmatig = false, auto }) {
       <input value={w} inputMode="decimal" placeholder={auto != null ? `🔗 ${Number(auto).toLocaleString("nl-NL", { maximumFractionDigits: 2 })}` : "€"} aria-label={`Werkelijk ${post.naam}`} onChange={e => setW(e.target.value)}
         onBlur={() => { const b = w.trim() === "" ? null : leesBedragInvoer(w); if (b !== (handmatig ? post.werkelijk : null)) zet(b); }}
         style={{ ...S.inp, padding: "5px 6px", fontSize: 13, width: 84, textAlign: "right", background: "#FFF8DC" }} />
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CIJFERS — omzet, scoringskans, winst, klanten (per jaar)
+// ════════════════════════════════════════════════════════════════════
+const MAAND_KORT = ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"];
+function CijferTegel({ label, waarde, sub, kleur }) {
+  return (
+    <div style={{ background: C.bg, borderRadius: 12, padding: "10px 12px", minWidth: 0 }}>
+      <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, letterSpacing: "0.03em" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, marginTop: 2, color: C.tekst }}>{waarde}</div>
+      {sub && <div style={{ fontSize: 11, color: kleur || C.muted, marginTop: 1, fontWeight: kleur ? 700 : 400 }}>{sub}</div>}
+    </div>
+  );
+}
+function CijfersSheet({ lijsten, klanten, sluit }) {
+  const md = useContext(MargeContext);
+  const huidig = Number(vandaagStr().slice(0, 4));
+  const jaren = cijferJaren(lijsten, huidig);
+  const [jaar, setJaar] = useState(huidig);
+  const [actief, setActief] = useState(null);
+  const c = projectCijfers(lijsten, { jaar, klanten, eigenGeleerd: md.eigenGeleerd || {} });
+  const max = Math.max(1, ...c.maanden.map(m => m.omzet));
+  const st = margeStatus(c.winstPct, md);
+  const ks = (n) => (n >= 1000 ? `€ ${Math.round(n / 1000).toLocaleString("nl-NL")}k` : euro(n));
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()} role="dialog" aria-label="Cijfers">
+        <SheetKop titel="📊 Cijfers" sluit={sluit} />
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+          {jaren.map(j => <button key={j} onClick={() => { setJaar(j); setActief(null); }} style={{ ...S.chip(j === jaar), padding: "5px 12px" }}>{j}</button>)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <CijferTegel label="OMZET (AKKOORD)" waarde={euro(c.omzet)} sub={`${c.akkoord} ${c.akkoord === 1 ? "project" : "projecten"}${c.gemiddeldeOfferte ? ` · gem. ${ks(c.gemiddeldeOfferte)}` : ""}`} />
+          <CijferTegel label="SCORINGSKANS" waarde={c.scoringPct == null ? "—" : `${c.scoringPct}%`} sub={c.scoringPct == null ? "nog niets beslist" : `${c.akkoord} akkoord · ${c.afgewezen} afgewezen${c.scoringBedragPct != null ? ` · ${c.scoringBedragPct}% van het bedrag` : ""}`} />
+          <CijferTegel label="WINST" waarde={c.winstPct == null ? "—" : euro(c.winst)} sub={c.winstPct == null ? "lees offertes in voor winstcijfers" : `${String(c.winstPct).replace(".", ",")}% · ${c.winstProjecten} ${c.winstProjecten === 1 ? "project" : "projecten"}${st === "te-laag" ? " · onder je minimum" : ""}`} kleur={c.winstPct != null && st ? MARGE_KLEUR[st] : null} />
+          <CijferTegel label="OPEN OFFERTES" waarde={euro(c.openWaarde)} sub={`${c.openAantal} uitstaand`} />
+        </div>
+
+        <p style={{ ...S.label, marginTop: 16 }}>Omzet per maand (moment van akkoord)</p>
+        <div style={{ position: "relative", height: 150, display: "flex", alignItems: "flex-end", gap: 3, borderBottom: `1px solid ${C.rand2}`, paddingTop: 18 }} role="img" aria-label={`Omzet per maand in ${jaar}`}>
+          {c.maanden.map(m => {
+            const h = m.omzet ? Math.max(4, Math.round((m.omzet / max) * 120)) : 0;
+            const aan = actief === m.maand;
+            return (
+              <button key={m.maand} onClick={() => setActief(aan ? null : m.maand)} aria-label={`${MAAND_KORT[m.maand]}: ${euro(m.omzet)}, ${m.akkoord} akkoord, ${m.verstuurd} offertes verstuurd`}
+                style={{ flex: 1, height: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center", background: "none", border: "none", padding: 0, cursor: "pointer", position: "relative" }}>
+                {aan && (
+                  <span style={{ position: "absolute", bottom: h + 4, left: "50%", transform: `translateX(${m.maand < 2 ? "-20%" : m.maand > 9 ? "-80%" : "-50%"})`, background: C.tekst, color: "#fff", fontSize: 11, borderRadius: 6, padding: "3px 6px", whiteSpace: "nowrap", zIndex: 1 }}>
+                    {euro(m.omzet)} · {m.akkoord}× akkoord · {m.verstuurd} verstuurd
+                  </span>
+                )}
+                <span style={{ width: "100%", maxWidth: 22, height: h, background: aan || actief == null ? C.groen : "#9DB5A9", borderRadius: "4px 4px 0 0" }} />
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 3 }}>
+          {c.maanden.map(m => <span key={m.maand} style={{ flex: 1, textAlign: "center", fontSize: 10, color: C.muted, marginTop: 3 }}>{MAAND_KORT[m.maand]}</span>)}
+        </div>
+        <p style={S.hint}>Tik op een maand voor de details.</p>
+
+        {c.klanten.length > 0 && <>
+          <p style={{ ...S.label, marginTop: 14 }}>Klanten</p>
+          <div style={{ background: C.bg, borderRadius: 12, padding: "4px 12px" }}>
+            {c.klanten.map(k => (
+              <div key={k.klantId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${C.rand}`, fontSize: 13 }}>
+                <span style={{ flex: 1, fontWeight: 700 }}>{k.naam}</span>
+                <span style={{ color: C.muted, fontSize: 12 }}>{k.akkoord}✓{k.afgewezen ? ` · ${k.afgewezen}✕` : ""}</span>
+                <span style={{ width: 90, textAlign: "right" }}>{euro(k.omzet)}</span>
+              </div>
+            ))}
+          </div>
+        </>}
+
+        {c.redenen.length > 0 && <>
+          <p style={{ ...S.label, marginTop: 14 }}>Waarom offertes niet doorgingen</p>
+          {c.redenen.map(r => <div key={r.reden} style={{ display: "flex", fontSize: 13, padding: "3px 0" }}><span style={{ flex: 1 }}>{r.reden}</span><strong>{r.aantal}×</strong></div>)}
+        </>}
+
+        {(md.inzichten || []).length > 0 && <>
+          <p style={{ ...S.label, marginTop: 14 }}>Wat structureel afwijkt (nacalculaties)</p>
+          {md.inzichten.slice(0, 8).map(x => (
+            <div key={x.categorie} style={{ display: "flex", fontSize: 13, padding: "3px 0" }}>
+              <span style={{ flex: 1 }}>{onderdeelVan(x.categorie)?.label || x.naam} <span style={{ color: C.muted }}>({x.aantal} projecten)</span></span>
+              <strong>{x.gemiddeldPct > 0 ? "+" : ""}{String(x.gemiddeldPct).replace(".", ",")}%</strong>
+            </div>
+          ))}
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// BACK-UP — automatische dagelijkse momentopnames (14 dagen, op de server)
+// + zelf een bestand downloaden of terugzetten.
+// ════════════════════════════════════════════════════════════════════
+const LAATSTE_DOWNLOAD_SLEUTEL = "taken:laatste-werk-backup";
+function leesLaatsteDownload() { try { return Number(localStorage.getItem(LAATSTE_DOWNLOAD_SLEUTEL)) || null; } catch { return null; } }
+function BackupSheet({ sluit, meld, naHerstel }) {
+  const [info, setInfo] = useState(null);
+  const [bezig, setBezig] = useState(false);
+  const [laatste, setLaatste] = useState(leesLaatsteDownload());
+  const bestandRef = useRef(null);
+  const laad = () => fetch("/api/taken/backup").then(r => r.json()).then(setInfo).catch(() => setInfo({ fout: true }));
+  useEffect(() => { laad(); }, []);
+  async function download(bron) {
+    setBezig(true);
+    try {
+      const r = await fetch(`/api/taken/backup?download=${encodeURIComponent(bron)}`);
+      if (!r.ok) throw new Error((await r.json()).error);
+      const tekst = await r.text();
+      const naam = (r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || "werkruimte-backup.json";
+      const file = typeof File !== "undefined" ? new File([tekst], naam, { type: "application/json" }) : null;
+      if (file && navigator.canShare?.({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: naam }); } catch (e) { if (e?.name !== "AbortError") throw e; else { setBezig(false); return; } }
+      } else {
+        const url = URL.createObjectURL(new Blob([tekst], { type: "application/json" }));
+        const a = document.createElement("a"); a.href = url; a.download = naam; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      }
+      if (bron === "nu") { try { localStorage.setItem(LAATSTE_DOWNLOAD_SLEUTEL, String(Date.now())); } catch { /* geen opslag */ } setLaatste(Date.now()); }
+      meld("💾 Back-up opgeslagen");
+    } catch (e) { meld(`⚠️ ${e.message || "Back-up mislukt"}`); }
+    setBezig(false);
+  }
+  async function herstel(body, uitleg) {
+    if (!window.confirm(`${uitleg}\n\nJe huidige stand wordt eerst apart bewaard, dus dit is terug te draaien. Doorgaan?`)) return;
+    setBezig(true);
+    try {
+      const r = await fetch("/api/taken/backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error);
+      meld(`↩️ Teruggezet (${j.lijsten} lijsten)`);
+      naHerstel();
+      laad();
+    } catch (e) { meld(`⚠️ ${e.message || "Terugzetten mislukt"}`); }
+    setBezig(false);
+  }
+  async function importeer(file) {
+    if (!file) return;
+    try { const data = JSON.parse(await file.text()); herstel({ importeer: data }, `Back-up "${file.name}" terugzetten?`); }
+    catch { meld("⚠️ Dit is geen geldig back-upbestand"); }
+  }
+  const kb = (b) => `${Math.max(1, Math.round(b / 1024))} kB`;
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()} role="dialog" aria-label="Back-up">
+        <SheetKop titel="💾 Back-up werkruimte" sluit={sluit} />
+        <p style={{ ...S.hint, marginTop: 0 }}>De app bewaart elke dag automatisch een kopie van je werkruimte (projecten, offertes, contacten, sjablonen), {info?.bewaarDagen || 14} dagen lang. Download af en toe ook zelf een bestand, bijvoorbeeld naar iCloud Drive.</p>
+        <button disabled={bezig} style={{ ...S.knop(), width: "100%", marginTop: 6 }} onClick={() => download("nu")}>⬇︎ Back-up nu downloaden</button>
+        <p style={S.hint}>{laatste ? `Laatst zelf gedownload op dit toestel: ${new Date(laatste).toLocaleDateString("nl-NL", { day: "numeric", month: "long" })}` : "Op dit toestel nog nooit zelf gedownload."}</p>
+        <p style={{ ...S.label, marginTop: 14 }}>Automatische momentopnames</p>
+        {!info ? <p style={S.hint}>Laden…</p> : info.fout ? <p style={{ ...S.hint, color: C.rood }}>Kon de lijst niet laden.</p> : !info.momentopnames.length ? (
+          <p style={S.hint}>Nog geen — de eerste wordt gemaakt bij je volgende wijziging.</p>
+        ) : (
+          <div style={{ background: C.bg, borderRadius: 12, padding: "2px 12px" }}>
+            {info.momentopnames.map(m => (
+              <div key={m.datum} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${C.rand}`, fontSize: 13 }}>
+                <span style={{ flex: 1 }}>{datumKort(m.datum)} <span style={{ color: C.muted }}>· {kb(m.bytes)}</span></span>
+                <button disabled={bezig} onClick={() => download(m.datum)} style={{ ...S.chip(false), padding: "4px 9px", fontSize: 12 }}>Download</button>
+                <button disabled={bezig} onClick={() => herstel({ herstel: m.datum }, `Je werkruimte terugzetten naar de stand van ${datumKort(m.datum).toLowerCase()}?`)} style={{ ...S.chip(false), padding: "4px 9px", fontSize: 12 }}>Terugzetten</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {info?.voorHerstel && (
+          <button disabled={bezig} onClick={() => herstel({ herstel: "voor-herstel" }, "De stand van vlak vóór het laatste terugzetten herstellen?")} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, padding: "8px 0", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
+            ↩️ Laatste terugzetten ongedaan maken
+          </button>
+        )}
+        <p style={{ ...S.label, marginTop: 14 }}>Bestand terugzetten</p>
+        <button disabled={bezig} onClick={() => bestandRef.current?.click()} style={{ ...S.knop(C.bg, C.tekst), border: `1px solid ${C.rand2}`, width: "100%" }}>📂 Kies een back-upbestand…</button>
+        <input ref={bestandRef} type="file" accept="application/json,.json" style={{ display: "none" }} onChange={e => { importeer(e.target.files?.[0]); e.target.value = ""; }} />
+      </div>
     </div>
   );
 }
@@ -2876,8 +3147,8 @@ function AfwijzenSheet({ lijst, sluit, bevestig }) {
   );
 }
 
-function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuweKlant, sluit, maak, vanOfferte = null }) {
-  const [sjabloonId, setSjabloonId] = useState(startSjabloonId || sjablonen[0]?.id);
+function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuweKlant, sluit, maak, vanOfferte = null, voorstel = null }) {
+  const [sjabloonId, setSjabloonId] = useState(startSjabloonId || voorstel?.id || sjablonen[0]?.id);
   const sjabloon = sjablonen.find(t => t.id === sjabloonId) || sjablonen[0];
   const [naam, setNaam] = useState(vanOfferte?.name || "");
   const [klantId, setKlantId] = useState(vanOfferte?.project?.klantId || "");
@@ -2946,8 +3217,9 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
         {vanOfferte && <p style={{ ...S.hint, marginTop: 0 }}>Kies het sjabloon en de data; de productietaken komen in dit project. Offerte- en akkoordstappen staan meteen op klaar.</p>}
         <p style={{ ...S.label, marginTop: 6 }}>Sjabloon</p>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {sjablonen.map(t => <button key={t.id} style={S.chip(t.id === sjabloon.id)} onClick={() => { setSjabloonId(t.id); setOplever(null); setOnderdelen(zonderPost([...new Set([...standaardOnderdelen(t), ...(hNu.onderdelen || [])])], opzet)); }}>{t.icoon} {t.naam}</button>)}
+          {sjablonen.map(t => <button key={t.id} style={S.chip(t.id === sjabloon.id)} onClick={() => { setSjabloonId(t.id); setOplever(null); setOnderdelen(zonderPost([...new Set([...standaardOnderdelen(t), ...(h0.onderdelen || []), ...(hNu.onderdelen || [])])], opzet)); }}>{t.icoon} {t.naam}{voorstel?.reden && voorstel.id === t.id ? " ✨" : ""}</button>)}
         </div>
+        {voorstel?.reden && <p style={S.hint}>✨ {sjablonen.find(t => t.id === voorstel.id)?.naam}: {voorstel.reden}.</p>}
         {sjabloon.omschrijving && <p style={S.hint}>{sjabloon.omschrijving} · {sjabloon.stappen.length} stappen{sjabloon.geleerdVan ? ` · geleerd van ${sjabloon.geleerdVan} ${sjabloon.geleerdVan === 1 ? "project" : "projecten"}` : ""}</p>}
 
         {!vanOfferte && <>
@@ -3164,7 +3436,7 @@ function SjabloonEditor({ sjabloon, terug, sluit, bewaar }) {
   );
 }
 
-function LeerSheet({ lijst, sjabloon, sluit, toepassen }) {
+function LeerSheet({ lijst, sjabloon, sluit, toepassen, nacalculatie = null }) {
   const voorstellen = useMemo(() => (lijst && sjabloon ? berekenLeerVoorstellen(sjabloon, lijst) : []), [lijst, sjabloon]);
   const [gekozen, setGekozen] = useState(() => new Set(voorstellen.map(v => v.id)));
   const [afronden, setAfronden] = useState(!lijst?.project?.afgerond);
@@ -3210,6 +3482,7 @@ function LeerSheet({ lijst, sjabloon, sluit, toepassen }) {
             )}
           </>
         )}
+        {nacalculatie && <NacalculatieBlok n={nacalculatie} />}
         <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14, fontSize: 14 }}>
           <input type="checkbox" checked={afronden} onChange={e => setAfronden(e.target.checked)} />
           Project afronden (naar "Afgeronde projecten"){open ? ` — er staan nog ${open} open taken` : ""}

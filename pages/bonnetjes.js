@@ -1,3 +1,4 @@
+import { laadPdfjs } from "../lib/pdf-worker";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Plus, X, ChevronLeft, Search, Camera, Trash2, Calendar, ShieldCheck, ShieldAlert, ShieldX, Store } from "lucide-react";
@@ -66,8 +67,7 @@ async function comprimeerFoto(file, max = 900) {
 // nodig) en de worker komt van een CDN zodat er geen extra webpack-
 // configuratie nodig is om 'm mee te bundelen.
 async function pdfEerstePaginaNaarFoto(file, max = 1100) {
-  const pdfjsLib = await import("pdfjs-dist/build/pdf.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+  const pdfjsLib = await laadPdfjs();
 
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;

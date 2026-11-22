@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/kopieer-pdf-worker.js",
     "dev": "next dev",
+    "prebuild": "node scripts/kopieer-pdf-worker.js",
     "build": "next build",
     "start": "next start"
   },

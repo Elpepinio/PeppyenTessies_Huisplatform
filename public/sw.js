@@ -5,7 +5,7 @@
 // om te voorkomen dat gelijktijdige offline-wijzigingen van Pepijn en Tessa
 // elkaar per ongeluk overschrijven.
 
-const CACHE_NAME = "huishouden-cache-v1";
+const CACHE_NAME = "huishouden-cache-v2";
 const APP_SHELL = ["/", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -39,7 +39,9 @@ self.addEventListener("fetch", (event) => {
 
   // Next.js build-bestanden hebben een hash in de bestandsnaam en veranderen
   // dus nooit — die mogen agressief cache-first bediend worden.
-  if (url.pathname.startsWith("/_next/static/")) {
+  // De pdf.js-worker heeft de versie in de naam: ook cache-first, zodat
+  // PDF's lezen offline werkt.
+  if (url.pathname.startsWith("/_next/static/") || url.pathname.startsWith("/pdfjs/")) {
     event.respondWith(
       caches.match(request).then((cached) => {
         if (cached) return cached;
