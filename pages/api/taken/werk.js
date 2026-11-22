@@ -52,6 +52,10 @@ export default async function handler(req, res) {
       if (inkomend.callsheet && typeof inkomend.callsheet === "object") {
         volgend.callsheet = inkomend.callsheet;
       }
+      // Projectinstellingen (o.a. marge-doel: minimum en streefpercentage).
+      if (inkomend.projectInstellingen && typeof inkomend.projectInstellingen === "object") {
+        volgend.projectInstellingen = inkomend.projectInstellingen;
+      }
       // Logobibliotheek voor callsheets: kleine, in de browser verkleinde afbeeldingen.
       if (Array.isArray(inkomend.logos)) {
         volgend.logos = inkomend.logos

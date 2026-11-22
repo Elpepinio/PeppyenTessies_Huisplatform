@@ -12,7 +12,7 @@
 // (pushmelding), uitgebreide herhaling, klanten/projecten, snel invoeren in
 // gewoon Nederlands, taken via e-mail en plakken vanuit een andere app.
 // ════════════════════════════════════════════════════════════════════
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import Link from "next/link";
 import Head from "next/head";
 import { useRouter } from "next/router";
@@ -34,10 +34,15 @@ import {
   DELIVERABLE_KANALEN, FORMATEN, STANDAARD_FORMATEN, normaliseerDeliverables, deliverablesTekst,
   BUYOUT_MEDIA, BUYOUT_DUUR, buyoutSoort, standaardBuyouts, buyoutEinde,
   leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
-  draaidagenVan, zetDraaidagen, projectBegroting,
+  draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond,
   maakAanvraag, aanvraagNaarOfferte, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
 } from "../lib/projecten-logica";
-import { leesIntake } from "../lib/intake-logica";
+import { leesIntake, herkenUitOfferte } from "../lib/intake-logica";
+import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam } from "../lib/offerte-pdf-logica";
+
+// Marge-doel (standaard minimaal 20%, streven 25%), overal in de projecten nodig.
+const MargeContext = createContext({ minimum: 20, doel: 25, zet: () => {} });
+const MARGE_KLEUR = { goed: "#2D4A3E", krap: "#C97D0C", "te-laag": "#C0392B" };
 import {
   bouwCallsheet, callsheetGeheugen, samenvatting as callsheetSamenvatting, maakCallsheetWerkboek, callsheetBestandsnaam,
   datumLang,
@@ -198,6 +203,13 @@ export default function TakenApp() {
     w = { ...w, callsheet: ins };
     werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
     post("/api/taken/werk", { callsheet: ins });
+  }
+  const marge = normaliseerMarge(werk?.projectInstellingen?.marge);
+  function zetMarge(m) {
+    const pi = { ...(werkRef.current?.projectInstellingen || {}), marge: normaliseerMarge(m) };
+    const w = { ...werkRef.current, projectInstellingen: pi };
+    werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
+    post("/api/taken/werk", { projectInstellingen: pi });
   }
   function bewaarCallsheetInstellingen(velden) {
     const ins = { ...(werkRef.current?.callsheet || {}), ...velden };
@@ -502,6 +514,7 @@ export default function TakenApp() {
   const detailTaak = detailLijst?.items?.find(i => i.id === detail.itemId);
 
   return (
+    <MargeContext.Provider value={{ ...marge, zet: zetMarge }}>
     <div style={S.app}>
       <Head><title>Taken — Ons Huishouden</title></Head>
 
@@ -566,6 +579,7 @@ export default function TakenApp() {
             zetDagen={(dagen) => { wijzigLijst(weergave.ruimte, lijst.id, l => zetDraaidagen(l, dagen, { nieuwId: uid, wie: ik })); meld("🎬 Draaidagen bijgewerkt"); }}
             openCallsheet={(dagId) => setSheet({ soort: "callsheet", listId: lijst.id, dagId })}
             openOfferteVanAanvraag={() => setSheet({ soort: "offerteVanAanvraag", listId: lijst.id })}
+            meld={meld}
             zetOpzet={(opzet) => {
               const wasExtern = lijst.project?.opzet?.postDoorOns === false;
               wijzigLijst(weergave.ruimte, lijst.id, l => pasOpzetToe(l, opzet, { vandaag, wie: ik, nieuwId: uid }));
@@ -652,7 +666,8 @@ export default function TakenApp() {
         return (
           <OfferteSheet {...{ klanten, vandaag }} vanAanvraag={lijst} nieuweKlant={maakKlant} sluit={() => setSheet(null)}
             maak={(opties) => {
-              const nieuw = aanvraagNaarOfferte(lijstVan("werk", lijst.id), { ...opties, vandaag, wie: ik, nieuwId: uid });
+              const basisNieuw = aanvraagNaarOfferte(lijstVan("werk", lijst.id), { ...opties, vandaag, wie: ik, nieuwId: uid });
+              const nieuw = opties.specificatie ? { ...basisNieuw, project: { ...basisNieuw.project, offerte: { ...basisNieuw.project.offerte, specificatie: opties.specificatie, werkelijk: {} } } } : basisNieuw;
               zetLijst("werk", nieuw);
               setSheet(null);
               const nav = nieuw.items.find(i => i.offerteNavraag);
@@ -664,7 +679,8 @@ export default function TakenApp() {
         <OfferteSheet {...{ klanten, vandaag }} nieuweKlant={maakKlant} sluit={() => setSheet(null)}
           maak={(opties) => {
             const basis = maakOfferte({ ...opties, vandaag, wie: ik, nieuwId: uid });
-            const lijst = { ...basis, project: { ...basis.project, deliverables: normaliseerDeliverables(opties.deliverables) } };
+            const lijst = { ...basis, project: { ...basis.project, deliverables: normaliseerDeliverables(opties.deliverables),
+              ...(opties.specificatie ? { offerte: { ...basis.project.offerte, specificatie: opties.specificatie, werkelijk: {} } } : {}) } };
             zetLijst("werk", lijst);
             setSheet(null);
             meld(`📨 Offerte vastgelegd — eerste navraag ${datumKort(lijst.items[0].dueDate)} om ${lijst.items[0].herinnering.slice(11)}`);
@@ -799,6 +815,7 @@ export default function TakenApp() {
         </div>
       )}
     </div>
+    </MargeContext.Provider>
   );
 }
 
@@ -924,7 +941,7 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                       <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 2 }}>
                         {klant && <span style={{ color: klant.kleur || C.groen, fontWeight: 700 }}>● {klant.naam} · </span>}
                         verstuurd {dagen === 0 ? "vandaag" : `${dagen} ${dagen === 1 ? "dag" : "dagen"} geleden`}
-                        {o.bedrag ? ` · € ${Number(o.bedrag).toLocaleString("nl-NL")}` : ""}
+                        {o.bedrag ? ` · ${euro(o.bedrag)}` : ""}
                         {navraag ? ` · navragen ${datumKort(navraag.dueDate).toLowerCase()}` : ""}
                       </span>
                     </button>
@@ -1279,7 +1296,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet }) {
+function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld }) {
   const [menu, setMenu] = useState(false);
   const isAanvraag = projectStatus(lijst) === "aanvraag";
   const isOfferte = projectStatus(lijst) === "offerte" || isAanvraag;
@@ -1331,9 +1348,9 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
             {lijst.mailInbox && <p style={S.hint}>📥 Hier komen taken binnen die je naar je taken-e-mailadres stuurt.</p>}
           </div>
         )}
-        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet }} />}
+        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld }} />}
         {isAanvraag && <AanvraagKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag }} />}
-        {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd }} />}
+        {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld }} />}
         {ruimte === "werk" && !isProject && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
         {isProject && open.length > 0 ? (
           [...FASES, { id: "__overig", label: "Overig", icon: "📌" }].map(f => {
@@ -1375,7 +1392,7 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
 }
 
 // Projectkop: klant, draaidag, oplevering, voortgang per fase en "leren".
-function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet }) {
+function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld }) {
   const p = lijst.project;
   const vg = projectVoortgang(lijst);
   const klant = klantVan(p.klantId);
@@ -1444,6 +1461,7 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
         );
       })()}
       {bezettingOpen && <BezettingOverzicht lijst={lijst} />}
+      <SpecificatieBlok lijst={lijst} klantNaam={klant?.naam} zetProject={zetProject} meld={meld} />
       <BegrotingBlok lijst={lijst} zetProject={zetProject} />
       {p.intake?.tekst && <IntakeBlok intake={p.intake} zetTekst={(tekst) => zetProject({ intake: { ...p.intake, tekst } })} />}
       {projectStatus(lijst) === "lopend" && !lijst.project.afgerond && (
@@ -1506,7 +1524,9 @@ function BegrotingBlok({ lijst, zetProject }) {
       </button>
     );
   }
-  const kleur = b.overschreden ? C.rood : b.marge != null && b.margePct < 15 ? C.oranje : C.groen;
+  const md = useContext(MargeContext);
+  const status = b.overschreden ? "te-laag" : margeStatus(b.margePct, md);
+  const kleur = status ? MARGE_KLEUR[status] : C.groen;
   const posten = p.kostenposten || [];
   const zetPosten = (next) => zetProject({ kostenposten: next });
   return (
@@ -1518,6 +1538,7 @@ function BegrotingBlok({ lijst, zetProject }) {
         <ChevronDown size={15} color={C.licht} style={{ transform: open ? "none" : "rotate(-90deg)" }} />
       </button>
       {b.overschreden && !open && <p style={{ ...S.hint, color: C.rood, fontWeight: 700 }}>⚠️ De kosten (incl. opties) zijn hoger dan de offerte.</p>}
+      {!b.overschreden && status === "te-laag" && !open && <p style={{ ...S.hint, color: C.rood, fontWeight: 700 }}>⚠️ Marge {b.margePct}% — onder je minimum van {md.minimum}%.</p>}
       {open && (
         <div style={{ marginTop: 8, background: C.bg, borderRadius: 12, padding: 10 }}>
           {p.offerte?.bedrag != null ? (
@@ -1549,6 +1570,13 @@ function BegrotingBlok({ lijst, zetProject }) {
             {b.buyouts > 0 && <div style={{ display: "flex", color: C.muted }}><span style={{ flex: 1 }}>waarvan buy-outs</span>{euro(b.buyouts)}</div>}
             {b.offerte != null && <div style={{ display: "flex", color: kleur, fontWeight: 700 }}><span style={{ flex: 1 }}>{b.overschreden ? "Over budget" : "Marge"}</span>{euro(Math.abs(b.marge))} ({b.margePct}%)</div>}
           </div>
+          {b.offerte != null && (
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 6, lineHeight: 1.6 }}>
+              <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Max. kosten voor {md.minimum}% marge</span><span>{euro(kostenPlafond(b.offerte, md.minimum))}{b.inclOpties <= kostenPlafond(b.offerte, md.minimum) ? ` · nog ${euro(kostenPlafond(b.offerte, md.minimum) - b.inclOpties)} ruimte` : ""}</span></div>
+              <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Max. kosten voor {md.doel}% marge</span><span>{euro(kostenPlafond(b.offerte, md.doel))}</span></div>
+            </div>
+          )}
+          <MargeDoelInstelling />
           {b.zonderPrijs > 0 && <p style={{ ...S.hint, color: C.oranje }}>{b.zonderPrijs} {b.zonderPrijs === 1 ? "naam heeft" : "namen hebben"} nog geen prijs — die tellen nog niet mee.</p>}
           <p style={S.hint}>Dagprijzen tellen × {b.draaidagen} {b.draaidagen === 1 ? "draaidag" : "draaidagen"}, tenzij je bij de naam een ander aantal invult.</p>
         </div>
@@ -2017,6 +2045,179 @@ function OpzetRegel({ p, zetOpzet }) {
         <ChevronDown size={14} color={C.licht} style={{ transform: open ? "none" : "rotate(-90deg)" }} />
       </button>
       {open && <OpzetKiezer opzet={{ ...o, draaidagen: draaidagenVan(p).length || 1 }} zet={(v) => zetOpzet(v)} />}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// OFFERTE-PDF — inlezen (op het toestel zelf, via pdf.js) en omzetten naar
+// een kostenoverzicht in Excel: begroot tegenover werkelijk per post.
+// ════════════════════════════════════════════════════════════════════
+async function leesOffertePdfBestand(file) {
+  const pdfjsLib = await import("pdfjs-dist/build/pdf.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const paginas = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const tc = await (await pdf.getPage(n)).getTextContent();
+    paginas.push(tc.items.filter(i => i.str !== undefined).map(i => ({ str: i.str, x: i.transform[4], y: i.transform[5], w: i.width })));
+  }
+  return leesOfferte(regelsUitOffertePdf(paginas));
+}
+async function deelOfDownload(buf, naam, { delen = false, meld } = {}) {
+  const type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const file = typeof File !== "undefined" ? new File([buf], naam, { type }) : null;
+  if (delen && file && navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: naam.replace(/\.xlsx$/, "").replace(/_/g, " ") }); } catch (e) { if (e?.name !== "AbortError") throw e; }
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([buf], { type }));
+  const a = document.createElement("a");
+  a.href = url; a.download = naam; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  meld?.("⬇︎ Excel gedownload");
+}
+async function downloadKostenoverzicht(spec, werkelijk, { projectNaam, klantNaam, delen, meld, marge }) {
+  try {
+    const ExcelJS = (await import("exceljs")).default;
+    const wb = maakKostenWerkboek(spec, ExcelJS, { projectNaam, klantNaam, werkelijk: werkelijk || {}, marge: marge ? { minimum: marge.minimum, doel: marge.doel } : undefined });
+    await deelOfDownload(await wb.xlsx.writeBuffer(), kostenBestandsnaam(spec, projectNaam), { delen, meld });
+  } catch (e) { console.error(e); meld?.("⚠️ Excel maken mislukt"); }
+}
+
+function OffertePdfKnop({ onGelezen, label = "📄 Offerte-PDF inlezen", stijl = {} }) {
+  const ref = useRef(null);
+  const [bezig, setBezig] = useState(false);
+  const [fout, setFout] = useState(null);
+  async function kies(file) {
+    if (!file) return;
+    setBezig(true); setFout(null);
+    try {
+      const o = await leesOffertePdfBestand(file);
+      if (!o.aantalPosten) throw new Error("geen posten");
+      onGelezen(o, file.name);
+    } catch (e) {
+      console.error(e);
+      setFout(e?.message === "geen posten" ? "Geen kostenposten gevonden in deze PDF (staat er een specificatie in met aantal, prijs en totaal?)." : "Deze PDF kon niet worden gelezen.");
+    } finally { setBezig(false); }
+  }
+  return (
+    <div>
+      <button type="button" disabled={bezig} onClick={() => ref.current?.click()} style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, width: "100%", ...stijl }}>
+        {bezig ? "PDF lezen…" : label}
+      </button>
+      <input ref={ref} type="file" accept="application/pdf,.pdf" aria-label="Offerte-PDF" style={{ display: "none" }} onChange={e => { kies(e.target.files?.[0]); e.target.value = ""; }} />
+      {fout && <p style={{ ...S.hint, color: C.rood }}>{fout}</p>}
+    </div>
+  );
+}
+
+function SpecificatieSamenvatting({ spec }) {
+  return (
+    <p style={{ ...S.hint, color: spec.klopt ? C.groen : C.oranje }}>
+      ✓ {spec.nummer ? `Offerte ${spec.nummer} · ` : ""}{spec.kopjes.reduce((n, k) => n + k.posten.length, 0)} posten in {spec.kopjes.length} kopjes · {euro(spec.totaal)}
+      {spec.klopt ? " — komt overeen met de PDF" : ` — let op: de posten tellen op tot ${euro(spec.somKopjes)}`}
+    </p>
+  );
+}
+
+// In de offerte- en projectkop: specificatie bekijken, werkelijke kosten
+// per post invullen en het kostenoverzicht als Excel downloaden/delen.
+function SpecificatieBlok({ lijst, klantNaam, zetProject, meld }) {
+  const p = lijst.project;
+  const o = p.offerte || {};
+  const spec = o.specificatie;
+  const [open, setOpen] = useState(false);
+  const [kopOpen, setKopOpen] = useState(null);
+  const kanDelen = typeof navigator !== "undefined" && !!navigator.canShare;
+  const zetSpec = (nieuw) => {
+    zetProject({ offerte: { ...(lijst.project.offerte || {}), specificatie: compacteSpecificatie(nieuw), werkelijk: {}, ...(o.bedrag == null ? { bedrag: nieuw.totaal } : {}) } });
+    meld?.(`📄 ${nieuw.aantalPosten} posten ingelezen — ${euro(nieuw.totaal)}`);
+  };
+  if (!spec) return <div style={{ marginTop: 10 }}><OffertePdfKnop onGelezen={zetSpec} /></div>;
+  const st = specificatieStand(spec, o.werkelijk || {});
+  const zetWerkelijk = (sleutel, bedrag) => {
+    const w = { ...(lijst.project.offerte?.werkelijk || {}) };
+    if (bedrag == null) delete w[sleutel]; else w[sleutel] = bedrag;
+    zetProject({ offerte: { ...(lijst.project.offerte || {}), werkelijk: w } });
+  };
+  const md = useContext(MargeContext);
+  const status = margeStatus(st.margeIngevuldPct, md);
+  const kleur = status ? MARGE_KLEUR[status] : C.groen;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={() => setOpen(!open)} style={{ ...S.rij, padding: "4px 0", borderBottom: "none" }} aria-label="Offerte-specificatie">
+        <span style={{ fontSize: 13, flex: 1 }}>
+          📄 <strong>Offerte{spec.nummer ? ` ${spec.nummer}` : ""}</strong> · {st.posten} posten · {euro(st.begroot)}
+          {st.ingevuld > 0 && <span style={{ color: kleur, fontWeight: 700 }}> · marge {String(st.margeIngevuldPct).replace(".", ",")}% op {st.ingevuld} {st.ingevuld === 1 ? "post" : "posten"}</span>}
+        </span>
+        <ChevronDown size={15} color={C.licht} style={{ transform: open ? "none" : "rotate(-90deg)" }} />
+      </button>
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        <button style={{ ...S.knop(), flex: 1, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, o.werkelijk, { projectNaam: lijst.name, klantNaam, meld, marge: md })}>⬇︎ Kostenoverzicht (Excel)</button>
+        {kanDelen && <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, padding: "8px 10px", fontSize: 13 }} onClick={() => downloadKostenoverzicht(spec, o.werkelijk, { projectNaam: lijst.name, klantNaam, delen: true, meld, marge: md })}>📤 Delen</button>}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8, background: C.bg, borderRadius: 12, padding: 10 }}>
+          <div style={{ display: "flex", fontSize: 11, color: C.muted, fontWeight: 700, padding: "0 0 4px" }}>
+            <span style={{ flex: 1 }}>KOPJE</span><span style={{ width: 84, textAlign: "right" }}>BEGROOT</span><span style={{ width: 84, textAlign: "right" }}>WERKELIJK</span>
+          </div>
+          {st.kopjes.map((k, ki) => (
+            <div key={ki} style={{ borderTop: `1px solid ${C.rand}` }}>
+              <button onClick={() => setKopOpen(kopOpen === ki ? null : ki)} style={{ ...S.rij, padding: "7px 0", borderBottom: "none", gap: 0 }}>
+                <span style={{ flex: 1, fontSize: 13, fontWeight: 700, minWidth: 0 }}>{k.naam}{k.ingevuld > 0 && <span style={{ fontWeight: 400, color: C.muted }}> · {k.ingevuld}/{k.posten.length}</span>}</span>
+                <span style={{ width: 84, textAlign: "right", fontSize: 13 }}>{euro(k.begroot)}</span>
+                <span style={{ width: 84, textAlign: "right", fontSize: 13, color: k.verschil == null ? C.licht : k.verschil < 0 ? C.rood : C.groen }}>{k.werkelijk == null ? "—" : euro(k.werkelijk)}</span>
+              </button>
+              {kopOpen === ki && k.posten.map(pp => (
+                <SpecPostRegel key={pp.sleutel} post={pp} zet={(b) => zetWerkelijk(pp.sleutel, b)} />
+              ))}
+            </div>
+          ))}
+          <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.7, borderTop: `1px solid ${C.rand2}`, paddingTop: 6 }}>
+            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Werkelijk ingevuld ({st.ingevuld}/{st.posten})</span><strong>{euro(st.werkelijk)}</strong></div>
+            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Verschil op ingevulde posten</span><strong style={{ color: st.verschil < 0 ? C.rood : C.groen }}>{euro(st.verschil)}</strong></div>
+            {st.margeIngevuldPct != null && <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Marge op ingevulde posten (doel ≥ {md.doel}%, min. {md.minimum}%)</span><strong style={{ color: kleur }}>{String(st.margeIngevuldPct).replace(".", ",")}%</strong></div>}
+            <div style={{ display: "flex" }}><span style={{ flex: 1 }}>Verwachte eindkosten</span><strong>{euro(st.prognose)}</strong></div>
+          </div>
+          <p style={S.hint}>Tik op een kopje om per post de werkelijke kosten in te vullen. Ze komen ook in de Excel.</p>
+          <OffertePdfKnop label="📄 Andere PDF inlezen" stijl={{ marginTop: 8, padding: "7px 10px", fontSize: 13 }}
+            onGelezen={(nieuw) => { if (!Object.keys(o.werkelijk || {}).length || window.confirm("De ingevulde werkelijke kosten worden gewist. Doorgaan?")) zetSpec(nieuw); }} />
+        </div>
+      )}
+    </div>
+  );
+}
+function MargeDoelInstelling() {
+  const md = useContext(MargeContext);
+  const [open, setOpen] = useState(false);
+  const [min, setMin] = useState(String(md.minimum));
+  const [doel, setDoel] = useState(String(md.doel));
+  if (!open) {
+    return <button onClick={() => { setMin(String(md.minimum)); setDoel(String(md.doel)); setOpen(true); }} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, padding: "6px 0 0", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>🎯 Marge-doel: minimaal {md.minimum}%, streven {md.doel}% — wijzigen</button>;
+  }
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 8, fontSize: 13 }}>
+      🎯 Minimaal <input value={min} inputMode="numeric" aria-label="Minimale marge" onChange={e => setMin(e.target.value)} style={{ ...S.inp, width: 52, padding: "5px 6px", fontSize: 13 }} />%
+      streven <input value={doel} inputMode="numeric" aria-label="Streefmarge" onChange={e => setDoel(e.target.value)} style={{ ...S.inp, width: 52, padding: "5px 6px", fontSize: 13 }} />%
+      <button style={{ ...S.knop(), padding: "6px 10px", fontSize: 12 }} onClick={() => { md.zet({ minimum: Number(min) || 0, doel: Number(doel) || 0 }); setOpen(false); }}>Bewaar</button>
+    </div>
+  );
+}
+function SpecPostRegel({ post, zet }) {
+  const [w, setW] = useState(post.werkelijk != null ? String(post.werkelijk).replace(".", ",") : "");
+  useEffect(() => setW(post.werkelijk != null ? String(post.werkelijk).replace(".", ",") : ""), [post.sleutel]);
+  const verschil = post.werkelijk != null ? post.totaal - post.werkelijk : null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0 4px 10px", fontSize: 12 }}>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        {post.naam}
+        <span style={{ display: "block", color: C.muted, fontSize: 11 }}>{post.aantal} {post.eenheid} × {euro(post.prijs)}{verschil ? ` · ${verschil > 0 ? "−" : "+"}${euro(Math.abs(verschil))}` : ""}</span>
+      </span>
+      <span style={{ width: 74, textAlign: "right" }}>{euro(post.totaal)}</span>
+      <input value={w} inputMode="decimal" placeholder="€" aria-label={`Werkelijk ${post.naam}`} onChange={e => setW(e.target.value)}
+        onBlur={() => { const b = w.trim() === "" ? null : leesBedragInvoer(w); if (b !== post.werkelijk) zet(b); }}
+        style={{ ...S.inp, padding: "5px 6px", fontSize: 13, width: 84, textAlign: "right", background: "#FFF8DC" }} />
     </div>
   );
 }
@@ -2532,7 +2733,7 @@ function ImportSheet({ thuisLijsten, werkLijsten, werkStaat, chronoRef, sluit, i
 // ════════════════════════════════════════════════════════════════════
 // Offerte in de lijstweergave: status, bedrag, wanneer de volgende navraag
 // komt, en de knoppen Akkoord / Nagevraagd / Afgewezen.
-function OfferteKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd }) {
+function OfferteKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld }) {
   const o = lijst.project.offerte || {};
   const dagen = o.verstuurdOp ? dagenTussen(o.verstuurdOp, vandaagStr()) : 0;
   const navraag = (lijst.items || []).find(i => i.offerteNavraag && !i.checked);
@@ -2542,11 +2743,12 @@ function OfferteKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfw
       <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: C.oranje, letterSpacing: "0.04em" }}>📨 OFFERTE — WACHT OP AKKOORD</p>
       <p style={{ margin: "6px 0 0", fontSize: 14 }}>
         Verstuurd {datumKort(o.verstuurdOp).toLowerCase()} ({dagen} {dagen === 1 ? "dag" : "dagen"} geleden)
-        {o.bedrag ? ` · € ${Number(o.bedrag).toLocaleString("nl-NL")}` : ""}
+        {o.bedrag ? ` · ${euro(o.bedrag)}` : ""}
         {o.keerNagevraagd ? ` · ${o.keerNagevraagd}× nagevraagd` : ""}
       </p>
       {lijst.project.deliverables && deliverablesTekst(lijst.project.deliverables) && <p style={{ margin: "6px 0 0", fontSize: 13 }}>📦 {deliverablesTekst(lijst.project.deliverables)}</p>}
       {lijst.project.intake?.tekst && <IntakeBlok intake={lijst.project.intake} zetTekst={(tekst) => zetProject({ intake: { ...lijst.project.intake, tekst } })} />}
+      <SpecificatieBlok lijst={lijst} klantNaam={klant?.naam} zetProject={zetProject} meld={meld} />
       {navraag && <p style={{ ...S.hint, marginTop: 4 }}>🔔 Volgende navraag: {herinneringKort(navraag.herinnering) || datumKort(navraag.dueDate)} — en daarna {herhalingLabel(navraag.herhaling).toLowerCase()}, tot je op Akkoord of Afgewezen tikt.</p>}
       <select value={lijst.project.klantId || ""} onChange={e => zetProject({ klantId: e.target.value || null })} aria-label="Klant"
         style={{ ...S.inp, width: "auto", padding: "6px 10px", fontSize: 13, marginTop: 10, color: klant?.kleur || C.tekst, fontWeight: 700 }}>
@@ -2572,6 +2774,15 @@ function OfferteSheet({ klanten, vandaag, nieuweKlant, sluit, maak, vanAanvraag 
   const [tijd, setTijd] = useState("10:00");
   const [notitie, setNotitie] = useState("");
   const [deliverables, setDeliverables] = useState(() => normaliseerDeliverables(vanAanvraag?.project?.deliverables || {}));
+  const [spec, setSpec] = useState(null);
+  function pdfGelezen(o) {
+    setSpec(o);
+    if (!naam.trim() && o.betreft) setNaam(korteProjectnaam(o.betreft));
+    if (o.totaal != null) setBedrag(o.totaal.toLocaleString("nl-NL", { minimumFractionDigits: o.totaal % 1 ? 2 : 0, maximumFractionDigits: 2 }));
+    const h = herkenUitOfferte(o, { vandaag, klanten });
+    if (h.klantId && !klantId) setKlantId(h.klantId);
+    if (Object.keys(h.deliverables || {}).length) setDeliverables(d => normaliseerDeliverables({ ...h.deliverables, ...Object.fromEntries(Object.entries(d).filter(([, v]) => (Array.isArray(v) ? v.length : v))) }));
+  }
   const bedragGetal = bedrag ? Number(String(bedrag).replace(/\./g, "").replace(",", ".")) : null;
   const eerste = plusDagen(verstuurdOp || vandaag, 7 * weken);
   const kan = naam.trim() && verstuurdOp && (bedrag === "" || Number.isFinite(bedragGetal));
@@ -2581,6 +2792,10 @@ function OfferteSheet({ klanten, vandaag, nieuweKlant, sluit, maak, vanAanvraag 
         <SheetKop titel="Offerte verstuurd" sluit={sluit} />
         <p style={{ ...S.hint, marginTop: 0 }}>De app vraagt je elke week om na te vragen hoe het ervoor staat. Bij akkoord start je met één tik de productie vanuit een sjabloon.</p>
         {vanAanvraag?.project?.budget != null && <p style={S.hint}>💶 Budget uit het eerste gesprek: € {Number(vanAanvraag.project.budget).toLocaleString("nl-NL")}</p>}
+        <div style={{ marginTop: 10 }}>
+          <OffertePdfKnop onGelezen={pdfGelezen} label={spec ? "📄 Andere offerte-PDF kiezen" : "📄 Offerte-PDF inlezen (vult bedrag en posten in)"} />
+          {spec && <SpecificatieSamenvatting spec={spec} />}
+        </div>
         <p style={S.label}>Project / offerte</p>
         <input style={S.inp} autoFocus placeholder="Bijv. Häcker voorjaarscampagne" value={naam} onChange={e => setNaam(e.target.value)} />
         <p style={S.label}><Tag size={14} /> Klant</p>
@@ -2611,7 +2826,7 @@ function OfferteSheet({ klanten, vandaag, nieuweKlant, sluit, maak, vanAanvraag 
         <DeliverablesKiezer waarde={deliverables} zet={setDeliverables} />
         <p style={S.label}>Notitie (optioneel)</p>
         <textarea rows={2} style={{ ...S.inp, fontSize: 14 }} placeholder="Contactpersoon, wat je hebt afgesproken…" value={notitie} onChange={e => setNotitie(e.target.value)} />
-        <button disabled={!kan} onClick={() => maak({ naam: naam.trim(), klantId: klantId || null, verstuurdOp, bedrag: bedragGetal, weken, tijd, notitie: notitie.trim(), deliverables })}
+        <button disabled={!kan} onClick={() => maak({ naam: naam.trim(), klantId: klantId || null, verstuurdOp, bedrag: bedragGetal, weken, tijd, notitie: notitie.trim(), deliverables, specificatie: spec ? compacteSpecificatie(spec) : null })}
           style={{ ...S.knop(), width: "100%", marginTop: 16, opacity: kan ? 1 : 0.5 }}>📨 Offerte vastleggen</button>
       </div>
     </div>
@@ -2642,7 +2857,24 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
   // Wat er in het eerste gesprek is herkend, wordt vooraf ingevuld.
   const [intakeTekst, setIntakeTekst] = useState(vanOfferte?.project?.intake?.tekst || "");
   const [intakeOpen, setIntakeOpen] = useState(false);
-  const h0 = useMemo(() => leesIntake(vanOfferte?.project?.intake?.tekst || "", { vandaag, klanten }), []);
+  const h0 = useMemo(() => {
+    const hi = leesIntake(vanOfferte?.project?.intake?.tekst || "", { vandaag, klanten });
+    const spec = vanOfferte?.project?.offerte?.specificatie;
+    if (!spec) return hi;
+    // De offerte is concreter dan het eerste gesprek: aantal draaidagen,
+    // deliverables, onderdelen en post komen daaruit; datums en prelight
+    // uit het gesprek.
+    const ho = herkenUitOfferte(spec, { vandaag, klanten });
+    return {
+      ...hi,
+      draaidagen: ho.draaidagen || hi.draaidagen,
+      deliverables: Object.keys(ho.deliverables || {}).length ? ho.deliverables : hi.deliverables,
+      onderdelen: [...new Set([...(ho.onderdelen || []), ...(hi.onderdelen || [])])],
+      postDoorOns: ho.postDoorOns ?? hi.postDoorOns,
+      prelight: hi.prelight || ho.prelight,
+      herkend: [...hi.herkend, ...ho.herkend],
+    };
+  }, []);
   const [draaidag, setDraaidag] = useState(h0.draaidag && h0.draaidag >= vandaag ? h0.draaidag : plusDagen(vandaag, 21));
   const [oplever, setOplever] = useState(h0.opleverdatum || null); // null = automatisch (draaidag + doorlooptijd)
   const [verledenNaarVandaag, setVerledenNaarVandaag] = useState(true);
@@ -2714,7 +2946,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
           </label>
         </div>
         {opleverdatum && draaidag && opleverdatum < draaidag && <p style={{ ...S.hint, color: C.rood }}>De oplevering ligt vóór de draaidag.</p>}
-        {h0.herkend.length > 0 && <p style={{ ...S.hint, color: C.groen }}>✨ Ingevuld uit het eerste gesprek — controleer even of het klopt.</p>}
+        {h0.herkend.length > 0 && <p style={{ ...S.hint, color: C.groen }}>✨ Ingevuld uit het eerste gesprek{vanOfferte?.project?.offerte?.specificatie ? " en de offerte" : ""} — controleer even of het klopt.</p>}
 
         {!vanOfferte?.project?.intake?.tekst && (
           <div style={{ marginTop: 12 }}>
