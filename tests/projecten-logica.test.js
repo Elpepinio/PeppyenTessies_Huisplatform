@@ -186,8 +186,9 @@ test("weer aanzetten → sjabloonstap komt terug als nieuwe taak, niet meer 'uit
 })());
 
 sectie("Onderdelen — standaardkeuze en leren");
-test("standaardsjabloon heeft eigen standaardkeuze", P.standaardOnderdelen(klein).join() === "kickoff,callsheets,snacks,crew-camera-assistent,crew-geluid,loc-interieur");
-test("vorige keuze bij dit sjabloon gaat vóór (zelflerend)", P.standaardOnderdelen({ ...groot, laatsteOnderdelen: ["hotel"] }).join() === "hotel");
+test("standaardsjabloon heeft eigen standaardkeuze", P.standaardOnderdelen(klein).join() === "kickoff,callsheets,snacks,crew-camera-assistent,crew-geluid,loc-interieur,edit-v1,edit-v2,kleurcorrectie,afmixen");
+test("vorige keuze bij dit sjabloon gaat vóór (zelflerend)", P.standaardOnderdelen({ ...groot, laatsteOnderdelen: ["hotel"], onderdelenBekend: P.ONDERDELEN.flatMap(g => g.items.map(i => i.id)) }).join() === "hotel");
+test("oude opgeslagen keuze (zonder postproductie): nieuwe onderdelen volgen de sjabloonstandaard", (() => { const r = P.standaardOnderdelen({ ...groot, laatsteOnderdelen: ["hotel"] }); return r[0] === "hotel" && r.includes("grading") && r.includes("edit-lock") && !r.includes("kickoff"); })());
 test("eigen sjabloon zonder keuze: afgeleid uit de stappen + kickoff/PPM", P.standaardOnderdelen({ stappen: [{ tekst: "Productieverzekering afsluiten" }] }).join() === "kickoff,ppm,verzekering");
 test("PPM standaard 5 dagen vóór draaidag, kickoff over 2 dagen", (() => { const m = P.standaardMeetings({ draaidag: "2027-01-20", vandaag: "2026-11-22" }); return m.ppm.datum === "2027-01-15" && m.kickoff.datum === "2026-11-24"; })());
 test("deadline in het verleden → vandaag", P.pasOnderdelenToe(P.maakProjectUitSjabloon(klein, { naam: "x", draaidag: "2026-11-28", vandaag: "2026-11-22", nieuwId }), ["hotel"], { draaidag: "2026-11-28", vandaag: "2026-11-22", nieuwId }).items.find(i => i.onderdeelId === "hotel").dueDate === "2026-11-22");
@@ -203,6 +204,7 @@ test("geen namen bij meetings en documenten", ["kickoff", "ppm", "ppm-document",
 
 sectie("Bezetting — namen, status en prijsafspraken");
 test("bedrag-invoer: 1.250,50 / 450 / leeg", P.leesBedragInvoer("1.250,50") === 1250.5 && P.leesBedragInvoer("€ 450") === 450 && P.leesBedragInvoer("") === null);
+test("bedrag-invoer: 1.500 en 12.000 zijn duizendtallen, 12.5 blijft decimaal", P.leesBedragInvoer("1.500") === 1500 && P.leesBedragInvoer("12.000") === 12000 && P.leesBedragInvoer("12.5") === 12.5 && P.leesBedragInvoer("1.234.567") === 1234567);
 const crewItem = { onderdeelId: "crew", substappen: [{ id: "s1", tekst: "Camera", rolId: "crew-camera", afgevinkt: false }, { id: "s2", tekst: "Gripper", rolId: "crew-gripper", afgevinkt: true }, { id: "s3", tekst: "Eigen stap", afgevinkt: false }],
   bezetting: [
     { id: "b1", onderdeelId: "crew-camera", naam: "Sanne", status: "bevestigd", bedrag: 450, eenheid: "dag" },
@@ -231,5 +233,45 @@ const sug = P.contactSuggesties(boek, "crew-camera", "");
 test("suggesties: eerst wie deze rol eerder deed, met laatste prijs", sug[0].naam === "Sanne de Vries" && sug[0].zelfdeRol && sug[0].laatstePrijs.bedrag === 500);
 test("suggesties filteren op getypte tekst", P.contactSuggesties(boek, "crew-camera", "noord").map(c => c.naam).join() === "Studio Noord");
 test("lege naam wordt niet onthouden", P.onthoudContact(boek, { naam: "  " }, { nieuwId }).contacten.length === boek.length);
+
+sectie("Postproductie-onderdelen");
+const postP = P.pasOnderdelenToe(P.maakProjectUitSjabloon(klein, { naam: "Post", draaidag: "2027-01-20", opleverdatum: "2027-02-10", vandaag: "2026-11-22", nieuwId }),
+  ["edit-v1", "edit-v2", "kleurcorrectie", "afmixen", "animatie", "muziek-componeren"], { draaidag: "2027-01-20", vandaag: "2026-11-22", nieuwId });
+const po = (id) => postP.items.filter(i => i.onderdeelId === id);
+test("edit v1 koppelt aan 'Eerste montage'", po("edit-v1")[0].sjabloonStapId === "k-montage");
+test("edit v2 koppelt aan 'Feedback verwerken', NIET aan 'V1 doorsturen … voor feedback'", po("edit-v2")[0].sjabloonStapId === "k-feedback");
+test("kleurcorrectie koppelt aan bestaande stap", po("kleurcorrectie")[0].sjabloonStapId === "k-kleur");
+test("animatie: nieuwe post-taak, deadline t.o.v. oplevering", po("animatie")[0].category === "post" && po("animatie")[0].anker === "oplever" && po("animatie")[0].dueDate === "2027-02-04");
+test("muziek componeren 14 dagen vóór oplevering", po("muziek-componeren")[0].dueDate === "2027-01-27");
+test("afmixen wordt eigen taak (klein sjabloon combineerde het met kleur)", po("afmixen").length === 1 && !po("afmixen")[0].sjabloonStapId);
+test("oplevering verschuiven schuift post-onderdelen mee", P.verschuifProject(postP, { opleverdatum: "2027-02-17" }).items.find(i => i.onderdeelId === "animatie").dueDate === "2027-02-11");
+test("groot: edit lock en grading koppelen aan sjabloon", (() => { const g = P.pasOnderdelenToe(basisP, ["edit-lock", "grading", "muziek-stock", "edit-v2"], ctxO); const f = (id) => g.items.find(i => i.onderdeelId === id)?.sjabloonStapId; return f("edit-lock") === "g-lock" && f("grading") === "g-grading" && f("muziek-stock") === "g-muziek" && f("edit-v2") === "g-feedback2"; })());
+
+sectie("Deliverables — door het hele proces");
+const del = { tvc: ["16x9"], online: ["9x16", "16x9", "rommel"], "online-paid": [], fotografie: true };
+test("normaliseren: volgorde formaten, ongeldige en lege weg", JSON.stringify(P.normaliseerDeliverables(del)) === JSON.stringify({ fotografie: true, tvc: ["16x9"], online: ["16x9", "9x16"] }));
+test("regels per kanaal × formaat + fotografie", P.deliverableRegels(del).map(r => r.tekst).join("|") === "TVC — 16x9|Online — 16x9|Online — 9x16|Fotografie — selectie + retouche");
+test("korte tekst voor de projectkop", P.deliverablesTekst(del) === "TVC 16x9 · Online 16x9/9x16 · Fotografie");
+const metDel = P.pasOnderdelenToe(P.maakProjectUitSjabloon(klein, { naam: "D", draaidag: "2027-01-20", opleverdatum: "2027-02-10", vandaag: "2026-11-22", nieuwId }), [], { vandaag: "2026-11-22", deliverables: del, nieuwId });
+const opl = metDel.items.find(i => i.onderdeelId === "deliverables");
+test("opleverstap uit het sjabloon wordt de deliverables-checklist", opl.sjabloonStapId === "k-oplever" && opl.substappen.filter(s => s.delivId).length === 4);
+test("deliverables bij het project bewaard", metDel.project.deliverables.tvc[0] === "16x9");
+const opl2 = P.pasOnderdelenToe({ ...metDel, items: metDel.items.map(i => (i.onderdeelId === "deliverables" ? { ...i, substappen: i.substappen.map(s => (s.delivId === "tvc-16x9" ? { ...s, afgevinkt: true } : s)) } : i)) },
+  [], { vandaag: "2026-11-22", deliverables: { tvc: ["16x9"], "online-paid": ["4x5"] }, nieuwId }).items.find(i => i.onderdeelId === "deliverables");
+test("deliverables wijzigen: vinkje blijft, weggehaald formaat weg, nieuw formaat erbij", opl2.substappen.filter(s => s.delivId).map(s => `${s.delivId}:${s.afgevinkt}`).join() === "tvc-16x9:true,online-paid-4x5:false");
+test("zonder opleverstap in sjabloon: nieuwe taak op de opleverdag", (() => { const t = P.pasOnderdelenToe({ items: [], project: { draaidag: "2027-01-20", opleverdatum: "2027-02-10" } }, [], { vandaag: "2026-11-22", deliverables: { online: ["1x1"] }, nieuwId }).items[0]; return t.name === "Deliverables opleveren" && t.dueDate === "2027-02-10" && t.category === "post"; })());
+test("PPM-document noemt deliverables en buy-outs", P.onderdeelVan("ppm-document").stappen.some(s => /deliverables/i.test(s)));
+
+sectie("Buy-outs — cast en fotograaf");
+test("buy-out geldt voor cast en fotograaf, niet voor bv. camera", P.buyoutSoort("figuranten") === "cast" && P.buyoutSoort("crew-fotografie") === "fotografie" && P.buyoutSoort("crew-camera") === null);
+test("standaard buy-outs volgen de deliverables (TVC → TV)", P.standaardBuyouts(del, "acteurs").map(b => b.medium).join() === "tv,online");
+test("fotograaf: geen TV-buy-out", P.standaardBuyouts({ tvc: ["16x9"], "online-paid": ["4x5"] }, "crew-fotografie").map(b => b.medium).join() === "online-paid");
+test("einddatum buy-out: 1 jaar vanaf 10 feb → 9 feb", P.buyoutEinde("2027-02-10", "1j") === "2028-02-09");
+test("einddatum 6 maanden vanaf 31 aug → 27 feb (geen doorrollen)", P.buyoutEinde("2026-08-31", "6m") === "2027-02-27");
+test("onbeperkt → geen einddatum", P.buyoutEinde("2027-02-10", "onbeperkt") === null);
+const sb = P.bezettingSamenvatting([{ bezetting: [{ naam: "Eva", status: "bevestigd", bedrag: 600, eenheid: "dag", buyouts: [{ medium: "tv", duur: "1j", bedrag: 1500 }, { medium: "online", duur: "1j", bedrag: 750 }] }] }]);
+test("buy-outbedragen apart opgeteld", sb.perEenheid.dag === 600 && sb.perEenheid.buyout === 2250 && P.prijsTekst(2250, "buyout") === "€ 2.250 buy-outs");
+const bk = P.onthoudContact([], { onderdeelId: "acteurs", naam: "Eva", bedrag: 600, eenheid: "dag", buyouts: [{ medium: "tv", duur: "1j", bedrag: 1500 }, { medium: "online", duur: null, bedrag: null }] }, { projectId: "p", projectNaam: "P", datum: "2026-11-22", nieuwId }).contacten;
+test("buy-outafspraak onthouden bij het contact (lege regels niet)", bk[0].prijzen.acteurs.buyouts.length === 1 && bk[0].prijzen.acteurs.buyouts[0].bedrag === 1500 && bk[0].prijzen.acteurs.bedrag === 600);
 
 samenvatting();

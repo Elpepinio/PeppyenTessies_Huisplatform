@@ -193,6 +193,7 @@ sectie("Verbouwingskosten — bedrag achteraf wijzigen");
   test("bedrag-invoer met komma en duizendtal-punt", leesBedrag("1.250,50") === 1250.5);
   test("bedrag-invoer met punt als decimaal", leesBedrag("1250.5") === 1250.5);
   test("bedrag-invoer met euroteken en spaties", leesBedrag(" € 99,95 ") === 99.95);
+  test("bedrag-invoer 1.500 (punt als duizendtal) = 1500", leesBedrag("1.500") === 1500 && leesBedrag("12.5") === 12.5);
   test("lege, negatieve of rommelige invoer = null", leesBedrag("") === null && leesBedrag("-5") === null && leesBedrag("abc") === null);
   test("0 is een geldig bedrag (bv. gratis meegeleverd)", leesBedrag("0") === 0);
 

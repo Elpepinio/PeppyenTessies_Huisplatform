@@ -304,6 +304,8 @@ function leesBedrag(invoer) {
   let s = String(invoer ?? "").trim().replace(/[€\s]/g, "");
   if (!s) return null;
   if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+  // "1.500" of "12.000" (punt als duizendtalscheiding, zonder komma) = 1500 / 12000.
+  else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, "");
   const n = Number(s);
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
 }
