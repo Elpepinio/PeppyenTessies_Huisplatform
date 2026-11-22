@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       const huidig = await leesWerkData(ctx.slug);
       const volgend = { ...huidig };
       if (Array.isArray(inkomend.lists)) {
-        volgend.lists = voegLijstenSamen(huidig.lists, inkomend.lists, inkomend.deletedListIds || []);
+        volgend.lists = voegLijstenSamen(huidig.lists, inkomend.lists, inkomend.deletedListIds || [], Date.now(), Array.isArray(inkomend.deletedItemIds) ? inkomend.deletedItemIds : []);
       }
       if (Array.isArray(inkomend.klanten)) {
         volgend.klanten = inkomend.klanten
@@ -39,6 +39,10 @@ export default async function handler(req, res) {
           .filter(t => t && t.id && Array.isArray(t.stappen))
           .slice(0, 40)
           .map(t => ({ ...t, naam: String(t.naam || "Sjabloon").slice(0, 80), stappen: t.stappen.slice(0, 200) }));
+      }
+      // Contactenboek (namen + prijsafspraken, onthouden over projecten heen).
+      if (Array.isArray(inkomend.contacten)) {
+        volgend.contacten = inkomend.contacten.filter(c => c && c.id && String(c.naam || "").trim()).slice(0, 1000);
       }
       await schrijfWerkData(ctx.slug, volgend);
       try {

@@ -116,4 +116,120 @@ test("op de startdag afgevinkt → telt niet mee", P.werkelijkeOffset(lp("k-loca
 test("normale stap later afgerond → telt wél mee", P.werkelijkeOffset(lp("k-locatie", "2026-11-25").items.find(i => i.sjabloonStapId === "k-locatie"), klein.stappen.find(s => s.id === "k-locatie"), laatProject.project) === -8);
 test("project onthoudt startdatum en oorspronkelijke stapdatum", laatProject.project.startDatum === "2026-11-22" && laatProject.items.find(i => i.sjabloonStapId === "k-offerte").sjabloonDatum === "2026-11-08");
 
+sectie("Offertes — wekelijks navragen tot akkoord");
+const off = P.maakOfferte({ naam: "Häcker najaar", klantId: "k1", verstuurdOp: "2026-11-20", bedrag: 4500, vandaag: "2026-11-22", wie: "Pepijn", nu: 5, nieuwId });
+const nv = off.items[0];
+test("offerte heeft status 'offerte' en één navraagtaak", P.projectStatus(off) === "offerte" && off.items.length === 1 && nv.offerteNavraag);
+test("eerste navraag een week na versturen, om 10:00", nv.dueDate === "2026-11-27" && nv.herinnering === "2026-11-27T10:00");
+test("navraag herhaalt wekelijks", nv.herhaling.freq === "week" && nv.herhaling.interval === 1);
+test("bedrag staat in de notitie", /4\.500/.test(nv.note));
+test("achteraf ingevoerde offerte: eerste vraag vandaag", P.eersteNavraagDatum("2026-10-01", "2026-11-22") === "2026-11-22");
+test("om de 2 weken navragen", P.maakOfferte({ naam: "x", verstuurdOp: "2026-11-20", weken: 2, vandaag: "2026-11-22", nieuwId }).items[0].dueDate === "2026-12-04");
+const nagevraagd = P.vinkTaak(nv, { vandaag: "2026-11-27" });
+test("afvinken (nagevraagd) → volgende week opnieuw, herinnering schuift mee", nagevraagd.checked === false && nagevraagd.dueDate === "2026-12-04" && nagevraagd.herinnering === "2026-12-04T10:00");
+test("teller 'keer nagevraagd'", P.offerteNagevraagd(off, "2026-11-27").project.offerte.keerNagevraagd === 1);
+test("project zonder status telt als lopend", P.projectStatus({ project: {} }) === "lopend" && P.projectStatus({}) === null);
+
+const metEigen = { ...off, items: [...off.items, { id: "eigen", name: "Moodboard sturen", category: "pre" }] };
+const ak = P.offerteAkkoord(metEigen, klein, { draaidag: "2026-12-10", opleverdatum: "2026-12-24", akkoordOp: "2026-11-30", vandaag: "2026-11-30", nu: dag("2026-11-30"), nieuwId });
+test("akkoord: status lopend, zelfde lijst-id en naam", P.projectStatus(ak) === "lopend" && ak.id === off.id && ak.name === "Häcker najaar");
+test("akkoord: navraagtaak weg, eigen taak blijft", !ak.items.some(i => i.offerteNavraag) && ak.items.some(i => i.id === "eigen"));
+test("akkoord: alle sjabloonstappen erbij", ak.items.filter(i => i.sjabloonStapId).length === klein.stappen.length);
+test("akkoord: offerte- en akkoordstap meteen klaar", ["k-offerte", "k-akkoord"].every(id => ak.items.find(i => i.sjabloonStapId === id).checked));
+test("akkoord: overige stappen open", !ak.items.find(i => i.sjabloonStapId === "k-script").checked);
+test("akkoord: klant en offertegegevens bewaard", ak.project.klantId === "k1" && ak.project.offerte.verstuurdOp === "2026-11-20" && ak.project.offerte.akkoordOp === "2026-11-30");
+test("akkoord: meteen-klaar-stappen tellen niet mee voor timing", P.berekenLeerVoorstellen(klein, ak).every(v => v.type !== "timing"));
+test("offertestap herkennen: vlag gaat vóór tekst", P.isOfferteStap({ fase: "pre", tekst: "Offerte", bijAkkoordKlaar: false }) === false && P.isOfferteStap({ fase: "pre", tekst: "Begroting", bijAkkoordKlaar: true }) === true);
+
+const af = P.offerteAfgewezen(off, { datum: "2026-12-05", reden: "Te duur" });
+test("afgewezen: status, afgerond, navraag weg, reden bewaard", P.projectStatus(af) === "afgewezen" && af.project.afgerond && af.items.length === 0 && af.project.offerte.reden === "Te duur");
+
+const stat = P.offerteStatistiek([off, ak, af, { project: { status: "lopend", offerte: { verstuurdOp: "2026-11-01", akkoordOp: "2026-11-21" } } }]);
+test("statistiek: open / akkoord / afgewezen", stat.open === 1 && stat.akkoord === 2 && stat.afgewezen === 1);
+test("statistiek: scoringspercentage en mediaan dagen tot akkoord", stat.scoringPct === 67 && stat.mediaanDagenTotAkkoord === 15);
+
+sectie("Onderdelen — aan/uit zetten wat er nodig is");
+const basisP = P.maakProjectUitSjabloon(groot, { naam: "Groot", draaidag: "2027-01-20", opleverdatum: "2027-02-17", vandaag: "2026-11-22", nu: dag("2026-11-22"), nieuwId });
+const meet = { kickoff: { datum: "2026-11-25", tijd: "14:00" }, ppm: { datum: "2027-01-13", tijd: "10:00" } };
+const ctxO = { draaidag: "2027-01-20", vandaag: "2026-11-22", meetings: meet, nieuwId, nu: 1 };
+const metO = P.pasOnderdelenToe(basisP, ["kickoff", "ppm", "acteurs", "figuranten", "loc-exterieur", "hotel", "verzekering", "crew-camera", "crew-gripper"], ctxO);
+const od = (id) => metO.items.filter(i => i.onderdeelId === id);
+test("kickoff: nieuwe taak op gekozen dag, herinnering een uur vooraf", od("kickoff").length === 1 && od("kickoff")[0].dueDate === "2026-11-25" && od("kickoff")[0].herinnering === "2026-11-25T13:00" && od("kickoff")[0].note === "Om 14:00");
+test("PPM: bestaande sjabloonstap gebruikt (geen dubbele) en ingepland", od("ppm").length === 1 && od("ppm")[0].sjabloonStapId === "g-ppm" && od("ppm")[0].dueDate === "2027-01-13" && metO.items.filter(i => /PPM/.test(i.name)).length === 1);
+test("acteurs: koppelt aan de casting-stap uit het sjabloon", od("acteurs").length === 1 && od("acteurs")[0].sjabloonStapId === "g-casting");
+test("verzekering: koppelt aan bestaande sjabloonstap", od("verzekering")[0].sjabloonStapId === "g-verzekering");
+test("figuranten: nieuwe taak met deelstappen en deadline t.o.v. draaidag", od("figuranten")[0].dueDate === "2027-01-10" && od("figuranten")[0].substappen.length === 3 && od("figuranten")[0].anker === "draai");
+test("hotel en exterieur aangemaakt", od("hotel").length === 1 && od("loc-exterieur").length === 1);
+test("niet gekozen → geen taak (interieur, props, edelfiguranten)", !od("loc-interieur").length && !od("props").length && !od("edelfiguranten").length);
+const crewT = od("crew")[0];
+test("crew: één taak (de sjabloonstap) met een deelstap per gekozen rol", od("crew").length === 1 && crewT.sjabloonStapId === "g-crew" && crewT.substappen.map(s => s.tekst).join() === "Camera,Gripper");
+test("keuze en meetings worden bij het project bewaard", metO.project.onderdelen.includes("hotel") && metO.project.meetings.kickoff.tijd === "14:00");
+
+// tijdens het project: camera afgevinkt, gripper uit, belichter aan, hotel uit, verzekering uit
+const bezig = { ...metO, items: metO.items.map(i => (i.onderdeelId === "crew" ? { ...i, substappen: i.substappen.map(s => (s.tekst === "Camera" ? { ...s, afgevinkt: true } : s)) } : i.onderdeelId === "figuranten" ? { ...i, checked: true } : i)) };
+const nieuweKeuze = ["kickoff", "ppm", "acteurs", "loc-exterieur", "crew-camera", "crew-belichter"];
+test("waarschuwing: tel open taken die verdwijnen (hotel + verzekering)", P.telVerdwijnendeTaken(bezig, nieuweKeuze) === 2);
+const na = P.pasOnderdelenToe(bezig, nieuweKeuze, ctxO);
+const nd = (id) => na.items.filter(i => i.onderdeelId === id);
+test("uitgezet en nog open → weg", !nd("hotel").length && !nd("verzekering").length);
+test("uitgezet maar al gedaan → blijft staan", nd("figuranten").length === 1);
+test("crew: afgevinkte rol blijft afgevinkt, gripper weg, belichter erbij", nd("crew")[0].substappen.map(s => `${s.tekst}:${s.afgevinkt}`).join() === "Camera:true,Belichter:false");
+test("geen dubbele taken bij opnieuw toepassen", na.items.length === new Set(na.items.map(i => i.id)).size && nd("kickoff").length === 1 && nd("acteurs").length === 1);
+test("weggezette sjabloonstap onthouden", na.project.uitgezetteStapIds.includes("g-verzekering"));
+test("…en het leren stelt dan NIET voor die stap uit het sjabloon te halen", !P.berekenLeerVoorstellen(groot, na).some(v => v.type === "verwijderen" && v.stapId === "g-verzekering"));
+test("…en stelt onderdeel-taken niet voor als nieuwe sjabloonstap", !P.berekenLeerVoorstellen(groot, na).some(v => v.type === "toevoegen"));
+const alleCrewUit = P.pasOnderdelenToe(na, ["kickoff"], ctxO);
+test("alle crew uit → crew-taak weg (was nog open)", !alleCrewUit.items.some(i => i.onderdeelId === "crew"));
+test("weer aanzetten → sjabloonstap komt terug als nieuwe taak, niet meer 'uitgezet'", (() => {
+  const terug = P.pasOnderdelenToe(alleCrewUit, ["kickoff", "verzekering"], ctxO);
+  return terug.items.filter(i => i.onderdeelId === "verzekering").length === 1;
+})());
+
+sectie("Onderdelen — standaardkeuze en leren");
+test("standaardsjabloon heeft eigen standaardkeuze", P.standaardOnderdelen(klein).join() === "kickoff,callsheets,snacks,crew-camera-assistent,crew-geluid,loc-interieur");
+test("vorige keuze bij dit sjabloon gaat vóór (zelflerend)", P.standaardOnderdelen({ ...groot, laatsteOnderdelen: ["hotel"] }).join() === "hotel");
+test("eigen sjabloon zonder keuze: afgeleid uit de stappen + kickoff/PPM", P.standaardOnderdelen({ stappen: [{ tekst: "Productieverzekering afsluiten" }] }).join() === "kickoff,ppm,verzekering");
+test("PPM standaard 5 dagen vóór draaidag, kickoff over 2 dagen", (() => { const m = P.standaardMeetings({ draaidag: "2027-01-20", vandaag: "2026-11-22" }); return m.ppm.datum === "2027-01-15" && m.kickoff.datum === "2026-11-24"; })());
+test("deadline in het verleden → vandaag", P.pasOnderdelenToe(P.maakProjectUitSjabloon(klein, { naam: "x", draaidag: "2026-11-28", vandaag: "2026-11-22", nieuwId }), ["hotel"], { draaidag: "2026-11-28", vandaag: "2026-11-22", nieuwId }).items.find(i => i.onderdeelId === "hotel").dueDate === "2026-11-22");
+test("elk onderdeel-id is uniek", (() => { const ids = P.ONDERDELEN.flatMap(g => g.items.map(i => i.id)); return new Set(ids).size === ids.length; })());
+
+sectie("Nieuwe onderdelen: PPM opstellen, callsheets, catering, snacks");
+const kp = P.pasOnderdelenToe(P.maakProjectUitSjabloon(klein, { naam: "K", draaidag: "2027-01-20", vandaag: "2026-11-22", nieuwId }), ["callsheets", "catering", "snacks", "ppm-document"], { draaidag: "2027-01-20", vandaag: "2026-11-22", nieuwId });
+const ko = (id) => kp.items.filter(i => i.onderdeelId === id);
+test("callsheets koppelt aan 'Callsheet opstellen' uit het sjabloon", ko("callsheets").length === 1 && ko("callsheets")[0].sjabloonStapId === "k-callsheet");
+test("catering, snacks en PPM opstellen worden taken", ko("catering").length === 1 && ko("snacks")[0].dueDate === "2027-01-19" && ko("ppm-document")[0].soort === "document");
+test("groot: catering koppelt aan bestaande cateringstap", P.pasOnderdelenToe(basisP, ["catering"], ctxO).items.filter(i => i.onderdeelId === "catering")[0].sjabloonStapId === "g-catering");
+test("geen namen bij meetings en documenten", ["kickoff", "ppm", "ppm-document", "callsheets"].every(id => P.onderdeelVan(id).geenNamen));
+
+sectie("Bezetting — namen, status en prijsafspraken");
+test("bedrag-invoer: 1.250,50 / 450 / leeg", P.leesBedragInvoer("1.250,50") === 1250.5 && P.leesBedragInvoer("€ 450") === 450 && P.leesBedragInvoer("") === null);
+const crewItem = { onderdeelId: "crew", substappen: [{ id: "s1", tekst: "Camera", rolId: "crew-camera", afgevinkt: false }, { id: "s2", tekst: "Gripper", rolId: "crew-gripper", afgevinkt: true }, { id: "s3", tekst: "Eigen stap", afgevinkt: false }],
+  bezetting: [
+    { id: "b1", onderdeelId: "crew-camera", naam: "Sanne", status: "bevestigd", bedrag: 450, eenheid: "dag" },
+    { id: "b2", onderdeelId: "crew-camera", naam: "Joris", status: "optie", bedrag: 400, eenheid: "dag" },
+  ] };
+const sync1 = P.synchroniseerCrewStappen(crewItem);
+test("crew-rol niet klaar zolang niet iedereen bevestigd is", sync1.substappen[0].afgevinkt === false);
+test("rol zonder namen houdt handmatig vinkje", sync1.substappen[1].afgevinkt === true);
+const sync2 = P.synchroniseerCrewStappen({ ...crewItem, bezetting: crewItem.bezetting.map(b => ({ ...b, status: "bevestigd" })) });
+test("iedereen bevestigd → rol automatisch afgevinkt", sync2.substappen[0].afgevinkt === true && sync2.substappen[2].afgevinkt === false);
+const sam = P.bezettingSamenvatting([crewItem, { bezetting: [{ naam: "Hotel Ibis", status: "bevestigd", bedrag: 320, eenheid: "totaal" }, { naam: "", bedrag: 99 }] }]);
+test("samenvatting: aantal, bevestigd, bedragen per eenheid (lege regels tellen niet)", sam.aantal === 3 && sam.bevestigd === 2 && sam.perEenheid.dag === 850 && sam.perEenheid.totaal === 320);
+test("prijstekst", P.prijsTekst(450, "dag") === "€ 450 per dag" && P.prijsTekst(1250.5, "totaal") === "€ 1.250,50");
+
+sectie("Contactenboek — namen en prijzen onthouden");
+let boek = [];
+let r1 = P.onthoudContact(boek, { onderdeelId: "crew-camera", naam: "Sanne de Vries", bedrag: 450, eenheid: "dag", notitie: "06-12345678" }, { projectId: "p1", projectNaam: "Häcker", datum: "2026-11-22", nieuwId });
+boek = r1.contacten;
+test("nieuwe naam wordt contact met rol, project en prijs", boek.length === 1 && boek[0].rollen.join() === "crew-camera" && boek[0].prijzen["crew-camera"].bedrag === 450 && boek[0].notitie === "06-12345678" && r1.contactId === boek[0].id);
+boek = P.onthoudContact(boek, { onderdeelId: "crew-camera", naam: "sanne de vries ", bedrag: 500, eenheid: "dag" }, { projectId: "p2", projectNaam: "Bakkerij", datum: "2027-02-01", nieuwId }).contacten;
+test("zelfde naam (andere schrijfwijze) → zelfde contact, nieuwe prijs, oude in historie", boek.length === 1 && boek[0].prijzen["crew-camera"].bedrag === 500 && boek[0].prijzen["crew-camera"].historie[0].bedrag === 450 && boek[0].projecten.length === 2);
+boek = P.onthoudContact(boek, { onderdeelId: "crew-belichter", naam: "Sanne de Vries", bedrag: null }, { projectId: "p2", datum: "2027-02-01", nieuwId }).contacten;
+test("tweede rol erbij, zonder prijs → prijzen blijven", boek[0].rollen.join() === "crew-camera,crew-belichter" && boek[0].prijzen["crew-camera"].bedrag === 500 && boek[0].projecten.length === 2);
+boek = P.onthoudContact(boek, { onderdeelId: "loc-interieur", naam: "Studio Noord", bedrag: 900, eenheid: "dag" }, { projectId: "p3", datum: "2027-03-01", nieuwId }).contacten;
+const sug = P.contactSuggesties(boek, "crew-camera", "");
+test("suggesties: eerst wie deze rol eerder deed, met laatste prijs", sug[0].naam === "Sanne de Vries" && sug[0].zelfdeRol && sug[0].laatstePrijs.bedrag === 500);
+test("suggesties filteren op getypte tekst", P.contactSuggesties(boek, "crew-camera", "noord").map(c => c.naam).join() === "Studio Noord");
+test("lege naam wordt niet onthouden", P.onthoudContact(boek, { naam: "  " }, { nieuwId }).contacten.length === boek.length);
+
 samenvatting();

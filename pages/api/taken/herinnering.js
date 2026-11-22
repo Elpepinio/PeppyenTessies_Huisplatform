@@ -5,7 +5,7 @@
 import { Receiver } from "@upstash/qstash";
 import { redis, leesWerkData } from "../../../lib/werk-opslag";
 import { stuurPush, verwijderGeplandeHerinnering } from "../../../lib/herinneringen";
-import { persoonSlug, herinneringTekst } from "../../../lib/taken-logica";
+import { persoonSlug, herinneringTekst, dagenTussen, epochNaarLokaal } from "../../../lib/taken-logica";
 
 export const config = { api: { bodyParser: false } };
 
@@ -57,11 +57,16 @@ export default async function handler(req, res) {
   await verwijderGeplandeHerinnering(ruimte, slug, itemId);
   if (!item || item.checked || item.herinnering !== tijd) return res.status(200).json({ genegeerd: "taak gewijzigd of klaar" });
 
+  // Wekelijkse offerte-navraag: als vraag formuleren, met hoe lang geleden.
+  const offerte = item.offerteNavraag ? lijst.project?.offerte : null;
+  const dagen = offerte?.verstuurdOp ? dagenTussen(offerte.verstuurdOp, epochNaarLokaal(Date.now()).slice(0, 10)) : null;
   const r = await stuurPush(
     { ruimte, eigenaar, toegewezenAan: ruimte === "thuis" ? item.assignedTo : null },
     {
-      title: `🔔 ${item.name}`,
-      body: `${lijst.icon || ""} ${lijst.name} · ${herinneringTekst(item)}`.trim(),
+      title: offerte ? `📨 Al iets gehoord over "${lijst.name}"?` : `🔔 ${item.name}`,
+      body: offerte
+        ? `Offerte ${dagen != null ? `${dagen} dagen geleden ` : ""}verstuurd${offerte.bedrag ? ` (€ ${Number(offerte.bedrag).toLocaleString("nl-NL")})` : ""}. Vraag even na — tik op Akkoord, Nagevraagd of Afgewezen.`
+        : `${lijst.icon || ""} ${lijst.name} · ${herinneringTekst(item)}`.trim(),
       url: `/taken?lijst=${encodeURIComponent(listId)}&taak=${encodeURIComponent(itemId)}&ruimte=${ruimte}`,
       tag: `taak-${itemId}`,
     }

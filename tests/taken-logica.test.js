@@ -174,6 +174,7 @@ test("item dat een ander toestel net toevoegde blijft behouden", samen[0].items.
 test("oud item dat niet meer meekomt is echt verwijderd", !samen[0].items.some(i => i.id === "3"));
 test("niet-meegestuurde lijst blijft bestaan", samen.some(l => l.id === "y"));
 test("expliciet verwijderde lijst verdwijnt", !samen.some(l => l.id === "z"));
+test("net toegevoegde taak die je zelf verwijdert, komt niet terug", !L.voegLijstenSamen(huidig, [{ id: "x", items: [{ id: "1" }] }], [], nuMs, ["2"])[0].items.some(i => i.id === "2"));
 const t = L.nieuweTaak({ name: "Test" }, { wie: "Tessa", nu: 7, id: "q" });
 test("nieuwe taak heeft alle velden", t.id === "q" && t.addedBy === "Tessa" && t.mijnDag === null && Array.isArray(t.substappen) && t.herinnering === null);
 

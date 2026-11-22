@@ -94,6 +94,9 @@ export default async function handler(req, res) {
       // onvolledige lijst-array meestuurde, wiste daarmee alle andere
       // lijsten die niet toevallig in de laatste 10 seconden waren gemaakt.
       const deletedListIds = new Set(incoming.deletedListIds || []);
+      // Taken die de afzender in deze wijziging bewust heeft verwijderd: niet
+      // terugzetten, ook al zijn ze < 10 s geleden toegevoegd.
+      const deletedItemIds = new Set(Array.isArray(incoming.deletedItemIds) ? incoming.deletedItemIds : []);
 
       // Per lijst: voeg items samen op basis van id, zodat gelijktijdige
       // wijzigingen (bv. een ander apparaat dat tegelijk iets toevoegt)
@@ -103,7 +106,7 @@ export default async function handler(req, res) {
         if (!currList) return inList; // nieuwe lijst, bewaar as-is
 
         const inListIds = new Set((inList.items || []).map(i => i.id));
-        const extraItems = (currList.items || []).filter(i => !inListIds.has(i.id));
+        const extraItems = (currList.items || []).filter(i => !inListIds.has(i.id) && !deletedItemIds.has(i.id));
         const tiendSecondenGeleden = Date.now() - 10000;
         const nieuweExtraItems = extraItems.filter(i => i.addedAt > tiendSecondenGeleden);
 
@@ -121,6 +124,7 @@ export default async function handler(req, res) {
       const alleLijsten = [...mergedLists, ...teBewaren];
       await redis.set(DATA_KEY, JSON.stringify({
         ...incoming,
+        deletedItemIds: undefined,
         lists: alleLijsten,
       }));
       await syncThuisHerinneringen(alleLijsten, req);
