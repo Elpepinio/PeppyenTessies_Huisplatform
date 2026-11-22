@@ -628,21 +628,6 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
           })}
         </div>
 
-        <p style={S.sectieKop}><Home size={13} /> Thuis <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>— gedeeld met het huishouden</span></p>
-        <div style={S.kaart}>
-          {thuisLijsten.map(l => (
-            <button key={l.id} style={S.rij} onClick={() => open({ soort: "lijst", ruimte: "thuis", listId: l.id })}>
-              <span style={{ fontSize: 18, width: 22, textAlign: "center" }}>{l.icon || "📋"}</span>
-              <span style={{ flex: 1, fontSize: 15 }}>{l.name}</span>
-              {openAantal(l) > 0 && <span style={{ fontSize: 13, color: C.muted }}>{openAantal(l)}</span>}
-              <ChevronRight size={16} color={C.licht} />
-            </button>
-          ))}
-          <button style={{ ...S.rij, color: C.groen }} onClick={() => nieuweLijst("thuis")}>
-            <Plus size={18} color={C.groen} /><span style={{ fontSize: 14, fontWeight: 600 }}>Nieuwe thuislijst</span>
-          </button>
-        </div>
-
         <p style={S.sectieKop}><Briefcase size={13} /> Werk {ik && <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>— alleen voor {ik}</span>}</p>
         {werkStaat === "geen-naam" && (
           <div style={{ ...S.kaart, padding: 16 }}>
@@ -786,6 +771,21 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
             </div>
           </>
         )}
+
+        <p style={S.sectieKop}><Home size={13} /> Thuis <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>— gedeeld met het huishouden</span></p>
+        <div style={S.kaart}>
+          {thuisLijsten.map(l => (
+            <button key={l.id} style={S.rij} onClick={() => open({ soort: "lijst", ruimte: "thuis", listId: l.id })}>
+              <span style={{ fontSize: 18, width: 22, textAlign: "center" }}>{l.icon || "📋"}</span>
+              <span style={{ flex: 1, fontSize: 15 }}>{l.name}</span>
+              {openAantal(l) > 0 && <span style={{ fontSize: 13, color: C.muted }}>{openAantal(l)}</span>}
+              <ChevronRight size={16} color={C.licht} />
+            </button>
+          ))}
+          <button style={{ ...S.rij, color: C.groen }} onClick={() => nieuweLijst("thuis")}>
+            <Plus size={18} color={C.groen} /><span style={{ fontSize: 14, fontWeight: 600 }}>Nieuwe thuislijst</span>
+          </button>
+        </div>
 
         <p style={S.sectieKop}>Overzetten</p>
         <div style={S.kaart}>
@@ -933,7 +933,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
         {id === "mijndag" && <p style={{ margin: "-4px 4px 10px", color: C.muted, fontSize: 14 }}>{datumTekst}</p>}
         {werkStaat === "open" && id !== "aanmij" && (
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-            {[["alles", "Alles"], ["thuis", "🏠 Thuis"], ["werk", "💼 Werk"]].map(([k, l]) => (
+            {[["alles", "Alles"], ["werk", "💼 Werk"], ["thuis", "🏠 Thuis"]].map(([k, l]) => (
               <button key={k} style={S.chip(ruimteFilter === k)} onClick={() => { setRuimteFilter(k); if (k === "thuis") setKlantFilter(null); }}>{l}</button>
             ))}
           </div>
