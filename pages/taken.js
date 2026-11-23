@@ -1003,7 +1003,10 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                 return (
                   <div key={l.id} style={{ padding: "12px 14px", borderBottom: "1px solid #F3EEE3" }}>
                     <button onClick={() => open({ soort: "lijst", ruimte: "werk", listId: l.id })} style={{ background: "none", border: "none", padding: 0, textAlign: "left", width: "100%", cursor: "pointer", fontFamily: "inherit", color: "inherit" }}>
-                      <span style={{ display: "block", fontSize: 15 }}>{l.name}</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 15, flex: 1 }}>{l.name}</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: C.oranje, background: "#FCF1DE", borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>⏳ Wacht op reactie</span>
+                      </span>
                       <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 2 }}>
                         {klant && <span style={{ color: klant.kleur || C.groen, fontWeight: 700 }}>● {klant.naam} · </span>}
                         verstuurd {dagen === 0 ? "vandaag" : `${dagen} ${dagen === 1 ? "dag" : "dagen"} geleden`}
@@ -1011,9 +1014,10 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                         {navraag ? ` · navragen ${datumKort(navraag.dueDate).toLowerCase()}` : ""}
                       </span>
                     </button>
-                    <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                      <button style={{ ...S.knop(), padding: "6px 12px", fontSize: 13 }} onClick={() => openAkkoord(l.id)}>✅ Akkoord</button>
-                      <button style={{ ...S.chip(false), padding: "6px 12px", fontSize: 13 }} onClick={() => openAfwijzen(l.id)}>✕ Afgewezen</button>
+                    <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, color: C.muted }}>Reactie binnen?</span>
+                      <button style={{ ...S.chip(false), padding: "5px 11px", fontSize: 13, color: C.groen }} onClick={() => openAkkoord(l.id)}>👍 Akkoord gekregen</button>
+                      <button style={{ ...S.chip(false), padding: "5px 11px", fontSize: 13 }} onClick={() => openAfwijzen(l.id)}>✕ Afgewezen</button>
                     </div>
                   </div>
                 );
@@ -3080,8 +3084,9 @@ function OfferteKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfw
         <option value="">Geen klant</option>
         {klanten.map(k => <option key={k.id} value={k.id}>● {k.naam}</option>)}
       </select>
-      <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-        <button style={{ ...S.knop(), flex: "1 1 auto" }} onClick={openAkkoord}>✅ Akkoord — productie starten</button>
+      <p style={{ margin: "12px 0 0", fontSize: 12, color: C.muted }}>Reactie van de klant binnen?</p>
+      <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+        <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.groen}`, flex: "1 1 auto" }} onClick={openAkkoord}>👍 Akkoord gekregen — productie starten</button>
         {navraag && <button style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}` }} onClick={nagevraagd}>Nagevraagd</button>}
         <button style={{ ...S.knop(C.bg, C.rood), border: `1px solid ${C.rand2}` }} onClick={openAfwijzen}>✕ Afgewezen</button>
       </div>
