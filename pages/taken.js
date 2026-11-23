@@ -36,7 +36,7 @@ import {
   BUYOUT_MEDIA, BUYOUT_DUUR, buyoutSoort, standaardBuyouts, buyoutEinde,
   leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
   draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond, bezettingKosten, kiesSjabloon,
-  maakAanvraag, aanvraagNaarOfferte, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
+  maakAanvraag, aanvraagNaarOfferte, zetOfferteDeadline, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte, datumKortNl } from "../lib/intake-logica";
 import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam, vulBezettingUitOfferte, werkelijkUitBezetting, eigenPostSleutels, postNaamSleutel, maakNacalculatie, nacalculatieInzichten, inzichtenVoorOfferte, projectCijfers, cijferJaren } from "../lib/offerte-pdf-logica";
@@ -629,6 +629,7 @@ export default function TakenApp() {
             openOfferteVanAanvraag={() => setSheet({ soort: "offerteVanAanvraag", listId: lijst.id })}
             meld={meld}
             vulPlekken={() => vulPlekkenUitOfferte(lijst.id)}
+            zetDeadline={(datum) => { wijzigLijst("werk", lijst.id, l => zetOfferteDeadline(l, datum, { wie: ik })); meld(`📅 Offerte uiterlijk ${datumKort(datum).toLowerCase()}`); }}
             zetOpzet={(opzet) => {
               const wasExtern = lijst.project?.opzet?.postDoorOns === false;
               wijzigLijst(weergave.ruimte, lijst.id, l => pasOpzetToe(l, opzet, { vandaag, wie: ik, nieuwId: uid }));
@@ -702,9 +703,9 @@ export default function TakenApp() {
       {sheet === "cijfers" && <CijfersSheet lijsten={werk?.lists || []} klanten={werk?.klanten || []} sluit={() => setSheet(null)} />}
       {sheet === "aanvraag" && (
         <AanvraagSheet {...{ klanten, vandaag }} alleKlanten={werk?.klanten || []} nieuweKlant={maakKlant} sluit={() => setSheet(null)}
-          maak={({ naam, klantId, tekst }) => {
+          maak={({ naam, klantId, tekst, gesprekDatum, offerteUiterlijk }) => {
             const herkend = leesIntake(tekst, { vandaag, klanten: werkRef.current?.klanten || [] });
-            const lijst = maakAanvraag({ naam, klantId: klantId || herkend.klantId || null, intakeTekst: tekst, herkend, vandaag, wie: ik, nieuwId: uid });
+            const lijst = maakAanvraag({ naam, klantId: klantId || herkend.klantId || null, intakeTekst: tekst, herkend, vandaag, gesprekDatum, offerteUiterlijk, wie: ik, nieuwId: uid });
             zetLijst("werk", lijst);
             setSheet(null);
             setWeergave({ soort: "lijst", ruimte: "werk", listId: lijst.id });
@@ -1367,7 +1368,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken }) {
+function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline }) {
   const [menu, setMenu] = useState(false);
   const isAanvraag = projectStatus(lijst) === "aanvraag";
   const isOfferte = projectStatus(lijst) === "offerte" || isAanvraag;
@@ -1420,7 +1421,7 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
           </div>
         )}
         {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken }} />}
-        {isAanvraag && <AanvraagKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag }} />}
+        {isAanvraag && <AanvraagKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag, zetDeadline }} />}
         {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld }} />}
         {ruimte === "werk" && !isProject && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
         {isProject && open.length > 0 ? (
@@ -2012,14 +2013,26 @@ function IntakeBlok({ intake, zetTekst, standaardOpen = false }) {
   );
 }
 
-function AanvraagKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag }) {
+function AanvraagKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag, zetDeadline }) {
   const p = lijst.project;
   const klant = klantVan(p.klantId);
   const taak = (lijst.items || []).find(i => i.aanvraagTaak && !i.checked);
   return (
     <div style={{ ...S.kaart, padding: 14, background: "#EEF4F1" }}>
       <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: C.groen, letterSpacing: "0.04em" }}>📞 AANVRAAG — OFFERTE NOG VERSTUREN</p>
-      {taak && <p style={{ margin: "6px 0 0", fontSize: 14 }}>Offerte uiterlijk {datumKort(taak.dueDate).toLowerCase()}</p>}
+      <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+        {taak && (
+          <label style={{ flex: "1 1 150px", fontSize: 11, color: C.muted, fontWeight: 700 }}>📅 OFFERTE UITERLIJK
+            <input type="date" value={taak.dueDate || ""} min={vandaagStr()} aria-label="Offerte uiterlijk"
+              onChange={e => e.target.value && zetDeadline(e.target.value)} style={{ ...S.inp, padding: "6px 8px", fontSize: 14, marginTop: 3 }} />
+          </label>
+        )}
+        <label style={{ flex: "1 1 150px", fontSize: 11, color: C.muted, fontWeight: 700 }}>📞 GESPREK OP
+          <input type="date" value={p.intake?.datum || ""} aria-label="Datum gesprek"
+            onChange={e => e.target.value && zetProject({ intake: { ...(p.intake || { tekst: "" }), datum: e.target.value } })} style={{ ...S.inp, padding: "6px 8px", fontSize: 14, marginTop: 3 }} />
+        </label>
+      </div>
+      {taak && <p style={{ ...S.hint, marginTop: 4 }}>Staat in je planning en Mijn dag op die datum, met een herinnering om 9:00.</p>}
       <select value={p.klantId || ""} onChange={e => zetProject({ klantId: e.target.value || null })} aria-label="Klant"
         style={{ ...S.inp, width: "auto", padding: "6px 10px", fontSize: 13, marginTop: 10, color: klant?.kleur || C.tekst, fontWeight: 700 }}>
         <option value="">Geen klant</option>
@@ -2048,7 +2061,10 @@ function AanvraagSheet({ klanten, alleKlanten, vandaag, nieuweKlant, sluit, maak
   const [klantId, setKlantId] = useState("");
   const [nieuweKlantNaam, setNieuweKlantNaam] = useState("");
   const [tekst, setTekst] = useState("");
+  const [gesprekDatum, setGesprekDatum] = useState(vandaag);
+  const [deadline, setDeadline] = useState(null); // null = automatisch (notities of over 2 dagen)
   const h = leesIntake(tekst, { vandaag, klanten: alleKlanten });
+  const deadlineNu = deadline || h.offerteDeadline || plusDagen(vandaag, 2);
   // Klant genoemd in de notities en nog niets gekozen? Dan die voorstellen.
   const voorgesteld = !klantId && h.klantId ? klanten.find(k => k.id === h.klantId) : null;
   const kan = naam.trim();
@@ -2073,7 +2089,16 @@ function AanvraagSheet({ klanten, alleKlanten, vandaag, nieuweKlant, sluit, maak
         <textarea rows={7} style={{ ...S.inp, fontSize: 15, lineHeight: 1.45, resize: "vertical" }} value={tekst} onChange={e => setTekst(e.target.value)} aria-label="Notities eerste gesprek"
           placeholder={"Bijv.: Angela (Scheepens) 06 12345678 belde. 2 draaidagen begin december, prelight de dag ervoor. Post doet het bureau zelf. Budget rond 25k. Online 16:9 + 9:16. Acteur + 10 figuranten, in de fabriek, hotel nodig. Live 5 januari."} />
         <HerkendChips h={h} />
-        <button disabled={!kan} onClick={() => maak({ naam: naam.trim(), klantId: klantId || h.klantId || null, tekst })}
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>📅 OFFERTE UITERLIJK
+            <input type="date" value={deadlineNu} min={vandaag} aria-label="Offerte uiterlijk" onChange={e => setDeadline(e.target.value || null)} style={{ ...S.inp, padding: "8px 10px", fontSize: 15, marginTop: 3 }} />
+          </label>
+          <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>📞 GESPREK OP
+            <input type="date" value={gesprekDatum} max={vandaag} aria-label="Datum gesprek" onChange={e => setGesprekDatum(e.target.value || vandaag)} style={{ ...S.inp, padding: "8px 10px", fontSize: 15, marginTop: 3 }} />
+          </label>
+        </div>
+        <p style={S.hint}>{deadline ? "Zelf gekozen." : h.offerteDeadline ? "✨ Uit je notities." : "Standaard over 2 dagen."} De offerte-taak komt op die dag in je planning, met een herinnering om 9:00.</p>
+        <button disabled={!kan} onClick={() => maak({ naam: naam.trim(), klantId: klantId || h.klantId || null, tekst, gesprekDatum, offerteUiterlijk: deadlineNu })}
           style={{ ...S.knop(), width: "100%", marginTop: 16, opacity: kan ? 1 : 0.5 }}>📞 Aanvraag vastleggen</button>
       </div>
     </div>

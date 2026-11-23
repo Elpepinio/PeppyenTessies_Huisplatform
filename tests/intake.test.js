@@ -52,8 +52,14 @@ test("'de 23ste' zonder weekdag → maand van de datum ervoor", L.leesIntake("Dr
 test("geen 'of' → één draaidag", !L.leesIntake("Draaien 20 december, oplevering 30 december.", { vandaag: "2026-11-23" }).draaidagOpties);
 test("datumKortNl", L.datumKortNl("2026-12-16") === "wo 16 dec");
 
+test("offerte-deadline: 'offerte voor vrijdag sturen'", L.leesIntake("Offerte voor vrijdag sturen.", { vandaag: "2026-11-23" }).offerteDeadline === "2026-11-27");
+test("offerte-deadline: 'quote uiterlijk 27 november'", L.leesIntake("quote uiterlijk 27 november", { vandaag: "2026-11-23" }).offerteDeadline === "2026-11-27");
+test("'2 quotes' is geen deadline", !L.leesIntake("2 quotes.\n20K", { vandaag: "2026-11-23" }).offerteDeadline);
+
 sectie("Aanvraag → offerte → akkoord");
 let lijst = L.maakAanvraag({ naam: "Häcker", klantId: "kk", intakeTekst: "notitie", herkend: a, vandaag: V, nieuwId });
+test("deadline zelf gekozen + datum gesprek", (() => { const a2 = L.maakAanvraag({ naam: "Z", vandaag: V, gesprekDatum: "2026-11-20", offerteUiterlijk: "2026-11-30", nieuwId }); return a2.items[0].dueDate === "2026-11-30" && a2.items[0].herinnering === "2026-11-30T09:00" && a2.project.intake.datum === "2026-11-20"; })());
+test("deadline verzetten", (() => { const a3 = L.zetOfferteDeadline(L.maakAanvraag({ naam: "Z", vandaag: V, nieuwId }), "2026-12-01"); return a3.items[0].dueDate === "2026-12-01" && a3.items[0].herinnering === "2026-12-01T09:00"; })());
 test("aanvraag met taak 'offerte opstellen' over 2 dagen", L.projectStatus(lijst) === "aanvraag" && lijst.items[0].aanvraagTaak && lijst.items[0].dueDate === "2026-11-24");
 test("intake, budget, live en deliverables bewaard", lijst.project.intake.tekst === "notitie" && lijst.project.budget === 25000 && lijst.project.liveDatum === "2027-01-05" && lijst.project.deliverables.fotografie);
 lijst = L.aanvraagNaarOfferte(lijst, { verstuurdOp: V, bedrag: 24000, vandaag: V, nieuwId });
