@@ -42,6 +42,16 @@ test("'montage niet bij ons' → post extern, geen post-onderdelen", c.postDoorO
 test("lege tekst → niets herkend", L.leesIntake("", { vandaag: V }).herkend.length === 0);
 test("tijd 14:30 is geen datum", L.vindDatums("om 14:30 bellen", V).length === 0);
 
+sectie("Intake — meerdere opties");
+const opt = L.leesIntake("15 januari / di 19 jan opleveren.\nFilmen woensdag de 16 december of woensdag de 6e.\n\n2 quotes.\n20K\n90K voor de andere versies.", { vandaag: "2026-11-23" });
+test("twee draaidag-opties, 'woensdag de 6e' = wo 6 januari", JSON.stringify(opt.draaidagOpties) === '["2026-12-16","2027-01-06"]' && opt.draaidag === "2026-12-16");
+test("twee opleveropties (15 jan / 19 jan)", JSON.stringify(opt.opleverOpties) === '["2027-01-15","2027-01-19"]');
+test("budgetten in K: € 20.000 of € 90.000", opt.budget === 20000 && JSON.stringify(opt.budgetOpties) === "[20000,90000]");
+test("chip toont beide draaidagen", opt.herkend.some(h => h.label === "Draaidag: wo 16 dec of wo 6 jan"));
+test("'de 23ste' zonder weekdag → maand van de datum ervoor", L.leesIntake("Draaien 20 december of de 23ste.", { vandaag: "2026-11-23" }).draaidagOpties?.[1] === "2026-12-23");
+test("geen 'of' → één draaidag", !L.leesIntake("Draaien 20 december, oplevering 30 december.", { vandaag: "2026-11-23" }).draaidagOpties);
+test("datumKortNl", L.datumKortNl("2026-12-16") === "wo 16 dec");
+
 sectie("Aanvraag → offerte → akkoord");
 let lijst = L.maakAanvraag({ naam: "Häcker", klantId: "kk", intakeTekst: "notitie", herkend: a, vandaag: V, nieuwId });
 test("aanvraag met taak 'offerte opstellen' over 2 dagen", L.projectStatus(lijst) === "aanvraag" && lijst.items[0].aanvraagTaak && lijst.items[0].dueDate === "2026-11-24");

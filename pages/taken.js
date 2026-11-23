@@ -38,7 +38,7 @@ import {
   draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond, bezettingKosten, kiesSjabloon,
   maakAanvraag, aanvraagNaarOfferte, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
 } from "../lib/projecten-logica";
-import { leesIntake, herkenUitOfferte } from "../lib/intake-logica";
+import { leesIntake, herkenUitOfferte, datumKortNl } from "../lib/intake-logica";
 import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam, vulBezettingUitOfferte, werkelijkUitBezetting, eigenPostSleutels, postNaamSleutel, maakNacalculatie, nacalculatieInzichten, inzichtenVoorOfferte, projectCijfers, cijferJaren } from "../lib/offerte-pdf-logica";
 
 // Marge-doel (standaard minimaal 20%, streven 25%), overal in de projecten nodig.
@@ -745,7 +745,8 @@ export default function TakenApp() {
             voorstel={(() => {
               const spec = lijst.project?.offerte?.specificatie;
               const h = spec ? herkenUitOfferte(spec, { vandaag }) : leesIntake(lijst.project?.intake?.tekst || "", { vandaag });
-              return kiesSjabloon(sjablonen, werk?.lists || [], { bedrag: lijst.project?.offerte?.bedrag ?? lijst.project?.budget ?? null, draaidagen: h.draaidagen || null });
+              const offerteBedrag = lijst.project?.offerte?.bedrag;
+              return kiesSjabloon(sjablonen, werk?.lists || [], { bedrag: offerteBedrag ?? lijst.project?.budget ?? null, draaidagen: h.draaidagen || null, bron: offerteBedrag != null ? "offerte" : "budget" });
             })()}
             maak={(sjabloon, opties) => {
               const nu = Date.now();
@@ -3183,6 +3184,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
   const setOpzet = (v) => { const n = { ...opzet, ...v }; setOpzetState(n); if (v.postDoorOns === false) setOnderdelen(o => zonderPost(o, n)); };
   const [deliverables, setDeliverables] = useState(() => normaliseerDeliverables(vanOfferte?.project?.deliverables || (Object.keys(h0.deliverables || {}).length ? h0.deliverables : null) || sjabloon?.laatsteDeliverables || {}));
   const hNu = leesIntake(intakeTekst, { vandaag, klanten });
+  const hOpties = (hNu.draaidagOpties || hNu.opleverOpties) ? hNu : h0;
   function neemOver(h) {
     if (h.draaidag && h.draaidag >= vandaag) setDraaidag(h.draaidag);
     if (h.opleverdatum) setOplever(h.opleverdatum);
@@ -3246,6 +3248,12 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
           </label>
         </div>
         {opleverdatum && draaidag && opleverdatum < draaidag && <p style={{ ...S.hint, color: C.rood }}>De oplevering ligt vóór de draaidag.</p>}
+        {[["🎬 Draaidag", hOpties.draaidagOpties, draaidag, setDraaidag], ["📦 Oplevering", hOpties.opleverOpties, opleverdatum, setOplever]].map(([label, opties, huidig, zet]) => (opties || []).length > 1 && (
+          <div key={label} style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+            <span style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}>{label} — opties uit het gesprek:</span>
+            {opties.map(d => <button key={d} aria-pressed={huidig === d} onClick={() => zet(d)} style={{ ...S.chip(huidig === d), padding: "4px 10px", fontSize: 12 }}>{datumKortNl(d)}</button>)}
+          </div>
+        ))}
         {h0.herkend.length > 0 && <p style={{ ...S.hint, color: C.groen }}>✨ Ingevuld uit het eerste gesprek{vanOfferte?.project?.offerte?.specificatie ? " en de offerte" : ""} — controleer even of het klopt.</p>}
 
         {!vanOfferte?.project?.intake?.tekst && (
