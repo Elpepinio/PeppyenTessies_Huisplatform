@@ -1017,6 +1017,58 @@ export default function TakenApp() {
 // ════════════════════════════════════════════════════════════════════
 // OVERZICHT
 // ════════════════════════════════════════════════════════════════════
+// Lijsten per klant groeperen, met inklapbare klantkoppen. Wat je in- of
+// uitklapt wordt per sectie op dit toestel onthouden. Korte lijsten (of maar
+// één klant) blijven plat — dan heeft groeperen geen zin.
+function leesIngeklapt(sectie) {
+  try { const v = JSON.parse(localStorage.getItem(`ingeklapt:${sectie}`) || "null"); return v && typeof v === "object" ? v : {}; } catch { return {}; }
+}
+function KlantGroepen({ sectie, items, klantVan, render, samenvatting = null, minItems = 4, standaardDicht = true }) {
+  const [staat, setStaat] = useState({});
+  useEffect(() => { setStaat(leesIngeklapt(sectie)); }, [sectie]);
+  const groepen = [];
+  const perKlant = new Map();
+  for (const l of items) {
+    const id = l.project?.klantId || l.klantId || "";
+    if (!perKlant.has(id)) { const g = { id, klant: id ? klantVan(id) : null, items: [] }; perKlant.set(id, g); groepen.push(g); }
+    perKlant.get(id).items.push(l);
+  }
+  // Zonder klant altijd onderaan.
+  groepen.sort((a, b) => (a.id ? 0 : 1) - (b.id ? 0 : 1));
+  if (groepen.length < 2 || items.length < minItems) return <>{items.map(render)}</>;
+  const isDicht = (id) => (staat[id || "_geen"] ?? standaardDicht);
+  function zet(nieuw) {
+    setStaat(nieuw);
+    try { localStorage.setItem(`ingeklapt:${sectie}`, JSON.stringify(nieuw)); } catch { /* niets */ }
+  }
+  const allesDicht = groepen.every(g => isDicht(g.id));
+  return (
+    <>
+      <button onClick={() => zet(Object.fromEntries(groepen.map(g => [g.id || "_geen", !allesDicht])))}
+        style={{ ...S.rij, padding: "8px 14px", justifyContent: "flex-end", color: C.muted, fontSize: 12, fontWeight: 600 }}>
+        {allesDicht ? "Alles uitklappen" : "Alles inklappen"} · {groepen.length} klanten
+      </button>
+      {groepen.map(g => {
+        const dicht = isDicht(g.id);
+        const kleur = g.klant?.kleur || C.muted;
+        return (
+          <div key={g.id || "_geen"} data-testid={`klantgroep-${sectie}`}>
+            <button onClick={() => zet({ ...staat, [g.id || "_geen"]: !dicht })} aria-expanded={!dicht}
+              style={{ ...S.rij, background: dicht ? C.kaart : "#FBF8F2", padding: "11px 14px" }}>
+              <ChevronDown size={16} color={C.muted} style={{ transform: dicht ? "rotate(-90deg)" : "none", transition: "transform .15s", flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 15, fontWeight: 700, color: g.klant ? kleur : C.muted }}>● {g.klant?.naam || "Zonder klant"} <span style={{ fontWeight: 500, color: C.muted }}>· {g.items.length}</span></span>
+                {dicht && samenvatting && <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{samenvatting(g.items)}</span>}
+              </span>
+            </button>
+            {!dicht && <div style={{ borderLeft: `3px solid ${g.klant ? kleur : C.rand2}`, marginLeft: 0 }}>{g.items.map(render)}</div>}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, openNieuwProject, openLosProject, openSjablonen, openOfferte, openAanvraag, openCijfers, openBackup, openAkkoord, openAfwijzen, zetMeldingenAan, vergrendel, kopieerAdres }) {
   const openAantal = (l) => (l.items || []).filter(i => !i.checked).length;
   const [afgerondOpen, setAfgerondOpen] = useState(false);
@@ -1096,7 +1148,12 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
             {/* Aanvragen: eerste telefoongesprek, offerte moet nog de deur uit */}
             <p style={{ ...S.sectieKop, marginTop: 4 }}>📞 Aanvragen</p>
             <div style={S.kaart}>
-              {aanvragen.map(l => {
+              <KlantGroepen sectie="aanvragen" items={aanvragen} klantVan={klantVan}
+                samenvatting={(ls) => {
+                  const d = ls.map(l => (l.items || []).find(i => i.aanvraagTaak && !i.checked)?.dueDate).filter(Boolean).sort()[0];
+                  return `${ls.map(l => l.name).join(", ")}${d ? ` · eerste offerte ${datumKort(d).toLowerCase()}` : ""}`;
+                }}
+                render={(l) => {
                 const klant = klantVan(l.project.klantId);
                 const taak = (l.items || []).find(i => i.aanvraagTaak && !i.checked);
                 const h = leesIntake(l.project.intake?.tekst || "", { vandaag: vandaagStr(), klanten: [] });
@@ -1114,7 +1171,7 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                     <ChevronRight size={16} color={C.licht} />
                   </button>
                 );
-              })}
+              }} />
               <button style={{ ...S.rij, color: C.groen, borderBottom: "none" }} onClick={openAanvraag}>
                 <Plus size={18} color={C.groen} /><span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Nieuwe aanvraag — notities van het eerste gesprek</span>
               </button>
@@ -1129,7 +1186,13 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
               )}
             </p>
             <div style={S.kaart}>
-              {offertes.map(l => {
+              <KlantGroepen sectie="offertes" items={offertes} klantVan={klantVan}
+                samenvatting={(ls) => {
+                  const som = ls.reduce((n, l) => n + (Number(l.project.offerte?.bedrag) || 0), 0);
+                  const nav = ls.map(l => (l.items || []).find(i => i.offerteNavraag && !i.checked)?.dueDate).filter(Boolean).sort()[0];
+                  return `${som ? `${euro(som)} uitstaand` : ls.map(l => l.name).join(", ")}${nav ? ` · ${nav <= vandaagStr() ? "⚠️ " : ""}eerst navragen ${datumKort(nav).toLowerCase()}` : ""}`;
+                }}
+                render={(l) => {
                 const o = l.project.offerte || {};
                 const dagen = o.verstuurdOp ? dagenTussen(o.verstuurdOp, vandaagStr()) : 0;
                 const navraag = (l.items || []).find(i => i.offerteNavraag && !i.checked);
@@ -1148,14 +1211,14 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                         {navraag ? ` · navragen ${datumKort(navraag.dueDate).toLowerCase()}` : ""}
                       </span>
                     </button>
-                    <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 12, color: C.muted }}>Reactie binnen?</span>
-                      <button style={{ ...S.chip(false), padding: "5px 11px", fontSize: 13, color: C.groen }} onClick={() => openAkkoord(l.id)}>👍 Akkoord gekregen</button>
+                    <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: C.muted, flex: 1, minWidth: 0 }}>Reactie binnen?</span>
+                      <button style={{ ...S.chip(false), padding: "5px 11px", fontSize: 13, color: C.groen }} onClick={() => openAkkoord(l.id)}>👍 Akkoord</button>
                       <button style={{ ...S.chip(false), padding: "5px 11px", fontSize: 13 }} onClick={() => openAfwijzen(l.id)}>✕ Afgewezen</button>
                     </div>
                   </div>
                 );
-              })}
+              }} />
               <button style={{ ...S.rij, color: C.groen, borderBottom: "none" }} onClick={openOfferte}>
                 <Plus size={18} color={C.groen} /><span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Offerte verstuurd — herinner me wekelijks</span>
               </button>
@@ -1164,7 +1227,12 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
             {/* Projecten (uit een sjabloon) — op volgorde van draaidag */}
             <p style={{ ...S.sectieKop, marginTop: 4 }}>🎬 Projecten</p>
             <div style={S.kaart}>
-              {projecten.map(l => {
+              <KlantGroepen sectie="projecten" items={projecten} klantVan={klantVan}
+                samenvatting={(ls) => {
+                  const d = ls.map(l => l.project.draaidag).filter(Boolean).sort().find(x => x >= vandaagStr()) || ls.map(l => l.project.draaidag).filter(Boolean).sort()[0];
+                  return `${ls.map(l => l.name).join(", ")}${d ? ` · draaidag ${datumKort(d).toLowerCase()}` : ""}`;
+                }}
+                render={(l) => {
                 const vg = projectVoortgang(l);
                 const klaar = vg.reduce((n, f) => n + f.klaar, 0), totaal = vg.reduce((n, f) => n + f.totaal, 0);
                 const klant = klantVan(l.project.klantId);
@@ -1189,7 +1257,7 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                     <ChevronRight size={16} color={C.licht} />
                   </button>
                 );
-              })}
+              }} />
               <button style={{ ...S.rij, color: C.groen }} onClick={() => openNieuwProject(null)}>
                 <Plus size={18} color={C.groen} /><span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Nieuw project uit sjabloon</span>
               </button>
@@ -1224,13 +1292,15 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                 </button>
                 {afgerondOpen && (
                   <div style={S.kaart}>
-                    {afgerond.map(l => (
+                    <KlantGroepen sectie="afgerond" items={afgerond} klantVan={klantVan}
+                      samenvatting={(ls) => `${ls.filter(l => projectStatus(l) !== "afgewezen").length} gedaan · ${ls.filter(l => projectStatus(l) === "afgewezen").length} afgewezen`}
+                      render={(l) => (
                       <button key={l.id} style={S.rij} onClick={() => open({ soort: "lijst", ruimte: "werk", listId: l.id })}>
                         <span style={{ fontSize: 18, width: 22, textAlign: "center", opacity: 0.6 }}>{l.icon || "🎬"}</span>
-                        <span style={{ flex: 1, fontSize: 14, color: C.muted }}>{l.name} · {projectStatus(l) === "afgewezen" ? "✕ offerte afgewezen" : datumKort(l.project.draaidag)}</span>
+                        <span style={{ flex: 1, fontSize: 14, color: C.muted }}>{l.name} · {projectStatus(l) === "afgewezen" ? "✕ offerte afgewezen" : l.project.draaidag ? datumKort(l.project.draaidag) : "afgerond"}</span>
                         <ChevronRight size={16} color={C.licht} />
                       </button>
-                    ))}
+                    )} />
                   </div>
                 )}
               </>
