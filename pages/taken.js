@@ -496,17 +496,20 @@ export default function TakenApp() {
   }, [werkStaat, werk]); // eslint-disable-line react-hooks/exhaustive-deps
   // Alle lijsten waar je vanuit het +-paneel een taak heen kunt sturen.
   const doelen = useMemo(() => {
+    // Groepen: losse werktaken (lijsten zonder project) · projecten · thuis.
     const uit = [];
     if (werkStaat === "open") {
-      werkLijsten.filter(l => !l.project?.afgerond).forEach(l => {
-        const st = l.project ? projectStatus(l) : null;
-        uit.push({ ruimte: "werk", listId: l.id, label: `${l.icon || "💼"} ${l.name}`, lopendProject: !!l.project && st !== "aanvraag" && st !== "offerte" });
+      const los = werkLijsten.filter(l => !l.project);
+      los.forEach(l => uit.push({ ruimte: "werk", groep: "werk", listId: l.id, label: `${l.icon || "💼"} ${l.name}`, lopendProject: false }));
+      // Nog geen losse werklijst? Dan maakt de eerste losse taak er een aan.
+      if (!los.some(l => !l.mailInbox)) uit.unshift({ ruimte: "werk", groep: "werk", listId: null, label: "💼 Taken (los)", lopendProject: false });
+      werkLijsten.filter(l => l.project && !l.project.afgerond).forEach(l => {
+        const st = projectStatus(l);
+        uit.push({ ruimte: "werk", groep: "project", listId: l.id, label: `${l.icon || "🎬"} ${l.name}`, lopendProject: st !== "aanvraag" && st !== "offerte" });
       });
     }
-    thuisLijsten.forEach(l => uit.push({ ruimte: "thuis", listId: l.id, label: `${l.icon || "✅"} ${l.name}`, lopendProject: false }));
-    // Nog geen gewone lijst? Dan maakt de eerste taak er een aan.
-    if (werkStaat === "open" && !werkLijsten.some(l => !l.mailInbox)) uit.unshift({ ruimte: "werk", listId: null, label: "💼 Taken", lopendProject: false });
-    if (!thuisLijsten.some(l => !l.mailInbox)) uit.push({ ruimte: "thuis", listId: null, label: "✅ Taken", lopendProject: false });
+    thuisLijsten.forEach(l => uit.push({ ruimte: "thuis", groep: "thuis", listId: l.id, label: `${l.icon || "✅"} ${l.name}`, lopendProject: false }));
+    if (!thuisLijsten.some(l => !l.mailInbox)) uit.push({ ruimte: "thuis", groep: "thuis", listId: null, label: "✅ Taken", lopendProject: false });
     return uit;
   }, [werkLijsten, thuisLijsten, werkStaat]);
   function voegToeNaar(ruimte, listId, tekst, extra, label) {
@@ -518,7 +521,7 @@ export default function TakenApp() {
   }
   function standaardLijst(ruimte) {
     const bron = ruimte === "werk" ? werkRef.current?.lists || [] : thuisRef.current.filter(l => l.type === "todo");
-    const gewoon = bron.find(l => !l.mailInbox);
+    const gewoon = bron.find(l => !l.mailInbox && !l.project);
     if (gewoon) return gewoon;
     const nieuw = nieuweLijstObject("Taken", ruimte === "werk" ? "💼" : "✅");
     zetLijst(ruimte, nieuw);
@@ -649,7 +652,7 @@ export default function TakenApp() {
           {...{ ruimteFilter, setRuimteFilter, klantFilter, setKlantFilter, klanten, werkStaat, vandaag, suggestiesOpen, setSuggestiesOpen, klantVan, chronoRef, doelen, voegToeNaar }}
           standaardDoel={(() => {
             const r = ruimteFilter === "werk" && werkStaat === "open" ? "werk" : "thuis";
-            const l = (r === "werk" ? werkLijsten : thuisLijsten).find(x => !x.mailInbox);
+            const l = (r === "werk" ? werkLijsten : thuisLijsten).find(x => !x.mailInbox && !x.project);
             return { ruimte: r, listId: l ? l.id : null };
           })()}
           basisExtra={{
@@ -1483,11 +1486,11 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 12, color: C.muted, width: 58, flexShrink: 0 }}>Waar</span>
               <select aria-label="Lijst" value={paneel.doel} onChange={e => setPaneel(p => ({ ...p, doel: e.target.value }))} style={{ ...veld, flex: 1, width: 0, minWidth: 0, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", WebkitAppearance: "none", appearance: "none", paddingRight: 28, backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%238C8576' stroke-width='1.6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" }}>
-                {["werk", "thuis"].map(r => {
-                  const groep = doelen.filter(d => d.ruimte === r);
+                {[["werk", "💼 Werk — losse taken"], ["project", "🎬 Projecten"], ["thuis", "🏠 Thuis"]].map(([r, kop]) => {
+                  const groep = doelen.filter(d => (d.groep || d.ruimte) === r);
                   if (!groep.length) return null;
                   return (
-                    <optgroup key={r} label={r === "werk" ? "💼 Werk" : "🏠 Thuis"}>
+                    <optgroup key={r} label={kop}>
                       {groep.map(d => <option key={sleutel(d)} value={sleutel(d)}>{d.label}</option>)}
                     </optgroup>
                   );
