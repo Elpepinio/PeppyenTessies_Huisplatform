@@ -19,7 +19,7 @@ import Head from "next/head";
 import { useRouter } from "next/router";
 import {
   Sun, Star, CalendarDays, User, Bell, Repeat, Lock, Mail, Copy, Tag, ChevronLeft, ChevronRight,
-  ChevronDown, Plus, X, Check, Trash2, Briefcase, Home, Upload, ArrowRightLeft, KeyRound, Download, Send,
+  ChevronDown, Plus, X, Check, Mic, Square, Trash2, Briefcase, Home, Upload, ArrowRightLeft, KeyRound, Download, Send,
 } from "lucide-react";
 import {
   vandaagStr, plusDagen, isoWeekdag, normaliseerHerhaling, herhalingLabel, vinkTaak, isInMijnDag,
@@ -128,7 +128,7 @@ export default function TakenApp() {
   const [laden, setLaden] = useState(true);
   const [fout, setFout] = useState(null);
   const [weergave, setWeergave] = useState({ soort: "overzicht" }); // | {soort:"slim", id} | {soort:"lijst", ruimte, listId}
-  const [ruimteFilter, setRuimteFilter] = useState("alles");
+  const [ruimteFilter, setRuimteFilter] = useState("werk"); // standaard Werk
   const [klantFilter, setKlantFilter] = useState(null);
   const [detail, setDetail] = useState(null); // { ruimte, listId, itemId }
   const [sheet, setSheet] = useState(null); // nieuweLijst | pin | mail | klanten | import | lijstMenu
@@ -462,6 +462,32 @@ export default function TakenApp() {
     setDetail({ ruimte: naar.ruimte, listId: naar.listId, itemId: taak.id });
     meld(`↪︎ Verplaatst naar ${doel.icon} ${doel.name}`);
   }
+  // Standaard staat het filter op Werk; zonder (open) werkruimte → Alles.
+  useEffect(() => {
+    if (!["open", "laden"].includes(werkStaat) && ruimteFilter === "werk") setRuimteFilter("alles");
+  }, [werkStaat]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Alle lijsten waar je vanuit het +-paneel een taak heen kunt sturen.
+  const doelen = useMemo(() => {
+    const uit = [];
+    if (werkStaat === "open") {
+      werkLijsten.filter(l => !l.project?.afgerond).forEach(l => {
+        const st = l.project ? projectStatus(l) : null;
+        uit.push({ ruimte: "werk", listId: l.id, label: `${l.icon || "💼"} ${l.name}`, lopendProject: !!l.project && st !== "aanvraag" && st !== "offerte" });
+      });
+    }
+    thuisLijsten.forEach(l => uit.push({ ruimte: "thuis", listId: l.id, label: `${l.icon || "✅"} ${l.name}`, lopendProject: false }));
+    // Nog geen gewone lijst? Dan maakt de eerste taak er een aan.
+    if (werkStaat === "open" && !werkLijsten.some(l => !l.mailInbox)) uit.unshift({ ruimte: "werk", listId: null, label: "💼 Taken", lopendProject: false });
+    if (!thuisLijsten.some(l => !l.mailInbox)) uit.push({ ruimte: "thuis", listId: null, label: "✅ Taken", lopendProject: false });
+    return uit;
+  }, [werkLijsten, thuisLijsten, werkStaat]);
+  function voegToeNaar(ruimte, listId, tekst, extra, label) {
+    const id = listId || standaardLijst(ruimte).id;
+    const doel = ruimte === "werk" ? lijstVan("werk", id) : null;
+    if (doel?.project?.klantId && !extra.klantId) extra = { ...extra, klantId: doel.project.klantId };
+    voegToe(ruimte, id, tekst, extra);
+    meld(`✓ Toegevoegd aan ${label || "de lijst"}${extra?.dueDate ? ` · ${datumKort(extra.dueDate).toLowerCase()}` : ""}`);
+  }
   function standaardLijst(ruimte) {
     const bron = ruimte === "werk" ? werkRef.current?.lists || [] : thuisRef.current.filter(l => l.type === "todo");
     const gewoon = bron.find(l => !l.mailInbox);
@@ -484,7 +510,7 @@ export default function TakenApp() {
       ...(slim.dueDate && extraVelden.dueDate ? { dueDate: slim.dueDate } : {}),
     }, { wie: ik });
     zetLijst(ruimte, { ...doel, items: [...(doel.items || []), taak] });
-    if (slim.herinnering && meldingen === "uit") meld("🔔 Herinnering gezet — zet meldingen aan op dit toestel om 'm te krijgen");
+    if (taak.herinnering && meldingen === "uit") meld("🔔 Herinnering gezet — zet meldingen aan op dit toestel om 'm te krijgen");
   }
 
   // ── Meldingen op dit toestel ─────────────────────────────────────
@@ -591,7 +617,16 @@ export default function TakenApp() {
       {weergave.soort === "slim" && (
         <SlimOverzicht
           id={weergave.id} regels={regelsVoor(weergave.id)} alleRegels={alleRegels}
-          {...{ ruimteFilter, setRuimteFilter, klantFilter, setKlantFilter, klanten, werkStaat, vandaag, suggestiesOpen, setSuggestiesOpen, klantVan, chronoRef }}
+          {...{ ruimteFilter, setRuimteFilter, klantFilter, setKlantFilter, klanten, werkStaat, vandaag, suggestiesOpen, setSuggestiesOpen, klantVan, chronoRef, doelen, voegToeNaar }}
+          standaardDoel={(() => {
+            const r = ruimteFilter === "werk" && werkStaat === "open" ? "werk" : "thuis";
+            const l = (r === "werk" ? werkLijsten : thuisLijsten).find(x => !x.mailInbox);
+            return { ruimte: r, listId: l ? l.id : null };
+          })()}
+          basisExtra={{
+            ...(weergave.id === "mijndag" ? { mijnDag: vandaag } : weergave.id === "belangrijk" ? { belangrijk: true } : weergave.id === "aanmij" ? { assignedTo: ik } : weergave.id === "gepland" ? { dueDate: vandaag } : {}),
+            ...(klantFilter ? { klantId: klantFilter } : {}),
+          }}
           terug={() => setWeergave({ soort: "overzicht" })}
           vink={(r) => vink(r.ruimte, r.lijst.id, r.item.id)}
           ster={(r) => zetVelden(r.ruimte, r.lijst.id, r.item.id, { belangrijk: !r.item.belangrijk })}
@@ -616,7 +651,7 @@ export default function TakenApp() {
         return (
           <LijstWeergave
             ruimte={weergave.ruimte} lijst={lijst}
-            {...{ klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, vandaag, chronoRef }}
+            {...{ klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, vandaag, chronoRef, doelen, voegToeNaar }}
             sjabloon={lijst.project ? sjablonen.find(t => t.id === lijst.project.sjabloonId) : null}
             verschuif={(data) => {
               wijzigLijst(weergave.ruimte, lijst.id, l => verschuifProject(l, data));
@@ -1255,34 +1290,193 @@ function TaakRegel({ item, lijst, ruimte, toonLijst, klant, vink, ster, open, ex
   );
 }
 
-function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null }) {
+// Invoerbalk onderaan: Enter = snel toevoegen (met datumherkenning in de
+// tekst). De + opent een klein paneel: waar komt de taak, voor wanneer,
+// eventueel een notitie. De 🎤 zet ingesproken tekst om in een taak.
+function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = [], standaardDoel = null, basisExtra = {}, voegToeNaar = null, vandaag }) {
   const [tekst, setTekst] = useState("");
+  const [paneel, setPaneel] = useState(null); // { doel, fase, wanneer, datum, tijd, notitie }
+  const [luistert, setLuistert] = useState(false);
+  const [spraakHint, setSpraakHint] = useState(null);
+  const herkenRef = useRef(null);
+  const invoerRef = useRef(null);
+  const dag0 = vandaag || vandaagStr();
+  const morgen = plusDagen(dag0, 1);
   const voorbeeld = tekst.trim().length > 2 ? ontleedSnelleInvoer(tekst, chronoRef.current, new Date()) : null;
   const chips = [];
-  if (voorbeeld?.herinnering) chips.push(`🔔 ${herinneringKort(voorbeeld.herinnering)}`);
-  else if (voorbeeld?.dueDate) chips.push(`📅 ${datumKort(voorbeeld.dueDate)}`);
+  if (!paneel) {
+    if (voorbeeld?.herinnering) chips.push(`🔔 ${herinneringKort(voorbeeld.herinnering)}`);
+    else if (voorbeeld?.dueDate) chips.push(`📅 ${datumKort(voorbeeld.dueDate)}`);
+  }
   if (voorbeeld?.herhaling) chips.push(`🔁 ${herhalingLabel(voorbeeld.herhaling)}`);
   if (voorbeeld?.belangrijk) chips.push("⭐ Belangrijk");
+  const kanUitklappen = !!voegToeNaar && doelen.length > 0;
+  const sleutel = (d) => (d ? `${d.ruimte}:${d.listId}` : "");
+  const doelLijst = paneel ? doelen.find(d => sleutel(d) === paneel.doel) : null;
+  const isProjectDoel = !!doelLijst?.lopendProject;
+
+  function prefill(t) {
+    const v = t.trim().length > 2 ? ontleedSnelleInvoer(t, chronoRef.current, new Date()) : null;
+    const datum = v?.dueDate || basisExtra.dueDate || null;
+    const tijd = v?.herinnering ? v.herinnering.slice(11, 16) : "";
+    const start = standaardDoel && doelen.some(d => sleutel(d) === sleutel(standaardDoel)) ? standaardDoel : doelen[0];
+    return {
+      doel: sleutel(start), fase: standaardDoel?.fase || "pre",
+      wanneer: !datum ? "geen" : datum === dag0 ? "vandaag" : datum === morgen ? "morgen" : "datum",
+      datum: datum || "", tijd, notitie: "",
+    };
+  }
+  function openPaneel(t = tekst) { setPaneel(prefill(t)); }
+  function sluitPaneel() { setPaneel(null); }
+
   function verstuur() {
     if (!tekst.trim()) return;
-    voegToe(tekst);
+    if (paneel && kanUitklappen) {
+      const d = doelLijst || doelen[0];
+      const datum = paneel.wanneer === "vandaag" ? dag0 : paneel.wanneer === "morgen" ? morgen : paneel.wanneer === "datum" ? (paneel.datum || null) : null;
+      const dueDate = datum || (paneel.tijd ? dag0 : null);
+      const titel = (voorbeeld?.titel || tekst).trim();
+      const extra = { ...basisExtra, dueDate, herinnering: dueDate && paneel.tijd ? `${dueDate}T${paneel.tijd}` : null };
+      if (voorbeeld?.herhaling) extra.herhaling = voorbeeld.herhaling;
+      if (voorbeeld?.belangrijk) extra.belangrijk = true;
+      if (paneel.notitie.trim()) extra.note = paneel.notitie.trim();
+      if (d.lopendProject) extra.category = paneel.fase;
+      if (d.ruimte !== "werk") delete extra.klantId;
+      voegToeNaar(d.ruimte, d.listId, titel.charAt(0).toUpperCase() + titel.slice(1), extra, d.label);
+      setPaneel(null);
+    } else {
+      voegToe(tekst);
+    }
     setTekst("");
   }
+
+  // ── Spraak → tekst (Web Speech API; op iPhone via Safari) ──────────
+  function spraak() {
+    if (luistert) { try { herkenRef.current?.stop(); } catch { /* al gestopt */ } return; }
+    const SR = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    if (!SR) { setSpraakHint("geen"); invoerRef.current?.focus(); return; }
+    setSpraakHint(null);
+    const basis = tekst.trim() ? tekst.trim() + " " : "";
+    let gehoord = "";
+    let r;
+    try { r = new SR(); } catch { setSpraakHint("geen"); invoerRef.current?.focus(); return; }
+    r.lang = "nl-NL"; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+    r.onresult = (e) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      gehoord = t.trim();
+      const zin = basis + gehoord;
+      setTekst(zin.charAt(0).toUpperCase() + zin.slice(1));
+    };
+    r.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") setSpraakHint("geweigerd");
+      else if (e.error === "no-speech") setSpraakHint("stil");
+      else if (e.error !== "aborted") setSpraakHint("fout");
+    };
+    r.onend = () => {
+      setLuistert(false); herkenRef.current = null;
+      if (gehoord && kanUitklappen) { const zin = basis + gehoord; setPaneel(p => p || prefill(zin)); }
+    };
+    herkenRef.current = r;
+    setLuistert(true);
+    try { r.start(); } catch { setLuistert(false); setSpraakHint("fout"); }
+  }
+  useEffect(() => () => { try { herkenRef.current?.abort(); } catch { /* niets */ } }, []);
+
+  const HINTS = {
+    geen: "Inspreken kan hier niet rechtstreeks. Tik op de 🎤 rechtsonder op je iPhone-toetsenbord om in te spreken.",
+    geweigerd: "Geen toegang tot de microfoon. Zet 'Microfoon' en 'Spraakherkenning' aan voor Safari in Instellingen › Apps › Safari, of gebruik de 🎤 op het toetsenbord.",
+    stil: "Ik hoorde niets — tik nog eens op de 🎤 en spreek je taak in.",
+    fout: "Inspreken lukte niet. Probeer opnieuw, of gebruik de 🎤 op je toetsenbord.",
+  };
+  const klein = { ...S.chip(false), padding: "5px 10px", fontSize: 12 };
+  const kleinAan = (aan) => ({ ...S.chip(aan), padding: "5px 10px", fontSize: 12 });
+  const veld = { border: `1px solid ${C.rand2}`, borderRadius: 10, padding: "7px 9px", fontSize: 16, fontFamily: "inherit", background: C.bg, color: C.tekst, minWidth: 0 };
+
   return (
     <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, padding: "10px 16px 24px", background: `linear-gradient(180deg, rgba(250,246,240,0) 0%, ${C.bg} 30%)`, zIndex: 20 }}>
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
-        {boven}
+        {!paneel && boven}
+        {spraakHint && (
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: "#FFF4E5", border: "1px solid #F1D3A8", borderRadius: 12, padding: "8px 10px", marginBottom: 6, fontSize: 13, color: C.tekst }}>
+            <span style={{ flex: 1 }}>{HINTS[spraakHint]}</span>
+            <button onClick={() => setSpraakHint(null)} aria-label="Sluiten" style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}><X size={16} color={C.muted} /></button>
+          </div>
+        )}
+        {paneel && kanUitklappen && (
+          <div data-testid="invoer-paneel" style={{ background: C.kaart, border: `1px solid ${C.rand2}`, borderRadius: 16, padding: 12, marginBottom: 8, boxShadow: "0 6px 18px rgba(45,42,38,.10)", display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12, color: C.muted, width: 62, flexShrink: 0 }}>Waar</span>
+              <select aria-label="Lijst" value={paneel.doel} onChange={e => setPaneel(p => ({ ...p, doel: e.target.value }))} style={{ ...veld, flex: 1 }}>
+                {["werk", "thuis"].map(r => {
+                  const groep = doelen.filter(d => d.ruimte === r);
+                  if (!groep.length) return null;
+                  return (
+                    <optgroup key={r} label={r === "werk" ? "💼 Werk" : "🏠 Thuis"}>
+                      {groep.map(d => <option key={sleutel(d)} value={sleutel(d)}>{d.label}</option>)}
+                    </optgroup>
+                  );
+                })}
+              </select>
+              <button onClick={sluitPaneel} aria-label="Paneel sluiten" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex" }}><X size={18} color={C.muted} /></button>
+            </div>
+            {isProjectDoel && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, color: C.muted, width: 62, flexShrink: 0 }}>Fase</span>
+                <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
+                  {FASES.map(f => <button key={f.id} style={kleinAan(paneel.fase === f.id)} onClick={() => setPaneel(p => ({ ...p, fase: f.id }))}>{f.icon} {f.label}</button>)}
+                </div>
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12, color: C.muted, width: 62, flexShrink: 0 }}>Wanneer</span>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {[["geen", "Geen datum"], ["vandaag", "Vandaag"], ["morgen", "Morgen"]].map(([k, l]) => (
+                  <button key={k} style={kleinAan(paneel.wanneer === k)} onClick={() => setPaneel(p => ({ ...p, wanneer: k, ...(k === "geen" ? { tijd: "" } : {}) }))}>{l}</button>
+                ))}
+                <label style={{ ...kleinAan(paneel.wanneer === "datum"), display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
+                  📅 {paneel.wanneer === "datum" && paneel.datum ? datumKort(paneel.datum) : "Datum…"}
+                  <input type="date" aria-label="Datum" value={paneel.datum || ""} min={dag0}
+                    onChange={e => setPaneel(p => ({ ...p, datum: e.target.value, wanneer: e.target.value ? "datum" : "geen" }))}
+                    style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", cursor: "pointer" }} />
+                </label>
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12, color: C.muted, width: 62, flexShrink: 0 }}>Herinner</span>
+              <input type="time" aria-label="Tijd herinnering" value={paneel.tijd} onChange={e => setPaneel(p => ({ ...p, tijd: e.target.value, ...(p.wanneer === "geen" && e.target.value ? { wanneer: "vandaag" } : {}) }))} style={{ ...veld, width: 110 }} />
+              {paneel.tijd ? <button style={klein} onClick={() => setPaneel(p => ({ ...p, tijd: "" }))}>Geen</button> : <span style={{ fontSize: 12, color: C.muted }}>optioneel — dan krijg je een melding</span>}
+            </div>
+            <textarea aria-label="Notitie" value={paneel.notitie} onChange={e => setPaneel(p => ({ ...p, notitie: e.target.value }))} placeholder="Notitie (optioneel)" rows={2}
+              style={{ ...veld, resize: "vertical", width: "100%", boxSizing: "border-box" }} />
+            <button onClick={verstuur} disabled={!tekst.trim()} style={{ ...S.knop(), opacity: tekst.trim() ? 1 : 0.5 }}>
+              Toevoegen{doelLijst ? ` aan ${doelLijst.label}` : ""}
+            </button>
+          </div>
+        )}
         {chips.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
             {chips.map(c => <span key={c} style={{ fontSize: 12, background: "#2D4A3E14", color: C.groen, borderRadius: 999, padding: "4px 10px", fontWeight: 600 }}>{c}</span>)}
             {voorbeeld?.titel && <span style={{ fontSize: 12, color: C.muted, padding: "4px 2px" }}>→ "{voorbeeld.titel}"</span>}
           </div>
         )}
-        <form onSubmit={e => { e.preventDefault(); verstuur(); }} style={{ display: "flex", gap: 8, background: C.kaart, border: `1px solid ${C.rand2}`, borderRadius: 16, padding: 6, boxShadow: "0 6px 18px rgba(45,42,38,.08)" }}>
-          <input value={tekst} onChange={e => setTekst(e.target.value)} placeholder={placeholder} aria-label="Taak toevoegen"
+        <form onSubmit={e => { e.preventDefault(); verstuur(); }} style={{ display: "flex", gap: 6, background: C.kaart, border: `1px solid ${luistert ? C.rood : C.rand2}`, borderRadius: 16, padding: 6, boxShadow: "0 6px 18px rgba(45,42,38,.08)" }}>
+          <input ref={invoerRef} value={tekst} onChange={e => setTekst(e.target.value)} placeholder={luistert ? "Ik luister…" : placeholder} aria-label="Taak toevoegen"
             style={{ flex: 1, border: "none", outline: "none", fontSize: 16, padding: "8px 10px", background: "transparent", minWidth: 0, fontFamily: "inherit", color: C.tekst }} />
-          <button type="submit" aria-label="Toevoegen" style={{ ...S.knop(), padding: "8px 12px", display: "flex", alignItems: "center" }}><Plus size={18} /></button>
+          <button type="button" onClick={spraak} aria-label={luistert ? "Stoppen met inspreken" : "Taak inspreken"} title="Taak inspreken"
+            style={{ ...S.knop(luistert ? C.rood : C.bg, luistert ? "#FAF6F0" : C.groen), border: `1px solid ${luistert ? C.rood : C.rand2}`, padding: "8px 11px", display: "flex", alignItems: "center", animation: luistert ? "luisterPuls 1.2s ease-in-out infinite" : "none" }}>
+            {luistert ? <Square size={16} fill="#FAF6F0" /> : <Mic size={18} />}
+          </button>
+          {kanUitklappen ? (
+            <button type="button" onClick={() => (paneel ? sluitPaneel() : openPaneel())} aria-label={paneel ? "Opties sluiten" : "Taak toevoegen met opties"} aria-expanded={!!paneel}
+              style={{ ...S.knop(), padding: "8px 12px", display: "flex", alignItems: "center" }}>
+              {paneel ? <ChevronDown size={18} /> : <Plus size={18} />}
+            </button>
+          ) : (
+            <button type="submit" aria-label="Toevoegen" style={{ ...S.knop(), padding: "8px 12px", display: "flex", alignItems: "center" }}><Plus size={18} /></button>
+          )}
         </form>
+        <style>{"@keyframes luisterPuls{0%,100%{box-shadow:0 0 0 0 rgba(180,60,50,.45)}50%{box-shadow:0 0 0 7px rgba(180,60,50,0)}}"}</style>
       </div>
     </div>
   );
@@ -1314,7 +1508,7 @@ function LegeStaat({ terug, tekst }) {
 // ════════════════════════════════════════════════════════════════════
 // SLIMME OVERZICHTEN
 // ════════════════════════════════════════════════════════════════════
-function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, klantFilter, setKlantFilter, klanten, werkStaat, vandaag, suggestiesOpen, setSuggestiesOpen, klantVan, chronoRef, terug, vink, ster, openTaak, naarMijnDag, voegToe }) {
+function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, klantFilter, setKlantFilter, klanten, werkStaat, vandaag, suggestiesOpen, setSuggestiesOpen, klantVan, chronoRef, terug, vink, ster, openTaak, naarMijnDag, voegToe, doelen, voegToeNaar, standaardDoel, basisExtra }) {
   const v = SLIM[id];
   const Icoon = v.icoon;
   const regel = (r) => (
@@ -1388,7 +1582,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
           </>
         )}
       </main>
-      <InvoerBalk chronoRef={chronoRef} voegToe={voegToe}
+      <InvoerBalk chronoRef={chronoRef} voegToe={voegToe} {...{ doelen, voegToeNaar, standaardDoel, basisExtra, vandaag }}
         placeholder={ruimteFilter === "werk" && werkStaat === "open" ? "Werktaak toevoegen…" : "Taak toevoegen — bv. 'morgen 9:00 tandarts bellen'"} />
     </>
   );
@@ -1397,7 +1591,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
+function LijstWeergave({ doelen, voegToeNaar, vandaag, ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
   const [menu, setMenu] = useState(false);
   const isAanvraag = projectStatus(lijst) === "aanvraag";
   const isOfferte = projectStatus(lijst) === "offerte" || isAanvraag;
@@ -1482,7 +1676,9 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
           </>
         )}
       </main>
-      <InvoerBalk chronoRef={chronoRef}
+      <InvoerBalk chronoRef={chronoRef} {...{ doelen, voegToeNaar, vandaag }}
+        standaardDoel={{ ruimte, listId: lijst.id, fase: nieuweFase }}
+        basisExtra={ruimte === "werk" && klantFilter ? { klantId: klantFilter } : {}}
         voegToe={(tekst) => voegToe(tekst, isProject ? { category: nieuweFase } : {})}
         placeholder={isProject ? `Taak toevoegen aan ${FASES.find(f => f.id === nieuweFase)?.label.toLowerCase()}…` : ruimte === "werk" ? "Werktaak toevoegen — bv. 'vrijdag offerte sturen'" : "Taak toevoegen — bv. 'morgen 9:00 tandarts bellen'"}
         boven={isProject && (
