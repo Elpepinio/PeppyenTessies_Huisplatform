@@ -27,7 +27,7 @@ import {
   groepeerGepland, sorteerTaken, planDatum, ontleedSnelleInvoer, ontleedPlakImport, nieuweTaak, isGeldigePin,
 } from "../lib/taken-logica";
 import {
-  FASES, SOORTEN, STANDAARD_SJABLONEN, maakProjectUitSjabloon, registreerGebruik, verschuifProject, projectVoortgang,
+  FASES, SOORTEN, STANDAARD_SJABLONEN, maakProjectUitSjabloon, maakLosProject, registreerGebruik, verschuifProject, projectVoortgang,
   berekenLeerVoorstellen, pasLeerVoorstellenToe, sorteerStappen, normaliseerStap, offsetTekst, timingHint, stapDatum,
   projectStatus, maakOfferte, offerteAkkoord, offerteAfgewezen, offerteNagevraagd, offerteStatistiek,
   ONDERDELEN, standaardOnderdelen, standaardMeetings, pasOnderdelenToe, telVerdwijnendeTaken,
@@ -623,6 +623,7 @@ export default function TakenApp() {
         <Overzicht
           {...{ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, vandaag }}
           openNieuwProject={(sjabloonId) => setSheet({ soort: "nieuwProject", sjabloonId })}
+          openLosProject={() => setSheet("losProject")}
           openOfferte={() => setSheet("offerte")}
           openAanvraag={() => setSheet("aanvraag")}
           openCijfers={() => setSheet("cijfers")}
@@ -788,6 +789,18 @@ export default function TakenApp() {
       })()}
       {sheet === "backup" && <BackupSheet sluit={() => setSheet(null)} meld={meld} naHerstel={() => { lastWriteRef.current = 0; verversAlles(true); }} />}
       {sheet === "cijfers" && <CijfersSheet lijsten={werk?.lists || []} klanten={werk?.klanten || []} sluit={() => setSheet(null)} />}
+      {sheet === "losProject" && (
+        <LosProjectSheet {...{ klanten }} nieuweKlant={maakKlant} sluit={() => setSheet(null)} heeftSjablonen={sjablonen.length > 0}
+          naarSjabloon={() => setSheet({ soort: "nieuwProject", sjabloonId: null, offerteNietDoorMij: true })}
+          maak={(velden) => {
+            const lijst = maakLosProject({ ...velden, vandaag, wie: ik, nieuwId: uid });
+            zetLijst("werk", lijst);
+            setSheet(null);
+            setKlantFilter(null);
+            setWeergave({ soort: "lijst", ruimte: "werk", listId: lijst.id });
+            meld(`📂 Project "${lijst.name}" aangemaakt`);
+          }} />
+      )}
       {sheet === "aanvraag" && (
         <AanvraagSheet {...{ klanten, vandaag }} alleKlanten={werk?.klanten || []} nieuweKlant={maakKlant} sluit={() => setSheet(null)}
           maak={({ naam, klantId, tekst, gesprekDatum, offerteUiterlijk }) => {
@@ -918,7 +931,7 @@ export default function TakenApp() {
       })()}
       {sheet?.soort === "nieuwProject" && (
         <NieuwProjectSheet
-          {...{ sjablonen, klanten, vandaag }} startSjabloonId={sheet.sjabloonId} nieuweKlant={maakKlant}
+          {...{ sjablonen, klanten, vandaag }} startSjabloonId={sheet.sjabloonId} nieuweKlant={maakKlant} startOfferteNietDoorMij={!!sheet.offerteNietDoorMij}
           sluit={() => setSheet(null)}
           maak={(sjabloon, opties) => {
             const lijst = rondStartAf(startMetOnderdelen(maakProjectUitSjabloon(sjabloon, { ...opties, vandaag, wie: ik, nieuwId: uid }), sjabloon, opties), opties);
@@ -1001,7 +1014,7 @@ export default function TakenApp() {
 // ════════════════════════════════════════════════════════════════════
 // OVERZICHT
 // ════════════════════════════════════════════════════════════════════
-function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, openNieuwProject, openSjablonen, openOfferte, openAanvraag, openCijfers, openBackup, openAkkoord, openAfwijzen, zetMeldingenAan, vergrendel, kopieerAdres }) {
+function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, openNieuwProject, openLosProject, openSjablonen, openOfferte, openAanvraag, openCijfers, openBackup, openAkkoord, openAfwijzen, zetMeldingenAan, vergrendel, kopieerAdres }) {
   const openAantal = (l) => (l.items || []).filter(i => !i.checked).length;
   const [afgerondOpen, setAfgerondOpen] = useState(false);
   const offertes = werkLijsten.filter(l => projectStatus(l) === "offerte" && !l.project.afgerond)
@@ -1010,7 +1023,7 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
     .sort((a, b) => (a.project.gestartOp || 0) - (b.project.gestartOp || 0));
   const stat = offerteStatistiek(werkLijsten);
   const projecten = werkLijsten.filter(l => l.project && !l.project.afgerond && !["offerte", "aanvraag"].includes(projectStatus(l)))
-    .sort((a, b) => (a.project.draaidag || "").localeCompare(b.project.draaidag || ""));
+    .sort((a, b) => (a.project.draaidag || "9999").localeCompare(b.project.draaidag || "9999"));
   const afgerond = werkLijsten.filter(l => l.project?.afgerond);
   const gewoon = werkLijsten.filter(l => !l.project);
   return (
@@ -1160,7 +1173,7 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                       {/* draaidag kan ontbreken bij een (oud) project zonder datum */}
                       <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 2 }}>
                         {klant && <span style={{ color: klant.kleur || C.groen, fontWeight: 700 }}>● {klant.naam} · </span>}
-                        Draaidag {datumKort(l.project.draaidag)} · {klaar}/{totaal} klaar
+                        {l.project.draaidag ? `Draaidag ${datumKort(l.project.draaidag)}` : "Nog geen draaidag"}{l.project.opdrachtVia ? ` · via ${l.project.opdrachtVia}` : ""} · {klaar}/{totaal} klaar
                       </span>
                       <span style={{ display: "flex", gap: 3, marginTop: 6 }}>
                         {vg.map(f => (
@@ -1176,6 +1189,9 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
               })}
               <button style={{ ...S.rij, color: C.groen }} onClick={() => openNieuwProject(null)}>
                 <Plus size={18} color={C.groen} /><span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Nieuw project uit sjabloon</span>
+              </button>
+              <button style={{ ...S.rij, color: C.groen }} onClick={openLosProject}>
+                <Plus size={18} color={C.groen} /><span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Los project <span style={{ fontWeight: 400, color: C.muted }}>— offerte niet door mij</span></span>
               </button>
               <button style={{ ...S.rij, borderBottom: "none" }} onClick={openSjablonen}>
                 <span style={{ fontSize: 16, width: 18, textAlign: "center" }}>📐</span>
@@ -1769,17 +1785,24 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
           <option value="">Geen klant</option>
           {klanten.map(k => <option key={k.id} value={k.id}>● {k.naam}</option>)}
         </select>
-        <span style={{ fontSize: 12, color: C.muted }}>📐 {sjabloon?.naam || p.sjabloonNaam || "sjabloon verwijderd"}</span>
+        <span style={{ fontSize: 12, color: C.muted }}>{p.los ? "📂 Los project" : `📐 ${sjabloon?.naam || p.sjabloonNaam || "sjabloon verwijderd"}`}{p.offerteNietDoorMij && !p.los ? " · offerte niet door mij" : ""}</span>
+        {(p.los || p.offerteNietDoorMij) && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, flex: "1 1 100%", fontSize: 12, color: C.muted, fontWeight: 700 }}>🤝 VIA
+            <input aria-label="Opdracht via" defaultValue={p.opdrachtVia || ""} key={p.opdrachtVia || ""} placeholder="bureau of productiehuis (optioneel)"
+              onBlur={e => { const v = e.target.value.trim().slice(0, 80); if (v !== (p.opdrachtVia || "")) zetProject({ opdrachtVia: v || null }); }}
+              style={{ ...S.inp, flex: 1, minWidth: 0, padding: "6px 10px", fontSize: 14, fontWeight: 400 }} />
+          </label>
+        )}
       </div>
       {p.deliverables && deliverablesTekst(p.deliverables) && (
         <p style={{ margin: "8px 0 0", fontSize: 13 }}>📦 <strong>Deliverables:</strong> {deliverablesTekst(p.deliverables)}</p>
       )}
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
         <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>🎬 {draaidagenVan(p).length > 1 ? "DRAAIDAG 1" : "DRAAIDAG"}
-          <input type="date" value={draai || ""} onChange={e => setDraai(e.target.value)} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
+          <input type="date" value={draai || ""} onChange={e => { setDraai(e.target.value); if (!p.draaidag || !p.opleverdatum) zetProject({ draaidag: e.target.value || null }); }} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
         </label>
         <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>📦 OPLEVERING
-          <input type="date" value={oplever || ""} onChange={e => setOplever(e.target.value)} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
+          <input type="date" value={oplever || ""} onChange={e => { setOplever(e.target.value); if (!p.draaidag || !p.opleverdatum) zetProject({ opleverdatum: e.target.value || null }); }} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
         </label>
       </div>
       <DraaidagenRegel p={p} zetDagen={zetDagen} openCallsheet={openCallsheet} />
@@ -1791,7 +1814,7 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
           style={{ ...S.inp, padding: "6px 8px", fontSize: 13, width: "auto" }} />
         {!p.liveDatum && <span style={{ fontWeight: 400 }}>leeg = oplevering</span>}
       </label>
-      {gewijzigd && draai && oplever && (
+      {gewijzigd && draai && oplever && p.draaidag && p.opleverdatum && (
         <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, color: C.muted, flex: 1 }}>Open taken schuiven evenveel dagen mee.</span>
           <button style={{ ...S.knop(C.bg, C.tekst), padding: "7px 12px" }} onClick={() => { setDraai(p.draaidag); setOplever(p.opleverdatum); }}>Annuleer</button>
@@ -1831,7 +1854,7 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
         </button>
       )}
       <button onClick={openLeren} style={{ ...S.knop(klaar === alles && alles ? C.groen : C.bg, klaar === alles && alles ? "#FAF6F0" : C.groen), width: "100%", marginTop: 12, border: `1px solid ${C.rand2}` }}>
-        🧠 {p.afgerond ? "Opnieuw leren van dit project" : klaar === alles && alles ? "Alles klaar — afronden en sjabloon laten leren" : "Afronden & sjabloon laten leren"}
+        {p.los || !p.sjabloonId ? (p.afgerond ? "✅ Afgerond" : "✅ Project afronden") : <>🧠 {p.afgerond ? "Opnieuw leren van dit project" : klaar === alles && alles ? "Alles klaar — afronden en sjabloon laten leren" : "Afronden & sjabloon laten leren"}</>}
       </button>
     </div>
   );
@@ -2344,6 +2367,63 @@ function AanvraagKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAf
   );
 }
 
+// Los project: zonder offertefase, met of zonder datums, gekoppeld aan een klant.
+function LosProjectSheet({ klanten, nieuweKlant, sluit, maak, naarSjabloon, heeftSjablonen }) {
+  const [naam, setNaam] = useState("");
+  const [klantId, setKlantId] = useState("");
+  const [nieuweKlantNaam, setNieuweKlantNaam] = useState("");
+  const [via, setVia] = useState("");
+  const [draaidag, setDraaidag] = useState("");
+  const [oplever, setOplever] = useState("");
+  const [budget, setBudget] = useState("");
+  const fout = draaidag && oplever && oplever < draaidag;
+  const kan = naam.trim() && !fout;
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()} role="dialog" aria-label="Los project">
+        <SheetKop titel="📂 Los project" sluit={sluit} />
+        <p style={{ ...S.hint, marginTop: 0 }}>Voor een productie die je oppakt zonder dat jij de offerte deed. Je begint met een lege takenlijst (pre-productie, productie, post) en kunt calls, crew, callsheets en kosten gewoon gebruiken.</p>
+        <p style={S.label}>Projectnaam</p>
+        <input style={S.inp} autoFocus aria-label="Projectnaam los project" placeholder="Bijv. Fabrieksfilm Häcker" value={naam} onChange={e => setNaam(e.target.value)} />
+
+        <p style={S.label}><Tag size={14} /> Klant</p>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button style={S.chip(!klantId)} onClick={() => setKlantId("")}>Geen</button>
+          {klanten.map(k => <button key={k.id} style={{ ...S.chip(klantId === k.id), ...(klantId === k.id ? { background: k.kleur || C.groen, borderColor: k.kleur || C.groen } : {}) }} onClick={() => setKlantId(k.id)}>● {k.naam}</button>)}
+        </div>
+        <form onSubmit={e => { e.preventDefault(); if (nieuweKlantNaam.trim()) { setKlantId(nieuweKlant(nieuweKlantNaam)); setNieuweKlantNaam(""); } }} style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <input style={{ ...S.inp, padding: "8px 12px" }} aria-label="Nieuwe klant" placeholder="+ Nieuwe klant" value={nieuweKlantNaam} onChange={e => setNieuweKlantNaam(e.target.value)} />
+          {nieuweKlantNaam.trim() && <button type="submit" style={S.knop()}>Voeg toe</button>}
+        </form>
+
+        <p style={S.label}>Opdracht via <span style={{ fontWeight: 400, color: C.muted }}>(optioneel)</span></p>
+        <input style={S.inp} aria-label="Opdracht via" placeholder="Bijv. bureau of productiehuis dat de offerte deed" value={via} onChange={e => setVia(e.target.value)} />
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <label style={{ flex: 1, minWidth: 0 }}><span style={S.label}>🎬 Draaidag</span>
+            <input type="date" aria-label="Draaidag los project" style={S.inp} value={draaidag} onChange={e => setDraaidag(e.target.value)} />
+          </label>
+          <label style={{ flex: 1, minWidth: 0 }}><span style={S.label}>📦 Oplevering</span>
+            <input type="date" aria-label="Oplevering los project" style={S.inp} value={oplever} onChange={e => setOplever(e.target.value)} />
+          </label>
+        </div>
+        {fout ? <p style={{ ...S.hint, color: C.rood }}>De oplevering ligt vóór de draaidag.</p> : <p style={S.hint}>Mag leeg blijven — je kunt de datums later in het project invullen.</p>}
+
+        <p style={S.label}>💶 Budget / jouw deel <span style={{ fontWeight: 400, color: C.muted }}>(optioneel)</span></p>
+        <input style={S.inp} aria-label="Budget los project" inputMode="decimal" placeholder="€" value={budget} onChange={e => setBudget(e.target.value.replace(/[^\d.,]/g, ""))} />
+
+        <button disabled={!kan} onClick={() => maak({ naam: naam.trim(), klantId: klantId || null, opdrachtVia: via, draaidag: draaidag || null, opleverdatum: oplever || null, budget: budget ? Number(budget.replace(/\./g, "").replace(",", ".")) : null })}
+          style={{ ...S.knop(), width: "100%", marginTop: 16, opacity: kan ? 1 : 0.5 }}>📂 Project aanmaken</button>
+        {heeftSjablonen && (
+          <button onClick={naarSjabloon} style={{ background: "none", border: "none", color: C.groen, fontSize: 13, marginTop: 12, cursor: "pointer", fontFamily: "inherit", width: "100%" }}>
+            Liever meteen de standaardtaken? → Nieuw project uit sjabloon
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AanvraagSheet({ klanten, alleKlanten, vandaag, nieuweKlant, sluit, maak }) {
   const [naam, setNaam] = useState("");
   const [klantId, setKlantId] = useState("");
@@ -2425,7 +2505,7 @@ function OpzetRegel({ p, zetOpzet }) {
     <div style={{ marginTop: 8 }}>
       <button onClick={() => setOpen(!open)} style={{ ...S.rij, padding: "4px 0", borderBottom: "none" }} aria-label="Opzet productie">
         <span style={{ fontSize: 12, flex: 1, color: C.muted }}>
-          ⚙️ {draaidagenVan(p).length} {draaidagenVan(p).length === 1 ? "draaidag" : "draaidagen"} · {o.prelight === "geen" ? "geen prelight" : `prelight: ${pre?.label.toLowerCase()}`} · post {o.postDoorOns ? "door ons" : "door een ander"}
+          ⚙️ {draaidagenVan(p).length ? `${draaidagenVan(p).length} ${draaidagenVan(p).length === 1 ? "draaidag" : "draaidagen"}` : "nog geen draaidag"} · {o.prelight === "geen" ? "geen prelight" : `prelight: ${pre?.label.toLowerCase()}`} · post {o.postDoorOns ? "door ons" : "door een ander"}
         </span>
         <ChevronDown size={14} color={C.licht} style={{ transform: open ? "none" : "rotate(-90deg)" }} />
       </button>
@@ -3895,7 +3975,9 @@ function AfwijzenSheet({ lijst, sluit, bevestig }) {
   );
 }
 
-function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuweKlant, sluit, maak, vanOfferte = null, voorstel = null }) {
+function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuweKlant, sluit, maak, vanOfferte = null, voorstel = null, startOfferteNietDoorMij = false }) {
+  const [offerteNietDoorMij, setOfferteNietDoorMij] = useState(startOfferteNietDoorMij);
+  const [opdrachtVia, setOpdrachtVia] = useState("");
   const [sjabloonId, setSjabloonId] = useState(startSjabloonId || voorstel?.id || sjablonen[0]?.id);
   const sjabloon = sjablonen.find(t => t.id === sjabloonId) || sjablonen[0];
   const [naam, setNaam] = useState(vanOfferte?.name || "");
@@ -3992,6 +4074,16 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
           <input style={{ ...S.inp, padding: "8px 12px", fontSize: 14 }} placeholder="+ Nieuwe klant" value={nieuweKlantNaam} onChange={e => setNieuweKlantNaam(e.target.value)} />
           {nieuweKlantNaam.trim() && <button type="submit" style={S.knop()}>Voeg toe</button>}
         </form>
+
+        <p style={S.label}>📄 Offerte</p>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button aria-pressed={!offerteNietDoorMij} style={S.chip(!offerteNietDoorMij)} onClick={() => setOfferteNietDoorMij(false)}>📝 Doe ik zelf nog</button>
+          <button aria-pressed={offerteNietDoorMij} style={S.chip(offerteNietDoorMij)} onClick={() => setOfferteNietDoorMij(true)}>⏭️ Niet door mij</button>
+        </div>
+        {offerteNietDoorMij && <>
+          <p style={S.hint}>De offerte- en akkoordstappen uit het sjabloon staan meteen op klaar.</p>
+          <input style={S.inp} aria-label="Opdracht via" placeholder="Opdracht via (optioneel) — bv. bureau of productiehuis" value={opdrachtVia} onChange={e => setOpdrachtVia(e.target.value)} />
+        </>}
         </>}
 
         <div style={{ display: "flex", gap: 8 }}>
@@ -4061,6 +4153,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
         )}
         <button disabled={!kan} onClick={() => maak(sjabloon, {
           naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag, onderdelen: zonderPost(onderdelen, opzet), meetings, deliverables, eigenPlanning, opzet, versieId,
+          ...(!vanOfferte && offerteNietDoorMij ? { offerteAlGedaan: true, opdrachtVia } : {}),
           ...(!vanOfferte?.project?.intake?.tekst && intakeTekst.trim() ? { intakeTekst: intakeTekst.trim(), budget: hNu.budget ?? null, liveDatum: hNu.liveDatum || null } : {}),
         })}
           style={{ ...S.knop(), width: "100%", marginTop: 16, opacity: kan ? 1 : 0.5 }}>

@@ -358,4 +358,25 @@ test("buy-outs apart zichtbaar", bg.buyouts === 1500);
 test("over het budget → waarschuwing", P.projectBegroting({ items: [{ bezetting: [{ naam: "X", bedrag: 7000, eenheid: "totaal" }] }], project: { budget: 5000 } }).overschreden === true);
 test("zonder offerte/budget: geen marge", P.projectBegroting({ items: [], project: {} }).marge === null);
 
+sectie("Los project & offerte niet door mij");
+{
+  const los = P.maakLosProject({ naam: " Fabrieksfilm ", klantId: "k1", opdrachtVia: "Bureau Blauw", budget: "8500", vandaag: "2026-11-24", wie: "Pepijn", nieuwId, nu: 5 });
+  test("los project: naam, klant, icoon, lopend", los.name === "Fabrieksfilm" && los.project.klantId === "k1" && los.icon === "📂" && P.projectStatus(los) === "lopend");
+  test("los project: geen taken, wel fases", los.items.length === 0 && los.categories.length === P.FASES.length);
+  test("los project: geen datums nodig", los.project.draaidag === null && los.project.opleverdatum === null);
+  test("los project: opdracht via + budget", los.project.opdrachtVia === "Bureau Blauw" && los.project.budget === 8500 && los.project.offerteNietDoorMij === true && los.project.los === true);
+  const leeg = P.maakLosProject({ naam: "", budget: "abc", vandaag: "2026-11-24", nieuwId });
+  test("los project: lege naam en ongeldig budget", leeg.name === "Nieuw project" && leeg.project.budget === undefined && leeg.project.opdrachtVia === undefined && leeg.project.klantId === null);
+  const fout = P.maakLosProject({ naam: "x", draaidag: "2026-12-10", opleverdatum: "2026-12-01", vandaag: "2026-11-24", nieuwId });
+  test("los project: oplevering vóór draaidag wordt genegeerd", fout.project.draaidag === "2026-12-10" && fout.project.opleverdatum === null);
+  test("los project telt mee in voortgang (0 taken)", P.projectVoortgang(los).every(f => f.totaal === 0));
+  const zelf = P.maakProjectUitSjabloon(klein, { naam: "A", draaidag: "2026-12-10", vandaag: "2026-11-24", nieuwId });
+  const ander = P.maakProjectUitSjabloon(klein, { naam: "B", draaidag: "2026-12-10", vandaag: "2026-11-24", offerteAlGedaan: true, opdrachtVia: "Productiehuis X", nieuwId });
+  const offerteIds = klein.stappen.filter(P.isOfferteStap).map(st => st.id);
+  test("sjabloon zonder vlag: offertestappen open", zelf.items.filter(i => offerteIds.includes(i.sjabloonStapId)).every(i => !i.checked));
+  test("offerte niet door mij: offerte-/akkoordstappen al klaar", offerteIds.length > 0 && ander.items.filter(i => offerteIds.includes(i.sjabloonStapId)).every(i => i.checked && i.voltooidOp));
+  test("offerte niet door mij: overige stappen open", ander.items.filter(i => !offerteIds.includes(i.sjabloonStapId)).every(i => !i.checked));
+  test("opdracht via + vlag bewaard", ander.project.opdrachtVia === "Productiehuis X" && ander.project.offerteNietDoorMij === true && !zelf.project.offerteNietDoorMij);
+}
+
 samenvatting();
