@@ -1404,10 +1404,10 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
           </div>
         )}
         {paneel && kanUitklappen && (
-          <div data-testid="invoer-paneel" style={{ background: C.kaart, border: `1px solid ${C.rand2}`, borderRadius: 16, padding: 12, marginBottom: 8, boxShadow: "0 6px 18px rgba(45,42,38,.10)", display: "grid", gap: 10 }}>
+          <div data-testid="invoer-paneel" style={{ background: C.kaart, border: `1px solid ${C.rand2}`, borderRadius: 16, padding: 12, marginBottom: 8, boxShadow: "0 6px 18px rgba(45,42,38,.10)", display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 10, boxSizing: "border-box", width: "100%", maxWidth: "100%", overflow: "hidden" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 12, color: C.muted, width: 62, flexShrink: 0 }}>Waar</span>
-              <select aria-label="Lijst" value={paneel.doel} onChange={e => setPaneel(p => ({ ...p, doel: e.target.value }))} style={{ ...veld, flex: 1 }}>
+              <span style={{ fontSize: 12, color: C.muted, width: 58, flexShrink: 0 }}>Waar</span>
+              <select aria-label="Lijst" value={paneel.doel} onChange={e => setPaneel(p => ({ ...p, doel: e.target.value }))} style={{ ...veld, flex: 1, width: 0, minWidth: 0, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", WebkitAppearance: "none", appearance: "none", paddingRight: 28, backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%238C8576' stroke-width='1.6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" }}>
                 {["werk", "thuis"].map(r => {
                   const groep = doelen.filter(d => d.ruimte === r);
                   if (!groep.length) return null;
@@ -1422,16 +1422,16 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
             </div>
             {isProjectDoel && (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 12, color: C.muted, width: 62, flexShrink: 0 }}>Fase</span>
-                <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
+                <span style={{ fontSize: 12, color: C.muted, width: 58, flexShrink: 0 }}>Fase</span>
+                <div style={{ display: "flex", gap: 6, overflowX: "auto", flex: 1, minWidth: 0 }}>
                   {FASES.map(f => <button key={f.id} style={kleinAan(paneel.fase === f.id)} onClick={() => setPaneel(p => ({ ...p, fase: f.id }))}>{f.icon} {f.label}</button>)}
                 </div>
               </div>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 12, color: C.muted, width: 62, flexShrink: 0 }}>Wanneer</span>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                {[["geen", "Geen datum"], ["vandaag", "Vandaag"], ["morgen", "Morgen"]].map(([k, l]) => (
+              <span style={{ fontSize: 12, color: C.muted, width: 58, flexShrink: 0 }}>Wanneer</span>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", flex: 1, minWidth: 0 }}>
+                {[["geen", "Geen"], ["vandaag", "Vandaag"], ["morgen", "Morgen"]].map(([k, l]) => (
                   <button key={k} style={kleinAan(paneel.wanneer === k)} onClick={() => setPaneel(p => ({ ...p, wanneer: k, ...(k === "geen" ? { tijd: "" } : {}) }))}>{l}</button>
                 ))}
                 <label style={{ ...kleinAan(paneel.wanneer === "datum"), display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
@@ -1443,14 +1443,14 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 12, color: C.muted, width: 62, flexShrink: 0 }}>Herinner</span>
-              <input type="time" aria-label="Tijd herinnering" value={paneel.tijd} onChange={e => setPaneel(p => ({ ...p, tijd: e.target.value, ...(p.wanneer === "geen" && e.target.value ? { wanneer: "vandaag" } : {}) }))} style={{ ...veld, width: 110 }} />
-              {paneel.tijd ? <button style={klein} onClick={() => setPaneel(p => ({ ...p, tijd: "" }))}>Geen</button> : <span style={{ fontSize: 12, color: C.muted }}>optioneel — dan krijg je een melding</span>}
+              <span style={{ fontSize: 12, color: C.muted, width: 58, flexShrink: 0 }}>Herinner</span>
+              <input type="time" aria-label="Tijd herinnering" value={paneel.tijd} onChange={e => setPaneel(p => ({ ...p, tijd: e.target.value, ...(p.wanneer === "geen" && e.target.value ? { wanneer: "vandaag" } : {}) }))} style={{ ...veld, width: 104, minHeight: 38, boxSizing: "border-box" }} />
+              {paneel.tijd ? <button style={klein} onClick={() => setPaneel(p => ({ ...p, tijd: "" }))}>Geen</button> : <span style={{ fontSize: 12, color: C.muted, flex: 1, minWidth: 0 }}>optioneel — met melding</span>}
             </div>
             <textarea aria-label="Notitie" value={paneel.notitie} onChange={e => setPaneel(p => ({ ...p, notitie: e.target.value }))} placeholder="Notitie (optioneel)" rows={2}
               style={{ ...veld, resize: "vertical", width: "100%", boxSizing: "border-box" }} />
-            <button onClick={verstuur} disabled={!tekst.trim()} style={{ ...S.knop(), opacity: tekst.trim() ? 1 : 0.5 }}>
-              Toevoegen{doelLijst ? ` aan ${doelLijst.label}` : ""}
+            <button onClick={verstuur} disabled={!tekst.trim()} style={{ ...S.knop(), opacity: tekst.trim() ? 1 : 0.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
+              Toevoegen
             </button>
           </div>
         )}
