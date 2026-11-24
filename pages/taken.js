@@ -39,6 +39,7 @@ import {
   maakAanvraag, aanvraagNaarOfferte, zetOfferteDeadline, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte, datumKortNl } from "../lib/intake-logica";
+import { offerteVersies, openVersies, gekozenVersie, vergelijkOffertes, voegOfferteVersieToe, kiesOfferteVersie, synchroniseerPlekken } from "../lib/offerte-versies-logica";
 import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam, vulBezettingUitOfferte, werkelijkUitBezetting, eigenPostSleutels, postNaamSleutel, maakNacalculatie, nacalculatieInzichten, inzichtenVoorOfferte, projectCijfers, cijferJaren } from "../lib/offerte-pdf-logica";
 
 // Marge-doel (standaard minimaal 20%, streven 25%), overal in de projecten nodig.
@@ -629,6 +630,7 @@ export default function TakenApp() {
             openOfferteVanAanvraag={() => setSheet({ soort: "offerteVanAanvraag", listId: lijst.id })}
             meld={meld}
             vulPlekken={() => vulPlekkenUitOfferte(lijst.id)}
+            openVersie={(soort) => setSheet({ soort: "offerteVersie", listId: lijst.id, versieSoort: soort })}
             zetDeadline={(datum) => { wijzigLijst("werk", lijst.id, l => zetOfferteDeadline(l, datum, { wie: ik })); meld(`📅 Offerte uiterlijk ${datumKort(datum).toLowerCase()}`); }}
             zetOpzet={(opzet) => {
               const wasExtern = lijst.project?.opzet?.postDoorOns === false;
@@ -699,6 +701,27 @@ export default function TakenApp() {
           post("/api/taken/werk", { klanten: lijst });
         }} />
       )}
+      {sheet?.soort === "offerteVersie" && (() => {
+        const lijst = lijstVan("werk", sheet.listId);
+        if (!lijst?.project) return null;
+        return (
+          <OfferteVersieSheet lijst={lijst} soort={sheet.versieSoort} vandaag={vandaag} sluit={() => setSheet(null)}
+            maak={(velden) => {
+              let l = voegOfferteVersieToe(lijstVan("werk", lijst.id), velden, { nieuwId: uid });
+              const nieuw = l.project.offertes[l.project.offertes.length - 1];
+              let extra = "";
+              // Herziene offerte in een lopend project: plekken bijwerken.
+              if (nieuw.status === "gekozen" && nieuw.specificatie && projectStatus(l) !== "offerte" && projectStatus(l) !== "aanvraag") {
+                const r = synchroniseerPlekken(l, nieuw.specificatie, { nieuwId: uid });
+                l = r.lijst;
+                extra = [r.toegevoegd && `${r.toegevoegd} plekken erbij`, r.bijgewerkt && `${r.bijgewerkt} budgetten aangepast`, r.verwijderd && `${r.verwijderd} lege plekken weg`, r.vervallen && `⚠️ ${r.vervallen} met naam staan niet meer in de offerte`].filter(Boolean).join(", ");
+              }
+              zetLijst("werk", l);
+              setSheet(null);
+              meld(`${nieuw.soort === "revisie" ? "↻" : "＋"} ${nieuw.naam} vastgelegd${nieuw.wijzigingen ? ` — ${nieuw.wijzigingen.samenvatting}` : ""}${extra ? ` · ${extra}` : ""}`);
+            }} />
+        );
+      })()}
       {sheet === "backup" && <BackupSheet sluit={() => setSheet(null)} meld={meld} naHerstel={() => { lastWriteRef.current = 0; verversAlles(true); }} />}
       {sheet === "cijfers" && <CijfersSheet lijsten={werk?.lists || []} klanten={werk?.klanten || []} sluit={() => setSheet(null)} />}
       {sheet === "aanvraag" && (
@@ -751,7 +774,9 @@ export default function TakenApp() {
             })()}
             maak={(sjabloon, opties) => {
               const nu = Date.now();
-              rondStartAf(startMetOnderdelen(offerteAkkoord(lijstVan("werk", lijst.id), sjabloon, { ...opties, akkoordOp: vandaag, vandaag, wie: ik, nu, nieuwId: uid }), sjabloon, opties), opties);
+              const basis = lijstVan("werk", lijst.id);
+              const metKeuze = opties.versieId ? kiesOfferteVersie(basis, opties.versieId) : basis;
+              rondStartAf(startMetOnderdelen(offerteAkkoord(metKeuze, sjabloon, { ...opties, akkoordOp: vandaag, vandaag, wie: ik, nu, nieuwId: uid }), sjabloon, opties), opties);
               setSheet(null);
               setWeergave({ soort: "lijst", ruimte: "werk", listId: lijst.id });
               meld(`🎉 Akkoord! Productie van "${lijst.name}" gestart`);
@@ -1010,7 +1035,7 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                       <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 2 }}>
                         {klant && <span style={{ color: klant.kleur || C.groen, fontWeight: 700 }}>● {klant.naam} · </span>}
                         verstuurd {dagen === 0 ? "vandaag" : `${dagen} ${dagen === 1 ? "dag" : "dagen"} geleden`}
-                        {o.bedrag ? ` · ${euro(o.bedrag)}` : ""}
+                        {openVersies(l.project).length > 1 ? ` · ${openVersies(l.project).length} opties: ${openVersies(l.project).map(v => (v.bedrag != null ? euro(v.bedrag) : "—")).join(" / ")}` : o.bedrag ? ` · ${euro(o.bedrag)}` : ""}
                         {navraag ? ` · navragen ${datumKort(navraag.dueDate).toLowerCase()}` : ""}
                       </span>
                     </button>
@@ -1372,13 +1397,15 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline }) {
+function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
   const [menu, setMenu] = useState(false);
   const isAanvraag = projectStatus(lijst) === "aanvraag";
   const isOfferte = projectStatus(lijst) === "offerte" || isAanvraag;
   const isProject = !!lijst.project && !isOfferte;
   const eersteOpenFase = isProject ? (FASES.find(f => (lijst.items || []).some(i => i.category === f.id && !i.checked)) || FASES[0]).id : null;
-  const [nieuweFase, setNieuweFase] = useState(eersteOpenFase);
+  const [gekozenFase, setNieuweFase] = useState(eersteOpenFase);
+  // Werd de lijst pas net een project (akkoord), dan was er nog geen fase gekozen.
+  const nieuweFase = FASES.some(f => f.id === gekozenFase) ? gekozenFase : (eersteOpenFase || "pre");
   const [naam, setNaam] = useState(lijst.name);
   useEffect(() => setNaam(lijst.name), [lijst.id, lijst.name]);
   const sortering = lijst.takenSortering || "handmatig";
@@ -1424,9 +1451,9 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
             {lijst.mailInbox && <p style={S.hint}>📥 Hier komen taken binnen die je naar je taken-e-mailadres stuurt.</p>}
           </div>
         )}
-        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken }} />}
+        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken, openVersie }} />}
         {isAanvraag && <AanvraagKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag, zetDeadline }} />}
-        {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld }} />}
+        {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld, openVersie }} />}
         {ruimte === "werk" && !isProject && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
         {isProject && open.length > 0 ? (
           [...FASES, { id: "__overig", label: "Overig", icon: "📌" }].map(f => {
@@ -1468,7 +1495,7 @@ function LijstWeergave({ ruimte, lijst, klanten, klantFilter, setKlantFilter, kl
 }
 
 // Projectkop: klant, draaidag, oplevering, voortgang per fase en "leren".
-function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken }) {
+function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken, openVersie }) {
   const p = lijst.project;
   const vg = projectVoortgang(lijst);
   const klant = klantVan(p.klantId);
@@ -1538,6 +1565,7 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
         );
       })()}
       {bezettingOpen && <BezettingOverzicht lijst={lijst} />}
+      {offerteVersies(p).length > 0 && <OffertesBlok lijst={lijst} openVersie={openVersie} nogVoorAkkoord={false} />}
       <SpecificatieBlok lijst={lijst} klantNaam={klant?.naam} zetProject={zetProject} meld={meld} vulPlekken={vulPlekken} />
       <BegrotingBlok lijst={lijst} zetProject={zetProject} />
       {p.intake?.tekst && <IntakeBlok intake={p.intake} zetTekst={(tekst) => zetProject({ intake: { ...p.intake, tekst } })} />}
@@ -2552,6 +2580,155 @@ function BackupSheet({ sluit, meld, naHerstel }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// OFFERTEVERSIES — meerdere offertes per aanvraag (varianten / revisies),
+// wat er veranderd is, en welke akkoord werd.
+// ════════════════════════════════════════════════════════════════════
+const VERSIE_STATUS = {
+  open: { label: "verstuurd", kleur: "#C97D0C", bg: "#FCF1DE" },
+  vervangen: { label: "vervangen", kleur: "#8A8577", bg: "#EFECE4" },
+  gekozen: { label: "✓ akkoord", kleur: "#2D4A3E", bg: "#E8F0EC" },
+  "niet-gekozen": { label: "niet gekozen", kleur: "#8A8577", bg: "#EFECE4" },
+};
+function WijzigingenLijst({ w }) {
+  if (!w) return null;
+  const regel = (x) => `${x.naam}${x.kopje ? ` (${x.kopje})` : ""}`;
+  return (
+    <div style={{ fontSize: 12, lineHeight: 1.6, marginTop: 4 }}>
+      {w.bedragVerschil ? <div>Bedrag: <strong style={{ color: w.bedragVerschil > 0 ? C.groen : C.rood }}>{w.bedragVerschil > 0 ? "+" : "−"}{euro(Math.abs(w.bedragVerschil))}</strong></div> : null}
+      {w.toegevoegd.map(x => <div key={`t${regel(x)}`} style={{ color: C.groen }}>＋ {regel(x)} · {x.aantal} {x.eenheid} · {euro(x.totaal)}</div>)}
+      {w.verwijderd.map(x => <div key={`v${regel(x)}`} style={{ color: C.rood }}>− {regel(x)} · {euro(x.totaal)}</div>)}
+      {w.gewijzigd.map(x => <div key={`g${regel(x)}`}>~ {regel(x)}: {x.van.aantal} {x.van.eenheid} × {euro(x.van.prijs)} → {x.naar.aantal} {x.naar.eenheid} × {euro(x.naar.prijs)} <strong>({x.verschil > 0 ? "+" : "−"}{euro(Math.abs(x.verschil))})</strong></div>)}
+      {!w.heeftPosten && <div style={{ color: C.muted }}>Lees bij beide versies de PDF in om per post te zien wat er veranderde.</div>}
+    </div>
+  );
+}
+function OffertesBlok({ lijst, openVersie, nogVoorAkkoord }) {
+  const versies = offerteVersies(lijst.project);
+  const [open, setOpen] = useState(null);
+  if (!versies.length) return null;
+  return (
+    <div style={{ marginTop: 12 }}>
+      {versies.length > 1 && (
+        <div style={{ background: "rgba(255,255,255,0.6)", borderRadius: 12, padding: "4px 10px" }}>
+          {[...versies].reverse().map(v => {
+            const st = VERSIE_STATUS[v.status] || VERSIE_STATUS.open;
+            const uit = open === v.id;
+            return (
+              <div key={v.id} style={{ borderBottom: `1px solid ${C.rand}`, padding: "7px 0" }}>
+                <button onClick={() => setOpen(uit ? null : v.id)} style={{ ...S.rij, padding: 0, borderBottom: "none", gap: 8, opacity: v.status === "vervangen" || v.status === "niet-gekozen" ? 0.7 : 1 }}>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 13 }}>
+                    <strong>{v.naam}</strong>{v.soort === "revisie" ? " ↻" : ""}
+                    <span style={{ display: "block", fontSize: 11, color: C.muted }}>{v.verstuurdOp ? datumKort(v.verstuurdOp).toLowerCase() : ""}{v.wijzigingen ? ` · ${v.wijzigingen.samenvatting}` : ""}{v.specificatie ? " · 📄" : ""}</span>
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{v.bedrag != null ? euro(v.bedrag) : "—"}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: st.kleur, background: st.bg, borderRadius: 999, padding: "2px 7px", whiteSpace: "nowrap" }}>{st.label}</span>
+                </button>
+                {uit && (
+                  <div style={{ padding: "4px 0 2px" }}>
+                    {v.notitie && <p style={{ margin: "2px 0", fontSize: 12 }}>📝 {v.notitie}</p>}
+                    {v.wijzigingen ? <WijzigingenLijst w={v.wijzigingen} /> : <p style={{ margin: 0, fontSize: 12, color: C.muted }}>{v.soort === "variant" ? "Extra optie naast de andere offerte(s)." : "Eerste versie."}</p>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+        <button onClick={() => openVersie("revisie")} style={{ ...S.chip(false), padding: "5px 10px", fontSize: 12 }}>↻ Nieuwe versie (na review)</button>
+        {nogVoorAkkoord && <button onClick={() => openVersie("variant")} style={{ ...S.chip(false), padding: "5px 10px", fontSize: 12 }}>＋ Extra optie</button>}
+      </div>
+    </div>
+  );
+}
+function OfferteVersieSheet({ lijst, soort: startSoort, vandaag, sluit, maak }) {
+  const versies = offerteVersies(lijst.project);
+  const kandidaten = versies.filter(v => v.status === "open" || v.status === "gekozen");
+  const naAkkoord = versies.some(v => v.status === "gekozen");
+  const [soort, setSoort] = useState(naAkkoord ? "revisie" : startSoort);
+  const [vervangtId, setVervangtId] = useState((kandidaten.find(v => v.status === "gekozen") || kandidaten[kandidaten.length - 1])?.id || null);
+  const [naam, setNaam] = useState("");
+  const [verstuurdOp, setVerstuurdOp] = useState(vandaag);
+  const [bedrag, setBedrag] = useState("");
+  const [notitie, setNotitie] = useState("");
+  const [spec, setSpec] = useState(null);
+  const bedragGetal = leesBedragInvoer(bedrag);
+  const vorige = soort === "revisie" ? versies.find(v => v.id === vervangtId) : null;
+  const voorbeeld = vorige && (bedragGetal != null || spec) ? vergelijkOffertes(vorige, { bedrag: bedragGetal, specificatie: spec ? compacteSpecificatie(spec) : null }) : null;
+  const kan = bedragGetal != null || spec;
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()} role="dialog" aria-label="Offerteversie">
+        <SheetKop titel={soort === "revisie" ? "↻ Nieuwe versie van de offerte" : "＋ Extra optie"} sluit={sluit} />
+        {!naAkkoord && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            <button aria-pressed={soort === "revisie"} onClick={() => setSoort("revisie")} style={{ ...S.chip(soort === "revisie"), padding: "6px 11px", fontSize: 13 }}>↻ Vervangt een versie</button>
+            <button aria-pressed={soort === "variant"} onClick={() => setSoort("variant")} style={{ ...S.chip(soort === "variant"), padding: "6px 11px", fontSize: 13 }}>＋ Optie ernaast</button>
+          </div>
+        )}
+        <p style={{ ...S.hint, marginTop: 0 }}>
+          {soort === "revisie"
+            ? naAkkoord ? "Bijv. meerwerk of een herziene offerte na akkoord. Deze versie wordt meteen de geldende: begroting, plekken (crew, cast…) en kostenoverzicht worden bijgewerkt." : "Na een review met de klant: de oude versie wordt 'vervangen' en de app houdt bij wat er veranderd is."
+            : "Een extra optie naast de andere, bijv. '2 personen' naast '1 persoon'. Bij akkoord kies je welke het werd."}
+        </p>
+        {soort === "revisie" && kandidaten.length > 1 && (
+          <>
+            <p style={S.label}>Vervangt</p>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {kandidaten.map(v => <button key={v.id} aria-pressed={vervangtId === v.id} onClick={() => setVervangtId(v.id)} style={{ ...S.chip(vervangtId === v.id), padding: "5px 10px", fontSize: 12 }}>{v.naam} · {v.bedrag != null ? euro(v.bedrag) : "—"}</button>)}
+            </div>
+          </>
+        )}
+        <div style={{ marginTop: 12 }}>
+          <OffertePdfKnop onGelezen={(o) => { setSpec(o); if (o.totaal != null) setBedrag(o.totaal.toLocaleString("nl-NL", { minimumFractionDigits: o.totaal % 1 ? 2 : 0, maximumFractionDigits: 2 })); }} label={spec ? "📄 Andere PDF kiezen" : "📄 PDF van deze versie inlezen"} />
+          {spec && <SpecificatieSamenvatting spec={spec} />}
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>BEDRAG (EXCL. BTW)
+            <input value={bedrag} inputMode="decimal" placeholder="€" aria-label="Bedrag" onChange={e => setBedrag(e.target.value)} style={{ ...S.inp, padding: "8px 10px", fontSize: 15, marginTop: 3 }} />
+          </label>
+          <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>VERSTUURD OP
+            <input type="date" value={verstuurdOp} aria-label="Verstuurd op" onChange={e => setVerstuurdOp(e.target.value || vandaag)} style={{ ...S.inp, padding: "8px 10px", fontSize: 15, marginTop: 3 }} />
+          </label>
+        </div>
+        <p style={S.label}>Naam <span style={{ fontWeight: 400 }}>(optioneel)</span></p>
+        <input value={naam} onChange={e => setNaam(e.target.value)} aria-label="Naam versie" placeholder={soort === "revisie" && vorige ? `${vorige.naam.replace(/\s*\(v\d+\)$/, "")} (v${versies.length + 1})` : "bijv. 2 personen"} style={S.inp} />
+        <p style={S.label}>{soort === "revisie" ? "Wat is er veranderd?" : "Notitie"}</p>
+        <textarea rows={2} value={notitie} onChange={e => setNotitie(e.target.value)} aria-label="Wat is er veranderd" placeholder={soort === "revisie" ? "bijv. klant wil 1 draaidag minder, geen drone" : ""} style={{ ...S.inp, fontSize: 14, resize: "vertical" }} />
+        {voorbeeld && (
+          <div style={{ marginTop: 10, background: C.bg, borderRadius: 12, padding: 10 }}>
+            <p style={{ ...S.label, margin: 0 }}>Verschil met {vorige.naam}</p>
+            <p style={{ margin: "2px 0", fontSize: 13, fontWeight: 700 }}>{voorbeeld.samenvatting}</p>
+            <WijzigingenLijst w={voorbeeld} />
+          </div>
+        )}
+        <button disabled={!kan} onClick={() => maak({ soort, vervangtId: soort === "revisie" ? vervangtId : null, naam, verstuurdOp, bedrag: bedragGetal ?? spec?.totaal ?? null, notitie: notitie.trim(), specificatie: spec ? compacteSpecificatie(spec) : null })}
+          style={{ ...S.knop(), width: "100%", marginTop: 16, opacity: kan ? 1 : 0.5 }}>
+          {soort === "revisie" ? "↻ Versie vastleggen" : "＋ Optie vastleggen"}
+        </button>
+      </div>
+    </div>
+  );
+}
+// Bij akkoord: kiezen welke offerte het werd (als er meer dan één open staat).
+function AkkoordVersieKeuze({ versies, gekozen, kies }) {
+  if (versies.length < 2) return null;
+  return (
+    <div style={{ background: "#FFF8EC", borderRadius: 12, padding: 10, marginBottom: 12 }}>
+      <p style={{ margin: "0 0 6px", fontSize: 13, fontWeight: 700 }}>Welke offerte is akkoord gegeven?</p>
+      {versies.map(v => (
+        <button key={v.id} aria-pressed={gekozen === v.id} onClick={() => kies(v)} style={{ ...S.rij, padding: "8px 10px", marginBottom: 4, borderRadius: 10, border: `1.5px solid ${gekozen === v.id ? C.groen : C.rand2}`, background: gekozen === v.id ? "#E8F0EC" : "#fff" }}>
+          <span style={{ fontSize: 16 }}>{gekozen === v.id ? "◉" : "○"}</span>
+          <span style={{ flex: 1, fontSize: 14 }}>{v.naam}{v.specificatie ? " 📄" : ""}<span style={{ display: "block", fontSize: 11, color: C.muted }}>{v.verstuurdOp ? `verstuurd ${datumKort(v.verstuurdOp).toLowerCase()}` : ""}</span></span>
+          <strong style={{ fontSize: 14 }}>{v.bedrag != null ? euro(v.bedrag) : "—"}</strong>
+        </button>
+      ))}
+      {!gekozen && <p style={{ ...S.hint, color: C.rood, margin: "4px 0 0" }}>Kies eerst de offerte; daarop worden begroting, crew/cast en kostenoverzicht gebaseerd.</p>}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
 // TAAKDETAIL
 // ════════════════════════════════════════════════════════════════════
 function TaakDetail({ ruimte, lijst, taak, ik, klanten, status, meldingen, zetMeldingenAan, vandaag, thuisLijsten, werkLijsten, werkStaat, sluit, zet, vink, verwijder, verplaats, nieuweKlant, contacten = [], onthoud, wijzigLaatste }) {
@@ -3062,7 +3239,7 @@ function ImportSheet({ thuisLijsten, werkLijsten, werkStaat, chronoRef, sluit, i
 // ════════════════════════════════════════════════════════════════════
 // Offerte in de lijstweergave: status, bedrag, wanneer de volgende navraag
 // komt, en de knoppen Akkoord / Nagevraagd / Afgewezen.
-function OfferteKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld }) {
+function OfferteKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld, openVersie }) {
   const o = lijst.project.offerte || {};
   const dagen = o.verstuurdOp ? dagenTussen(o.verstuurdOp, vandaagStr()) : 0;
   const navraag = (lijst.items || []).find(i => i.offerteNavraag && !i.checked);
@@ -3072,11 +3249,12 @@ function OfferteKop({ lijst, klanten, klantVan, zetProject, openAkkoord, openAfw
       <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: C.oranje, letterSpacing: "0.04em" }}>📨 OFFERTE — WACHT OP AKKOORD</p>
       <p style={{ margin: "6px 0 0", fontSize: 14 }}>
         Verstuurd {datumKort(o.verstuurdOp).toLowerCase()} ({dagen} {dagen === 1 ? "dag" : "dagen"} geleden)
-        {o.bedrag ? ` · ${euro(o.bedrag)}` : ""}
+        {openVersies(lijst.project).length > 1 ? ` · ${openVersies(lijst.project).length} opties: ${openVersies(lijst.project).map(v => (v.bedrag != null ? euro(v.bedrag) : "—")).join(" / ")}` : o.bedrag ? ` · ${euro(o.bedrag)}` : ""}
         {o.keerNagevraagd ? ` · ${o.keerNagevraagd}× nagevraagd` : ""}
       </p>
       {lijst.project.deliverables && deliverablesTekst(lijst.project.deliverables) && <p style={{ margin: "6px 0 0", fontSize: 13 }}>📦 {deliverablesTekst(lijst.project.deliverables)}</p>}
       {lijst.project.intake?.tekst && <IntakeBlok intake={lijst.project.intake} zetTekst={(tekst) => zetProject({ intake: { ...lijst.project.intake, tekst } })} />}
+      <OffertesBlok lijst={lijst} openVersie={openVersie} nogVoorAkkoord />
       <SpecificatieBlok lijst={lijst} klantNaam={klant?.naam} zetProject={zetProject} meld={meld} />
       {navraag && <p style={{ ...S.hint, marginTop: 4 }}>🔔 Volgende navraag: {herinneringKort(navraag.herinnering) || datumKort(navraag.dueDate)} — en daarna {herhalingLabel(navraag.herhaling).toLowerCase()}, tot je op Akkoord of Afgewezen tikt.</p>}
       <select value={lijst.project.klantId || ""} onChange={e => zetProject({ klantId: e.target.value || null })} aria-label="Klant"
@@ -3241,11 +3419,19 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
   const opleverdatum = oplever || (draaidag ? plusDagen(draaidag, sjabloon.standaardDoorlooptijd || 14) : "");
   const voorbeeld = draaidag ? sorteerStappen(sjabloon.stappen, sjabloon.standaardDoorlooptijd || 14).map(st => ({ st, d: stapDatum(st, { draaidag, opleverdatum }) })) : [];
   const teLaat = voorbeeld.filter(x => x.d < vandaag).length;
-  const kan = naam.trim() && draaidag && opleverdatum >= draaidag;
+  // Meerdere offertes open? Dan eerst kiezen welke akkoord is.
+  const versiesOpen = vanOfferte ? openVersies(vanOfferte.project) : [];
+  const [versieId, setVersieId] = useState(versiesOpen.length === 1 ? versiesOpen[0].id : null);
+  const kiesVersie = (v) => {
+    setVersieId(v.id);
+    if (v.specificatie) neemOver(herkenUitOfferte(v.specificatie, { vandaag, klanten }));
+  };
+  const kan = naam.trim() && draaidag && opleverdatum >= draaidag && (versiesOpen.length < 2 || versieId);
   return (
     <div style={S.sheetAchter} onClick={sluit}>
       <div style={S.sheet} onClick={e => e.stopPropagation()}>
         <SheetKop titel={vanOfferte ? `🎉 Akkoord — "${vanOfferte.name}"` : "Nieuw project"} sluit={sluit} />
+        <AkkoordVersieKeuze versies={versiesOpen} gekozen={versieId} kies={kiesVersie} />
         {vanOfferte && <p style={{ ...S.hint, marginTop: 0 }}>Kies het sjabloon en de data; de productietaken komen in dit project. Offerte- en akkoordstappen staan meteen op klaar.</p>}
         <p style={{ ...S.label, marginTop: 6 }}>Sjabloon</p>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -3335,7 +3521,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
           </label>
         )}
         <button disabled={!kan} onClick={() => maak(sjabloon, {
-          naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag, onderdelen: zonderPost(onderdelen, opzet), meetings, deliverables, eigenPlanning, opzet,
+          naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag, onderdelen: zonderPost(onderdelen, opzet), meetings, deliverables, eigenPlanning, opzet, versieId,
           ...(!vanOfferte?.project?.intake?.tekst && intakeTekst.trim() ? { intakeTekst: intakeTekst.trim(), budget: hNu.budget ?? null, liveDatum: hNu.liveDatum || null } : {}),
         })}
           style={{ ...S.knop(), width: "100%", marginTop: 16, opacity: kan ? 1 : 0.5 }}>
@@ -3779,8 +3965,12 @@ function OffertePlekHint({ b, aantalDagen }) {
   const kosten = b.bedrag != null ? bezettingKosten(b, aantalDagen).totaal : null;
   const pct = kosten != null && b.offerte.begroot ? Math.round((1000 * (b.offerte.begroot - kosten)) / b.offerte.begroot) / 10 : null;
   const st = margeStatus(pct, md);
+  if (b.offerte.vervallen) {
+    return <p style={{ ...S.hint, marginTop: 6, color: C.rood, fontWeight: 700 }}>⚠️ Staat niet meer in de geldende offerte (was {euro(b.offerte.begroot)}). Nog nodig? Anders afzeggen en verwijderen.</p>;
+  }
   return (
     <p style={{ ...S.hint, marginTop: 6 }}>
+      {b.offerte.vorigBegroot != null && <span style={{ color: C.oranje, fontWeight: 700 }}>↻ Budget aangepast in de nieuwe offerte: {euro(b.offerte.vorigBegroot)} → {euro(b.offerte.begroot)}. </span>}
       📄 Offerte: {b.offerte.tekst} = <strong>{euro(b.offerte.begroot)}</strong>
       {kosten != null && <span style={{ color: MARGE_KLEUR[st] || C.muted, fontWeight: 700 }}> · afspraak {euro(kosten)} → {pct < 0 ? `${euro(kosten - b.offerte.begroot)} boven de offerte` : `marge ${String(pct).replace(".", ",")}%`}</span>}
       {kosten == null && <span> · max. {euro(b.offerte.begroot * (1 - md.minimum / 100))} voor {md.minimum}% marge</span>}
