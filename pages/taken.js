@@ -13,6 +13,7 @@
 // gewoon Nederlands, taken via e-mail en plakken vanuit een andere app.
 // ════════════════════════════════════════════════════════════════════
 import { laadPdfjs } from "../lib/pdf-worker";
+import { callActiepunten, callsVan, callTakenVan, callSamenvatting, bewaarCallInProject, verwijderCall } from "../lib/calls-logica";
 import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import Link from "next/link";
 import Head from "next/head";
@@ -660,6 +661,7 @@ export default function TakenApp() {
             zetProject={(velden) => wijzigLijst(weergave.ruimte, lijst.id, l => ({ ...l, project: { ...l.project, ...velden } }))}
             openLeren={() => setSheet({ soort: "leren", listId: lijst.id })}
             openOnderdelen={() => setSheet({ soort: "onderdelen", listId: lijst.id })}
+            openCall={(callId) => setSheet({ soort: "call", listId: lijst.id, callId })}
             zetDagen={(dagen) => { wijzigLijst(weergave.ruimte, lijst.id, l => zetDraaidagen(l, dagen, { nieuwId: uid, wie: ik })); meld("🎬 Draaidagen bijgewerkt"); }}
             openCallsheet={(dagId) => setSheet({ soort: "callsheet", listId: lijst.id, dagId })}
             openOfferteVanAanvraag={() => setSheet({ soort: "offerteVanAanvraag", listId: lijst.id })}
@@ -816,6 +818,36 @@ export default function TakenApp() {
               setWeergave({ soort: "lijst", ruimte: "werk", listId: lijst.id });
               meld(`🎉 Akkoord! Productie van "${lijst.name}" gestart`);
             }} />
+        );
+      })()}
+      {sheet?.soort === "call" && (() => {
+        const lijst = lijstVan("werk", sheet.listId);
+        if (!lijst) return null;
+        const call = sheet.callId ? (lijst.project?.calls || []).find(c => c.id === sheet.callId) : null;
+        const klant = klantVan(lijst.project?.klantId);
+        const metSuggesties = [...new Set([
+          ...callsVan(lijst.project).map(c => c.met).filter(Boolean),
+          ...(klant ? [klant.naam] : []),
+          ...contacten.map(c => c.naam).filter(Boolean),
+        ])].slice(0, 60);
+        return (
+          <CallSheet key={sheet.callId || "nieuw"} lijst={lijst} call={call} vandaag={vandaag} chronoRef={chronoRef} metSuggesties={metSuggesties}
+            sluit={() => setSheet(null)}
+            bewaar={(c, taken) => {
+              const l = lijstVan("werk", lijst.id);
+              const lopend = !!l.project && !["aanvraag", "offerte"].includes(projectStatus(l));
+              const herkomst = `📞 Uit call van ${new Date(`${c.datum || vandaag}T12:00`).toLocaleDateString("nl-NL", { weekday: "short", day: "numeric", month: "short" })}${c.met?.trim() ? ` met ${c.met.trim()}` : ""}`;
+              const items = taken.filter(t => t.titel.trim()).map(t => nieuweTaak({
+                name: t.titel.trim(), category: lopend ? (t.fase || "pre") : (l.categories?.[0]?.id || null),
+                dueDate: t.dueDate || null, herinnering: t.dueDate ? t.herinnering || null : null,
+                klantId: l.project?.klantId || null, note: herkomst,
+              }, { wie: ik }));
+              zetLijst("werk", bewaarCallInProject(l, c, items, { nieuwId: uid, wie: ik }));
+              setSheet(null);
+              meld(items.length ? `📞 Call bewaard — ${items.length} ${items.length === 1 ? "taak" : "taken"} toegevoegd` : "📞 Call bewaard");
+            }}
+            verwijder={() => { zetLijst("werk", verwijderCall(lijstVan("werk", lijst.id), sheet.callId)); setSheet(null); meld("🗑️ Call verwijderd — de taken blijven staan"); }}
+          />
         );
       })()}
       {sheet?.soort === "onderdelen" && (() => {
@@ -1262,6 +1294,7 @@ function TaakRegel({ item, lijst, ruimte, toonLijst, klant, vink, ster, open, ex
   if (stappen.length) meta.push(<span key="s">{stappen.filter(s => s.afgevinkt).length}/{stappen.length} stappen</span>);
   if (klant) meta.push(<span key="k" style={{ color: klant.kleur || C.groen, fontWeight: 700 }}>● {klant.naam}</span>);
   if (item.assignedTo) meta.push(<span key="a">👤 {item.assignedTo}</span>);
+  if (item.callId) meta.push(<span key="c" title="Uit een call">📞</span>);
   if (item.note) meta.push(<span key="n">📝</span>);
   const bez = (item.bezetting || []).filter(b => b.naam);
   if (bez.length) {
@@ -1591,7 +1624,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ doelen, voegToeNaar, vandaag, ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
+function LijstWeergave({ openCall, doelen, voegToeNaar, vandaag, ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
   const [menu, setMenu] = useState(false);
   const isAanvraag = projectStatus(lijst) === "aanvraag";
   const isOfferte = projectStatus(lijst) === "offerte" || isAanvraag;
@@ -1648,6 +1681,7 @@ function LijstWeergave({ doelen, voegToeNaar, vandaag, ruimte, lijst, klanten, k
         {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken, openVersie }} />}
         {isAanvraag && <AanvraagKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag, zetDeadline }} />}
         {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld, openVersie }} />}
+        {ruimte === "werk" && lijst.project && openCall && <CallsBlok lijst={lijst} openCall={openCall} />}
         {ruimte === "werk" && !isProject && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
         {isProject && open.length > 0 ? (
           [...FASES, { id: "__overig", label: "Overig", icon: "📌" }].map(f => {
@@ -3137,6 +3171,217 @@ function TaakDetail({ ruimte, lijst, taak, ik, klanten, status, meldingen, zetMe
 // ════════════════════════════════════════════════════════════════════
 // SHEETS
 // ════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════
+// CALLS PER PROJECT — notities + taken die uit een call komen
+// ════════════════════════════════════════════════════════════════════
+// Spraak → tekst (doorlopend), voor het inspreken van notities.
+function useSpraak() {
+  const [luistert, setLuistert] = useState(false);
+  const [hint, setHint] = useState(null);
+  const ref = useRef(null);
+  useEffect(() => () => { try { ref.current?.abort(); } catch { /* niets */ } }, []);
+  function toggle(opTekst) {
+    if (luistert) { try { ref.current?.stop(); } catch { /* al gestopt */ } return; }
+    const SR = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    if (!SR) { setHint("Inspreken kan hier niet rechtstreeks — gebruik de 🎤 op je iPhone-toetsenbord."); return; }
+    setHint(null);
+    let r;
+    try { r = new SR(); } catch { setHint("Inspreken lukte niet — gebruik de 🎤 op je toetsenbord."); return; }
+    r.lang = "nl-NL"; r.interimResults = true; r.continuous = true;
+    r.onresult = (e) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      opTekst(t.trim());
+    };
+    r.onerror = (e) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") setHint("Geen toegang tot de microfoon — zet die aan voor Safari in Instellingen › Apps › Safari.");
+      else if (e.error !== "aborted" && e.error !== "no-speech") setHint("Inspreken lukte niet — probeer opnieuw.");
+    };
+    r.onend = () => { setLuistert(false); ref.current = null; };
+    ref.current = r;
+    setLuistert(true);
+    try { r.start(); } catch { setLuistert(false); }
+  }
+  return { luistert, hint, setHint, toggle };
+}
+
+function CallsBlok({ lijst, openCall }) {
+  const calls = callsVan(lijst.project);
+  const [alles, setAlles] = useState(false);
+  const zichtbaar = alles ? calls : calls.slice(0, 3);
+  return (
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "14px 4px 8px" }}>
+        <p style={{ ...S.sectieKop, margin: 0, flex: 1 }}>📞 Calls{calls.length ? ` · ${calls.length}` : ""}</p>
+        <button onClick={() => openCall(null)} style={{ ...S.chip(false), padding: "6px 12px", fontWeight: 700, color: C.groen }}>＋ Nieuwe call</button>
+      </div>
+      {calls.length > 0 && (
+        <div style={S.kaart}>
+          {zichtbaar.map(c => {
+            const taken = callTakenVan(lijst, c.id);
+            const open = taken.filter(i => !i.checked).length;
+            return (
+              <button key={c.id} onClick={() => openCall(c.id)} style={{ ...S.rij, borderBottom: "1px solid #F3EEE3", alignItems: "flex-start" }}>
+                <span style={{ fontSize: 18, lineHeight: "22px" }}>📞</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "block", fontWeight: 600, fontSize: 15 }}>{c.datum ? datumKort(c.datum) : "Call"}{c.met ? ` · ${c.met}` : ""}</span>
+                  {callSamenvatting(c.notities) && <span style={{ display: "block", fontSize: 13, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{callSamenvatting(c.notities)}</span>}
+                  {taken.length > 0 && <span style={{ display: "block", fontSize: 12, color: open ? C.oranje : C.groen, fontWeight: 600, marginTop: 2 }}>{taken.length} {taken.length === 1 ? "taak" : "taken"}{open ? ` · ${open} open` : " · alles klaar ✓"}</span>}
+                </span>
+                <ChevronRight size={16} color={C.licht} style={{ marginTop: 3 }} />
+              </button>
+            );
+          })}
+          {calls.length > 3 && (
+            <button onClick={() => setAlles(!alles)} style={{ ...S.rij, justifyContent: "center", color: C.groen, fontSize: 13, fontWeight: 600 }}>{alles ? "Minder tonen" : `Alle ${calls.length} calls tonen`}</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CallSheet({ lijst, call, vandaag, chronoRef, metSuggesties = [], sluit, bewaar, verwijder }) {
+  const lopend = !!lijst.project && !["aanvraag", "offerte"].includes(projectStatus(lijst));
+  const standaardFase = lopend ? (FASES.find(f => (lijst.items || []).some(i => i.category === f.id && !i.checked)) || FASES[0]).id : null;
+  const [datum, setDatum] = useState(call?.datum || vandaag);
+  const [met, setMet] = useState(call?.met || "");
+  const [notities, setNotities] = useState(call?.notities || "");
+  const [nieuw, setNieuw] = useState([]); // { key, titel, fase, dueDate, herinnering }
+  const [invoer, setInvoer] = useState("");
+  const [genegeerd, setGenegeerd] = useState([]);
+  const [verwijderVraag, setVerwijderVraag] = useState(false);
+  const spraak = useSpraak();
+  const spraakBasis = useRef("");
+  const bestaand = call ? callTakenVan(lijst, call.id) : [];
+  const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const bekend = new Set([...bestaand.map(i => norm(i.name)), ...nieuw.map(t => norm(t.titel)), ...nieuw.map(t => norm(t.bron)), ...genegeerd]);
+  const suggesties = callActiepunten(notities).filter(a => !bekend.has(norm(a.tekst)) && !bekend.has(norm(ontleedSnelleInvoer(a.tekst, chronoRef.current, new Date()).titel)));
+
+  function maak(tekst) {
+    const slim = ontleedSnelleInvoer(tekst, chronoRef.current, new Date());
+    const titel = (slim.titel || tekst).trim();
+    return { key: uid(), bron: tekst, titel: titel.charAt(0).toUpperCase() + titel.slice(1), fase: standaardFase, dueDate: slim.dueDate || null, herinnering: slim.herinnering || null };
+  }
+  function voegInvoerToe() {
+    if (!invoer.trim()) return;
+    setNieuw(n => [...n, maak(invoer.trim())]);
+    setInvoer("");
+  }
+  function zetTaak(key, velden) { setNieuw(n => n.map(t => (t.key === key ? { ...t, ...velden } : t))); }
+  function opslaan() {
+    const taken = [...nieuw];
+    if (invoer.trim()) taken.push(maak(invoer.trim()));
+    bewaar({ id: call?.id, datum, met, notities }, taken);
+  }
+  function spreekIn() {
+    if (!spraak.luistert) spraakBasis.current = notities.trim() ? notities.replace(/\s+$/, "") + "\n" : "";
+    spraak.toggle(t => setNotities(spraakBasis.current + t));
+  }
+  const mini = (aan) => ({ ...S.chip(aan), padding: "4px 9px", fontSize: 12 });
+
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()} data-testid="call-sheet">
+        <SheetKop titel={call ? "📞 Call" : "📞 Nieuwe call"} sluit={sluit} />
+        <p style={{ ...S.hint, marginTop: 0 }}>{lijst.icon} {lijst.name}</p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: "0 0 150px" }}>
+            <p style={{ ...S.label, marginTop: 8 }}>Datum</p>
+            <input type="date" aria-label="Datum call" value={datum || ""} onChange={e => setDatum(e.target.value)} style={S.inp} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ ...S.label, marginTop: 8 }}>Met wie</p>
+            <input aria-label="Met wie" list="call-met" value={met} onChange={e => setMet(e.target.value)} placeholder="Bijv. Leonie (klant)" style={S.inp} />
+            <datalist id="call-met">{metSuggesties.map(n => <option key={n} value={n} />)}</datalist>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <p style={{ ...S.label, flex: 1 }}>Notities</p>
+          <button onClick={spreekIn} aria-label={spraak.luistert ? "Stoppen met inspreken" : "Notities inspreken"}
+            style={{ ...mini(spraak.luistert), marginTop: 10, display: "flex", alignItems: "center", gap: 4, ...(spraak.luistert ? { background: C.rood, borderColor: C.rood } : {}) }}>
+            {spraak.luistert ? <><Square size={11} fill="#FAF6F0" /> Stop</> : <><Mic size={13} /> Inspreken</>}
+          </button>
+        </div>
+        {spraak.hint && <p style={{ ...S.hint, color: C.oranje, marginTop: 0 }}>{spraak.hint}</p>}
+        <textarea aria-label="Notities call" value={notities} onChange={e => setNotities(e.target.value)} rows={7}
+          placeholder={"Wat is er besproken?\n\nTip: begin een regel met -> of [ ] en het wordt een taaksuggestie:\n-> moodboard sturen vrijdag"}
+          style={{ ...S.inp, resize: "vertical", lineHeight: 1.45 }} />
+
+        <p style={S.label}>✅ Taken uit deze call</p>
+        {suggesties.length > 0 && (
+          <div style={{ background: "#2D4A3E0D", border: `1px dashed ${C.groen}55`, borderRadius: 12, padding: 10, marginBottom: 8 }} data-testid="call-suggesties">
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 12, color: C.groen, fontWeight: 700, flex: 1 }}>Gevonden in je notities</span>
+              {suggesties.length > 1 && <button style={mini(false)} onClick={() => setNieuw(n => [...n, ...suggesties.map(a => maak(a.tekst))])}>Alle {suggesties.length} toevoegen</button>}
+            </div>
+            {suggesties.map(a => (
+              <div key={a.regel} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0" }}>
+                <span style={{ flex: 1, fontSize: 14, minWidth: 0 }}>{a.tekst}</span>
+                <button style={mini(true)} onClick={() => setNieuw(n => [...n, maak(a.tekst)])}>＋ Taak</button>
+                <button aria-label="Negeren" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex" }} onClick={() => setGenegeerd(g => [...g, norm(a.tekst)])}><X size={15} color={C.licht} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        {bestaand.length > 0 && (
+          <div style={{ ...S.kaart, marginBottom: 8 }}>
+            {bestaand.map(i => (
+              <div key={i.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "9px 12px", borderBottom: "1px solid #F3EEE3", fontSize: 14 }}>
+                <span style={{ color: i.checked ? C.groen : C.licht }}>{i.checked ? "✓" : "○"}</span>
+                <span style={{ flex: 1, minWidth: 0, textDecoration: i.checked ? "line-through" : "none", color: i.checked ? C.muted : C.tekst }}>{i.name}</span>
+                {i.dueDate && <span style={{ fontSize: 12, color: C.muted }}>📅 {datumKort(i.dueDate)}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+        {nieuw.length > 0 && (
+          <div style={{ ...S.kaart, marginBottom: 8 }} data-testid="call-nieuwe-taken">
+            {nieuw.map(t => (
+              <div key={t.key} style={{ padding: "9px 12px", borderBottom: "1px solid #F3EEE3" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ color: C.groen, fontWeight: 700 }}>＋</span>
+                  <input aria-label="Taaknaam" value={t.titel} onChange={e => zetTaak(t.key, { titel: e.target.value })} style={{ flex: 1, minWidth: 0, border: "none", outline: "none", fontSize: 16, fontFamily: "inherit", background: "transparent", color: C.tekst, padding: 0 }} />
+                  <button aria-label="Taak weghalen" onClick={() => setNieuw(n => n.filter(x => x.key !== t.key))} style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex" }}><X size={15} color={C.licht} /></button>
+                </div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 6, marginLeft: 20 }}>
+                  {lopend && FASES.map(f => <button key={f.id} style={mini(t.fase === f.id)} onClick={() => zetTaak(t.key, { fase: f.id })}>{f.icon}</button>)}
+                  {[["", "Geen"], [vandaag, "Vandaag"], [plusDagen(vandaag, 1), "Morgen"]].map(([d, l]) => (
+                    <button key={l} style={mini((t.dueDate || "") === d)} onClick={() => zetTaak(t.key, { dueDate: d || null, herinnering: d && t.herinnering ? `${d}T${t.herinnering.slice(11, 16)}` : null })}>{l}</button>
+                  ))}
+                  <label style={{ ...mini(!!t.dueDate && t.dueDate !== vandaag && t.dueDate !== plusDagen(vandaag, 1)), position: "relative" }}>
+                    📅 {t.dueDate && t.dueDate !== vandaag && t.dueDate !== plusDagen(vandaag, 1) ? datumKort(t.dueDate) : "Datum"}
+                    <input type="date" aria-label="Datum taak" value={t.dueDate || ""} onChange={e => zetTaak(t.key, { dueDate: e.target.value || null, herinnering: null })} style={{ position: "absolute", inset: 0, opacity: 0, width: "100%" }} />
+                  </label>
+                  {t.herinnering && <span style={{ fontSize: 12, color: C.muted, padding: "4px 2px" }}>🔔 {t.herinnering.slice(11, 16)}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <form onSubmit={e => { e.preventDefault(); voegInvoerToe(); }} style={{ display: "flex", gap: 8 }}>
+          <input aria-label="Nieuwe taak uit call" value={invoer} onChange={e => setInvoer(e.target.value)} placeholder="Taak — bv. 'vrijdag moodboard sturen'" style={{ ...S.inp, flex: 1, minWidth: 0 }} />
+          <button type="submit" aria-label="Taak toevoegen aan call" style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, padding: "8px 12px", display: "flex", alignItems: "center" }}><Plus size={18} /></button>
+        </form>
+
+        <button onClick={opslaan} style={{ ...S.knop(), width: "100%", marginTop: 16 }}>
+          {(() => { const n = nieuw.length + (invoer.trim() ? 1 : 0); return n ? `Call bewaren + ${n} ${n === 1 ? "taak" : "taken"} toevoegen` : "Call bewaren"; })()}
+        </button>
+        {call && (verwijderVraag ? (
+          <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+            <span style={{ flex: 1, fontSize: 13, color: C.muted }}>Call verwijderen? De taken blijven staan.</span>
+            <button style={S.knop(C.bg, C.tekst)} onClick={() => setVerwijderVraag(false)}>Nee</button>
+            <button style={S.knop("#FBEDE8", C.rood)} onClick={verwijder}>Verwijder</button>
+          </div>
+        ) : (
+          <button onClick={() => setVerwijderVraag(true)} style={{ background: "none", border: "none", color: C.rood, fontSize: 13, marginTop: 12, cursor: "pointer", fontFamily: "inherit", width: "100%" }}>Call verwijderen</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SheetKop({ titel, sluit }) {
   return (
     <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>

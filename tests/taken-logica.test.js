@@ -130,6 +130,18 @@ if (chronoNl) {
   test("herhaling zonder datum start op de eerstvolgende passende dag", d.herhaling.dagen.join() === "1" && d.dueDate === "2026-11-23" && d.titel === "Vuilnis buiten");
   const e = L.ontleedSnelleInvoer("tandarts bellen", chronoNl, zondagOchtend);
   test("gewone tekst blijft gewone tekst", e.titel === "Tandarts bellen" && !e.dueDate && !e.herhaling);
+  const f = L.ontleedSnelleInvoer("morgen 14:00 Jan bellen over hotel", chronoNl, zondagOchtend);
+  test("'morgen 14:00' → herinnering 14:00, 'Jan' blijft een naam", f.dueDate === "2026-11-23" && f.herinnering === "2026-11-23T14:00" && f.titel === "Jan bellen over hotel", JSON.stringify(f));
+  const g = L.ontleedSnelleInvoer("Jan bellen morgen om 14.30", chronoNl, zondagOchtend);
+  test("'Jan bellen morgen om 14.30' → naam blijft, tijd 14:30", g.dueDate === "2026-11-23" && g.herinnering === "2026-11-23T14:30" && g.titel === "Jan bellen", JSON.stringify(g));
+  const h = L.ontleedSnelleInvoer("offerte mei sturen", chronoNl, zondagOchtend);
+  test("losse maandnaam is geen datum", !h.dueDate && h.titel === "Offerte mei sturen", JSON.stringify(h));
+  const i2 = L.ontleedSnelleInvoer("draaidag 3 jan voorbereiden", chronoNl, zondagOchtend);
+  test("'3 jan' is wél een datum", i2.dueDate === "2027-01-03" && i2.titel === "Draaidag voorbereiden", JSON.stringify(i2));
+  const j = L.ontleedSnelleInvoer("vrijdag versie 2.10 exporteren", chronoNl, zondagOchtend);
+  test("versienummer ('2.10') wordt geen tijd", j.dueDate === "2026-11-27" && j.herinnering === null && j.titel === "Versie 2.10 exporteren", JSON.stringify(j));
+  const k = L.ontleedSnelleInvoer("morgen montage checken 9.30 uur", chronoNl, zondagOchtend);
+  test("'9.30 uur' wél een tijd", k.herinnering === "2026-11-23T09:30" && k.titel === "Montage checken", JSON.stringify(k));
 } else {
   console.log("  (chrono-node niet geïnstalleerd — slim-invoeren-tests overgeslagen)");
 }
