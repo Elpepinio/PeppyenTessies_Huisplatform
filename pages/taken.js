@@ -467,6 +467,33 @@ export default function TakenApp() {
   useEffect(() => {
     if (!["open", "laden"].includes(werkStaat) && ruimteFilter === "werk") setRuimteFilter("alles");
   }, [werkStaat]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Call-notities die op dit toestel staan maar (nog) niet op de server
+  // (bv. opslaan mislukt zonder verbinding): bij het laden alsnog bewaren.
+  const conceptenGecheckt = useRef(false);
+  useEffect(() => {
+    if (werkStaat !== "open" || !werk || conceptenGecheckt.current) return;
+    conceptenGecheckt.current = true;
+    let sleutels = [];
+    try { sleutels = Object.keys(localStorage).filter(k => k.startsWith("call-concept:")); } catch { return; }
+    let hersteld = 0;
+    for (const k of sleutels) {
+      const id = k.slice("call-concept:".length);
+      const c = leesCallConcept(id);
+      const weg = () => { try { localStorage.removeItem(k); } catch { /* niets */ } };
+      if (!c?.listId) { weg(); continue; }
+      const l = lijstVan("werk", c.listId);
+      const bestaand = l?.project?.calls?.find(x => x.id === id);
+      const heeftInhoud = !!(String(c.notities || "").trim() || String(c.met || "").trim());
+      if (!l || (!bestaand && !heeftInhoud) || (bestaand && (bestaand.bijgewerktOp || 0) + 2000 >= c.t)) {
+        if (!l || Date.now() - c.t > 2 * 86400000 || bestaand) weg();
+        continue;
+      }
+      if (bestaand && bestaand.notities === c.notities && bestaand.met === c.met && bestaand.datum === c.datum) { weg(); continue; }
+      zetLijst("werk", bewaarCallInProject(l, { id, datum: c.datum, met: c.met, notities: c.notities }, [], { nieuwId: uid, wie: ik }));
+      hersteld++;
+    }
+    if (hersteld) meld(`📞 ${hersteld === 1 ? "Call-notities" : `${hersteld} calls`} van dit toestel alsnog bewaard`);
+  }, [werkStaat, werk]); // eslint-disable-line react-hooks/exhaustive-deps
   // Alle lijsten waar je vanuit het +-paneel een taak heen kunt sturen.
   const doelen = useMemo(() => {
     const uit = [];
@@ -661,7 +688,7 @@ export default function TakenApp() {
             zetProject={(velden) => wijzigLijst(weergave.ruimte, lijst.id, l => ({ ...l, project: { ...l.project, ...velden } }))}
             openLeren={() => setSheet({ soort: "leren", listId: lijst.id })}
             openOnderdelen={() => setSheet({ soort: "onderdelen", listId: lijst.id })}
-            openCall={(callId) => setSheet({ soort: "call", listId: lijst.id, callId })}
+            openCall={(callId) => setSheet({ soort: "call", listId: lijst.id, callId: callId || uid() })}
             zetDagen={(dagen) => { wijzigLijst(weergave.ruimte, lijst.id, l => zetDraaidagen(l, dagen, { nieuwId: uid, wie: ik })); meld("🎬 Draaidagen bijgewerkt"); }}
             openCallsheet={(dagId) => setSheet({ soort: "callsheet", listId: lijst.id, dagId })}
             openOfferteVanAanvraag={() => setSheet({ soort: "offerteVanAanvraag", listId: lijst.id })}
@@ -823,7 +850,6 @@ export default function TakenApp() {
       {sheet?.soort === "call" && (() => {
         const lijst = lijstVan("werk", sheet.listId);
         if (!lijst) return null;
-        const call = sheet.callId ? (lijst.project?.calls || []).find(c => c.id === sheet.callId) : null;
         const klant = klantVan(lijst.project?.klantId);
         const metSuggesties = [...new Set([
           ...callsVan(lijst.project).map(c => c.met).filter(Boolean),
@@ -831,21 +857,21 @@ export default function TakenApp() {
           ...contacten.map(c => c.naam).filter(Boolean),
         ])].slice(0, 60);
         return (
-          <CallSheet key={sheet.callId || "nieuw"} lijst={lijst} call={call} vandaag={vandaag} chronoRef={chronoRef} metSuggesties={metSuggesties}
+          <CallSheet key={sheet.callId} lijst={lijst} callId={sheet.callId} vandaag={vandaag} chronoRef={chronoRef} metSuggesties={metSuggesties}
             sluit={() => setSheet(null)}
-            bewaar={(c, taken) => {
-              const l = lijstVan("werk", lijst.id);
+            bewaarCall={(c) => wijzigLijst("werk", lijst.id, l => bewaarCallInProject(l, c, [], { nieuwId: uid, wie: ik }))}
+            voegTaakToe={(c, t) => wijzigLijst("werk", lijst.id, l => {
               const lopend = !!l.project && !["aanvraag", "offerte"].includes(projectStatus(l));
               const herkomst = `📞 Uit call van ${new Date(`${c.datum || vandaag}T12:00`).toLocaleDateString("nl-NL", { weekday: "short", day: "numeric", month: "short" })}${c.met?.trim() ? ` met ${c.met.trim()}` : ""}`;
-              const items = taken.filter(t => t.titel.trim()).map(t => nieuweTaak({
-                name: t.titel.trim(), category: lopend ? (t.fase || "pre") : (l.categories?.[0]?.id || null),
+              const taak = { ...nieuweTaak({
+                name: t.titel, category: lopend ? (t.fase || "pre") : (l.categories?.[0]?.id || null),
                 dueDate: t.dueDate || null, herinnering: t.dueDate ? t.herinnering || null : null,
                 klantId: l.project?.klantId || null, note: herkomst,
-              }, { wie: ik }));
-              zetLijst("werk", bewaarCallInProject(l, c, items, { nieuwId: uid, wie: ik }));
-              setSheet(null);
-              meld(items.length ? `📞 Call bewaard — ${items.length} ${items.length === 1 ? "taak" : "taken"} toegevoegd` : "📞 Call bewaard");
-            }}
+              }, { wie: ik }), callBron: t.bron };
+              return bewaarCallInProject(l, c, [taak], { nieuwId: uid, wie: ik });
+            })}
+            wijzigTaak={(itemId, velden) => zetVelden("werk", lijst.id, itemId, velden)}
+            verwijderTaak={(itemId) => wijzigLijst("werk", lijst.id, l => ({ ...l, items: (l.items || []).filter(i => i.id !== itemId) }))}
             verwijder={() => { zetLijst("werk", verwijderCall(lijstVan("werk", lijst.id), sheet.callId)); setSheet(null); meld("🗑️ Call verwijderd — de taken blijven staan"); }}
           />
         );
@@ -3241,58 +3267,159 @@ function CallsBlok({ lijst, openCall }) {
   );
 }
 
-function CallSheet({ lijst, call, vandaag, chronoRef, metSuggesties = [], sluit, bewaar, verwijder }) {
+// Alles in de call-sheet wordt automatisch bewaard: notities kort na het
+// typen (en bij sluiten / app wegklikken), taken direct bij ＋. Daarnaast een
+// kopie op het toestel, voor als het opslaan naar de server mislukt.
+const CALL_CONCEPT = (id) => `call-concept:${id}`;
+function leesCallConcept(id) {
+  try { const v = JSON.parse(localStorage.getItem(CALL_CONCEPT(id)) || "null"); return v && typeof v === "object" ? v : null; } catch { return null; }
+}
+function schrijfCallConcept(id, v) {
+  try { localStorage.setItem(CALL_CONCEPT(id), JSON.stringify({ ...v, t: Date.now() })); } catch { /* geen opslag op dit toestel */ }
+}
+
+function CallTaakRegel({ taak, lopend, vandaag, wijzig, verwijder }) {
+  const [naam, setNaam] = useState(taak.name);
+  useEffect(() => { setNaam(taak.name); }, [taak.name]);
+  const mini = (aan) => ({ ...S.chip(aan), padding: "4px 9px", fontSize: 12 });
+  const morgen = plusDagen(vandaag, 1);
+  const eigenDatum = !!taak.dueDate && taak.dueDate !== vandaag && taak.dueDate !== morgen;
+  const bewaarNaam = () => { const n = naam.trim(); if (n && n !== taak.name) wijzig({ name: n }); else setNaam(taak.name); };
+  return (
+    <div style={{ padding: "9px 12px", borderBottom: "1px solid #F3EEE3" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <span style={{ color: taak.checked ? C.groen : C.licht, width: 14 }}>{taak.checked ? "✓" : "○"}</span>
+        <input aria-label="Taaknaam" value={naam} onChange={e => setNaam(e.target.value)} onBlur={bewaarNaam} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          style={{ flex: 1, minWidth: 0, border: "none", outline: "none", fontSize: 16, fontFamily: "inherit", background: "transparent", color: taak.checked ? C.muted : C.tekst, textDecoration: taak.checked ? "line-through" : "none", padding: 0 }} />
+        <button aria-label="Taak weghalen" onClick={verwijder} style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex" }}><X size={15} color={C.licht} /></button>
+      </div>
+      {!taak.checked && (
+        <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 6, marginLeft: 22 }}>
+          {lopend && FASES.map(f => <button key={f.id} title={f.label} aria-label={f.label} style={mini(taak.category === f.id)} onClick={() => wijzig({ category: f.id })}>{f.icon}</button>)}
+          {[["", "Geen"], [vandaag, "Vandaag"], [morgen, "Morgen"]].map(([d, l]) => (
+            <button key={l} style={mini((taak.dueDate || "") === d)} onClick={() => wijzig({ dueDate: d || null, herinnering: d && taak.herinnering ? `${d}T${taak.herinnering.slice(11, 16)}` : null })}>{l}</button>
+          ))}
+          <label style={{ ...mini(eigenDatum), position: "relative" }}>
+            📅 {eigenDatum ? datumKort(taak.dueDate) : "Datum"}
+            <input type="date" aria-label="Datum taak" value={taak.dueDate || ""} onChange={e => wijzig({ dueDate: e.target.value || null, herinnering: e.target.value && taak.herinnering ? `${e.target.value}T${taak.herinnering.slice(11, 16)}` : null })} style={{ position: "absolute", inset: 0, opacity: 0, width: "100%" }} />
+          </label>
+          {taak.herinnering && <span style={{ fontSize: 12, color: C.muted, padding: "4px 2px" }}>🔔 {taak.herinnering.slice(11, 16)}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], sluit, bewaarCall, voegTaakToe, wijzigTaak, verwijderTaak, verwijder }) {
+  const call = (lijst.project?.calls || []).find(c => c.id === callId) || null;
   const lopend = !!lijst.project && !["aanvraag", "offerte"].includes(projectStatus(lijst));
   const standaardFase = lopend ? (FASES.find(f => (lijst.items || []).some(i => i.category === f.id && !i.checked)) || FASES[0]).id : null;
-  const [datum, setDatum] = useState(call?.datum || vandaag);
-  const [met, setMet] = useState(call?.met || "");
-  const [notities, setNotities] = useState(call?.notities || "");
-  const [nieuw, setNieuw] = useState([]); // { key, titel, fase, dueDate, herinnering }
+  // Startwaarden: de bewaarde call, of een nieuwere kopie op dit toestel.
+  const [start] = useState(() => {
+    const basis = { datum: call?.datum || vandaag, met: call?.met || "", notities: call?.notities || "" };
+    const c = leesCallConcept(callId);
+    const nieuwer = c && (!call || c.t > (call.bijgewerktOp || 0) + 2000) && (c.notities !== basis.notities || c.met !== basis.met);
+    return nieuwer ? { datum: c.datum || basis.datum, met: c.met || "", notities: c.notities || "", hersteld: true } : basis;
+  });
+  const [datum, setDatum] = useState(start.datum);
+  const [met, setMet] = useState(start.met);
+  const [notities, setNotities] = useState(start.notities);
   const [invoer, setInvoer] = useState("");
   const [genegeerd, setGenegeerd] = useState([]);
   const [verwijderVraag, setVerwijderVraag] = useState(false);
+  const [status, setStatus] = useState(start.hersteld ? "hersteld" : call ? "bewaard" : "leeg");
   const spraak = useSpraak();
   const spraakBasis = useRef("");
-  const bestaand = call ? callTakenVan(lijst, call.id) : [];
+  const laatste = useRef({ datum, met, notities });
+  const wachtend = useRef(!!start.hersteld);
+  const timer = useRef(null);
+  laatste.current = { datum, met, notities };
+
+  const bestaatAl = !!call;
+  const heeftInhoud = (v) => !!(v.notities.trim() || v.met.trim());
+  function nuBewaren() {
+    clearTimeout(timer.current);
+    if (!wachtend.current) return;
+    const v = laatste.current;
+    if (!bestaatAl && !heeftInhoud(v)) { wachtend.current = false; return; }
+    bewaarCall({ id: callId, ...v });
+    wachtend.current = false;
+    setStatus("bewaard");
+  }
+  const nuBewarenRef = useRef(nuBewaren);
+  nuBewarenRef.current = nuBewaren;
+  // Bij elke wijziging: kopie op het toestel + na 0,8 s naar de server.
+  function gewijzigd(velden) {
+    const v = { ...laatste.current, ...velden };
+    laatste.current = v;
+    schrijfCallConcept(callId, { ...v, listId: lijst.id });
+    wachtend.current = true;
+    setStatus("bezig");
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => nuBewarenRef.current(), 800);
+  }
+  useEffect(() => {
+    if (start.hersteld) nuBewarenRef.current();
+    const weg = () => nuBewarenRef.current();
+    const zicht = () => { if (document.visibilityState === "hidden") weg(); };
+    window.addEventListener("pagehide", weg);
+    document.addEventListener("visibilitychange", zicht);
+    return () => { window.removeEventListener("pagehide", weg); document.removeEventListener("visibilitychange", zicht); nuBewarenRef.current(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const taken = callTakenVan(lijst, callId);
   const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
-  const bekend = new Set([...bestaand.map(i => norm(i.name)), ...nieuw.map(t => norm(t.titel)), ...nieuw.map(t => norm(t.bron)), ...genegeerd]);
+  const bekend = new Set([...taken.map(i => norm(i.name)), ...taken.map(i => norm(i.callBron)), ...genegeerd]);
   const suggesties = callActiepunten(notities).filter(a => !bekend.has(norm(a.tekst)) && !bekend.has(norm(ontleedSnelleInvoer(a.tekst, chronoRef.current, new Date()).titel)));
 
-  function maak(tekst) {
+  function maakTaak(tekst) {
     const slim = ontleedSnelleInvoer(tekst, chronoRef.current, new Date());
     const titel = (slim.titel || tekst).trim();
-    return { key: uid(), bron: tekst, titel: titel.charAt(0).toUpperCase() + titel.slice(1), fase: standaardFase, dueDate: slim.dueDate || null, herinnering: slim.herinnering || null };
+    voegTaakToe({ id: callId, ...laatste.current }, {
+      titel: titel.charAt(0).toUpperCase() + titel.slice(1), bron: tekst, fase: standaardFase,
+      dueDate: slim.dueDate || null, herinnering: slim.herinnering || null,
+    });
+    wachtend.current = false;
+    setStatus("bewaard");
   }
   function voegInvoerToe() {
     if (!invoer.trim()) return;
-    setNieuw(n => [...n, maak(invoer.trim())]);
+    maakTaak(invoer.trim());
     setInvoer("");
   }
-  function zetTaak(key, velden) { setNieuw(n => n.map(t => (t.key === key ? { ...t, ...velden } : t))); }
-  function opslaan() {
-    const taken = [...nieuw];
-    if (invoer.trim()) taken.push(maak(invoer.trim()));
-    bewaar({ id: call?.id, datum, met, notities }, taken);
+  function klaar() {
+    if (invoer.trim()) voegInvoerToe();
+    nuBewaren();
+    sluit();
   }
   function spreekIn() {
     if (!spraak.luistert) spraakBasis.current = notities.trim() ? notities.replace(/\s+$/, "") + "\n" : "";
-    spraak.toggle(t => setNotities(spraakBasis.current + t));
+    spraak.toggle(t => { const n = spraakBasis.current + t; setNotities(n); gewijzigd({ notities: n }); });
   }
   const mini = (aan) => ({ ...S.chip(aan), padding: "4px 9px", fontSize: 12 });
+  const STATUS = {
+    leeg: { t: "Wordt automatisch bewaard", k: C.muted },
+    bezig: { t: "Bewaren…", k: C.muted },
+    bewaard: { t: "✓ Automatisch bewaard", k: C.groen },
+    hersteld: { t: "↺ Niet-bewaarde notities teruggezet", k: C.oranje },
+  }[status];
 
   return (
-    <div style={S.sheetAchter} onClick={sluit}>
+    <div style={S.sheetAchter} onClick={klaar}>
       <div style={S.sheet} onClick={e => e.stopPropagation()} data-testid="call-sheet">
-        <SheetKop titel={call ? "📞 Call" : "📞 Nieuwe call"} sluit={sluit} />
-        <p style={{ ...S.hint, marginTop: 0 }}>{lijst.icon} {lijst.name}</p>
+        <SheetKop titel={bestaatAl ? "📞 Call" : "📞 Nieuwe call"} sluit={klaar} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: -4 }}>
+          <p style={{ ...S.hint, margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lijst.icon} {lijst.name}</p>
+          <span data-testid="call-status" style={{ fontSize: 12, fontWeight: 600, color: STATUS.k, whiteSpace: "nowrap" }}>{STATUS.t}</span>
+        </div>
         <div style={{ display: "flex", gap: 8 }}>
           <div style={{ flex: "0 0 150px" }}>
             <p style={{ ...S.label, marginTop: 8 }}>Datum</p>
-            <input type="date" aria-label="Datum call" value={datum || ""} onChange={e => setDatum(e.target.value)} style={S.inp} />
+            <input type="date" aria-label="Datum call" value={datum || ""} onChange={e => { setDatum(e.target.value); gewijzigd({ datum: e.target.value }); }} style={S.inp} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <p style={{ ...S.label, marginTop: 8 }}>Met wie</p>
-            <input aria-label="Met wie" list="call-met" value={met} onChange={e => setMet(e.target.value)} placeholder="Bijv. Leonie (klant)" style={S.inp} />
+            <input aria-label="Met wie" list="call-met" value={met} onChange={e => { setMet(e.target.value); gewijzigd({ met: e.target.value }); }} placeholder="Bijv. Leonie (klant)" style={S.inp} />
             <datalist id="call-met">{metSuggesties.map(n => <option key={n} value={n} />)}</datalist>
           </div>
         </div>
@@ -3305,7 +3432,7 @@ function CallSheet({ lijst, call, vandaag, chronoRef, metSuggesties = [], sluit,
           </button>
         </div>
         {spraak.hint && <p style={{ ...S.hint, color: C.oranje, marginTop: 0 }}>{spraak.hint}</p>}
-        <textarea aria-label="Notities call" value={notities} onChange={e => setNotities(e.target.value)} rows={7}
+        <textarea aria-label="Notities call" value={notities} onChange={e => { setNotities(e.target.value); gewijzigd({ notities: e.target.value }); }} onBlur={nuBewaren} rows={7}
           placeholder={"Wat is er besproken?\n\nTip: begin een regel met -> of [ ] en het wordt een taaksuggestie:\n-> moodboard sturen vrijdag"}
           style={{ ...S.inp, resize: "vertical", lineHeight: 1.45 }} />
 
@@ -3314,49 +3441,21 @@ function CallSheet({ lijst, call, vandaag, chronoRef, metSuggesties = [], sluit,
           <div style={{ background: "#2D4A3E0D", border: `1px dashed ${C.groen}55`, borderRadius: 12, padding: 10, marginBottom: 8 }} data-testid="call-suggesties">
             <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 12, color: C.groen, fontWeight: 700, flex: 1 }}>Gevonden in je notities</span>
-              {suggesties.length > 1 && <button style={mini(false)} onClick={() => setNieuw(n => [...n, ...suggesties.map(a => maak(a.tekst))])}>Alle {suggesties.length} toevoegen</button>}
+              {suggesties.length > 1 && <button style={mini(false)} onClick={() => suggesties.forEach(a => maakTaak(a.tekst))}>Alle {suggesties.length} toevoegen</button>}
             </div>
             {suggesties.map(a => (
               <div key={a.regel} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0" }}>
                 <span style={{ flex: 1, fontSize: 14, minWidth: 0 }}>{a.tekst}</span>
-                <button style={mini(true)} onClick={() => setNieuw(n => [...n, maak(a.tekst)])}>＋ Taak</button>
+                <button style={mini(true)} onClick={() => maakTaak(a.tekst)}>＋ Taak</button>
                 <button aria-label="Negeren" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex" }} onClick={() => setGenegeerd(g => [...g, norm(a.tekst)])}><X size={15} color={C.licht} /></button>
               </div>
             ))}
           </div>
         )}
-        {bestaand.length > 0 && (
-          <div style={{ ...S.kaart, marginBottom: 8 }}>
-            {bestaand.map(i => (
-              <div key={i.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "9px 12px", borderBottom: "1px solid #F3EEE3", fontSize: 14 }}>
-                <span style={{ color: i.checked ? C.groen : C.licht }}>{i.checked ? "✓" : "○"}</span>
-                <span style={{ flex: 1, minWidth: 0, textDecoration: i.checked ? "line-through" : "none", color: i.checked ? C.muted : C.tekst }}>{i.name}</span>
-                {i.dueDate && <span style={{ fontSize: 12, color: C.muted }}>📅 {datumKort(i.dueDate)}</span>}
-              </div>
-            ))}
-          </div>
-        )}
-        {nieuw.length > 0 && (
-          <div style={{ ...S.kaart, marginBottom: 8 }} data-testid="call-nieuwe-taken">
-            {nieuw.map(t => (
-              <div key={t.key} style={{ padding: "9px 12px", borderBottom: "1px solid #F3EEE3" }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ color: C.groen, fontWeight: 700 }}>＋</span>
-                  <input aria-label="Taaknaam" value={t.titel} onChange={e => zetTaak(t.key, { titel: e.target.value })} style={{ flex: 1, minWidth: 0, border: "none", outline: "none", fontSize: 16, fontFamily: "inherit", background: "transparent", color: C.tekst, padding: 0 }} />
-                  <button aria-label="Taak weghalen" onClick={() => setNieuw(n => n.filter(x => x.key !== t.key))} style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex" }}><X size={15} color={C.licht} /></button>
-                </div>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 6, marginLeft: 20 }}>
-                  {lopend && FASES.map(f => <button key={f.id} style={mini(t.fase === f.id)} onClick={() => zetTaak(t.key, { fase: f.id })}>{f.icon}</button>)}
-                  {[["", "Geen"], [vandaag, "Vandaag"], [plusDagen(vandaag, 1), "Morgen"]].map(([d, l]) => (
-                    <button key={l} style={mini((t.dueDate || "") === d)} onClick={() => zetTaak(t.key, { dueDate: d || null, herinnering: d && t.herinnering ? `${d}T${t.herinnering.slice(11, 16)}` : null })}>{l}</button>
-                  ))}
-                  <label style={{ ...mini(!!t.dueDate && t.dueDate !== vandaag && t.dueDate !== plusDagen(vandaag, 1)), position: "relative" }}>
-                    📅 {t.dueDate && t.dueDate !== vandaag && t.dueDate !== plusDagen(vandaag, 1) ? datumKort(t.dueDate) : "Datum"}
-                    <input type="date" aria-label="Datum taak" value={t.dueDate || ""} onChange={e => zetTaak(t.key, { dueDate: e.target.value || null, herinnering: null })} style={{ position: "absolute", inset: 0, opacity: 0, width: "100%" }} />
-                  </label>
-                  {t.herinnering && <span style={{ fontSize: 12, color: C.muted, padding: "4px 2px" }}>🔔 {t.herinnering.slice(11, 16)}</span>}
-                </div>
-              </div>
+        {taken.length > 0 && (
+          <div style={{ ...S.kaart, marginBottom: 8 }} data-testid="call-taken">
+            {taken.map(t => (
+              <CallTaakRegel key={t.id} taak={t} lopend={lopend} vandaag={vandaag} wijzig={(v) => wijzigTaak(t.id, v)} verwijder={() => verwijderTaak(t.id)} />
             ))}
           </div>
         )}
@@ -3364,15 +3463,14 @@ function CallSheet({ lijst, call, vandaag, chronoRef, metSuggesties = [], sluit,
           <input aria-label="Nieuwe taak uit call" value={invoer} onChange={e => setInvoer(e.target.value)} placeholder="Taak — bv. 'vrijdag moodboard sturen'" style={{ ...S.inp, flex: 1, minWidth: 0 }} />
           <button type="submit" aria-label="Taak toevoegen aan call" style={{ ...S.knop(C.bg, C.groen), border: `1px solid ${C.rand2}`, padding: "8px 12px", display: "flex", alignItems: "center" }}><Plus size={18} /></button>
         </form>
+        <p style={{ ...S.hint, marginTop: 6 }}>Taken komen meteen in het project. Alles wordt automatisch bewaard — ook als je dit venster sluit.</p>
 
-        <button onClick={opslaan} style={{ ...S.knop(), width: "100%", marginTop: 16 }}>
-          {(() => { const n = nieuw.length + (invoer.trim() ? 1 : 0); return n ? `Call bewaren + ${n} ${n === 1 ? "taak" : "taken"} toevoegen` : "Call bewaren"; })()}
-        </button>
-        {call && (verwijderVraag ? (
+        <button onClick={klaar} style={{ ...S.knop(), width: "100%", marginTop: 12 }}>Klaar</button>
+        {bestaatAl && (verwijderVraag ? (
           <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
             <span style={{ flex: 1, fontSize: 13, color: C.muted }}>Call verwijderen? De taken blijven staan.</span>
             <button style={S.knop(C.bg, C.tekst)} onClick={() => setVerwijderVraag(false)}>Nee</button>
-            <button style={S.knop("#FBEDE8", C.rood)} onClick={verwijder}>Verwijder</button>
+            <button style={S.knop("#FBEDE8", C.rood)} onClick={() => { clearTimeout(timer.current); wachtend.current = false; try { localStorage.removeItem(CALL_CONCEPT(callId)); } catch { /* niets */ } verwijder(); }}>Verwijder</button>
           </div>
         ) : (
           <button onClick={() => setVerwijderVraag(true)} style={{ background: "none", border: "none", color: C.rood, fontSize: 13, marginTop: 12, cursor: "pointer", fontFamily: "inherit", width: "100%" }}>Call verwijderen</button>
