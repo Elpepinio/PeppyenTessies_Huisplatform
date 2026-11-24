@@ -1371,7 +1371,7 @@ function TaakRegel({ item, lijst, ruimte, toonLijst, klant, vink, ster, open, ex
 // Invoerbalk onderaan: Enter = snel toevoegen (met datumherkenning in de
 // tekst). De + opent een klein paneel: waar komt de taak, voor wanneer,
 // eventueel een notitie. De 🎤 zet ingesproken tekst om in een taak.
-function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = [], standaardDoel = null, basisExtra = {}, voegToeNaar = null, vandaag }) {
+function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = [], standaardDoel = null, basisExtra = {}, voegToeNaar = null, vandaag, klanten = [] }) {
   const [tekst, setTekst] = useState("");
   const [paneel, setPaneel] = useState(null); // { doel, fase, wanneer, datum, tijd, notitie }
   const [luistert, setLuistert] = useState(false);
@@ -1399,7 +1399,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
     const tijd = v?.herinnering ? v.herinnering.slice(11, 16) : "";
     const start = standaardDoel && doelen.some(d => sleutel(d) === sleutel(standaardDoel)) ? standaardDoel : doelen[0];
     return {
-      doel: sleutel(start), fase: standaardDoel?.fase || "pre",
+      doel: sleutel(start), fase: standaardDoel?.fase || "pre", klantId: basisExtra.klantId || "",
       wanneer: !datum ? "geen" : datum === dag0 ? "vandaag" : datum === morgen ? "morgen" : "datum",
       datum: datum || "", tijd, notitie: "",
     };
@@ -1419,7 +1419,10 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
       if (voorbeeld?.belangrijk) extra.belangrijk = true;
       if (paneel.notitie.trim()) extra.note = paneel.notitie.trim();
       if (d.lopendProject) extra.category = paneel.fase;
-      if (d.ruimte !== "werk") delete extra.klantId;
+      delete extra.klantId;
+      // Losse werktaak: klant uit het paneel (algemene taak voor die klant).
+      // Projecttaak: de klant van het project (zie voegToeNaar).
+      if (d.ruimte === "werk" && d.groep !== "project" && paneel.klantId) extra.klantId = paneel.klantId;
       voegToeNaar(d.ruimte, d.listId, titel.charAt(0).toUpperCase() + titel.slice(1), extra, d.label);
       setPaneel(null);
     } else {
@@ -1504,6 +1507,15 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
                 <div style={{ display: "flex", gap: 6, overflowX: "auto", flex: 1, minWidth: 0 }}>
                   {FASES.map(f => <button key={f.id} style={kleinAan(paneel.fase === f.id)} onClick={() => setPaneel(p => ({ ...p, fase: f.id }))}>{f.icon} {f.label}</button>)}
                 </div>
+              </div>
+            )}
+            {doelLijst?.ruimte === "werk" && doelLijst?.groep !== "project" && klanten.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, color: C.muted, width: 58, flexShrink: 0 }}>Klant</span>
+                <select aria-label="Klant" value={paneel.klantId} onChange={e => setPaneel(p => ({ ...p, klantId: e.target.value }))} style={{ ...veld, flex: 1, width: 0, minWidth: 0, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", WebkitAppearance: "none", appearance: "none", paddingRight: 28, backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%238C8576' stroke-width='1.6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" }}>
+                  <option value="">Geen klant</option>
+                  {klanten.map(k => <option key={k.id} value={k.id}>● {k.naam} (algemeen)</option>)}
+                </select>
               </div>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1660,8 +1672,10 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
           </>
         )}
       </main>
-      <InvoerBalk chronoRef={chronoRef} voegToe={voegToe} {...{ doelen, voegToeNaar, standaardDoel, basisExtra, vandaag }}
-        placeholder={ruimteFilter === "werk" && werkStaat === "open" ? "Werktaak toevoegen…" : "Taak toevoegen — bv. 'morgen 9:00 tandarts bellen'"} />
+      <InvoerBalk chronoRef={chronoRef} voegToe={voegToe} {...{ doelen, voegToeNaar, standaardDoel, basisExtra, vandaag }} klanten={klanten.filter(k => !k.gearchiveerd)}
+        placeholder={ruimteFilter === "werk" && werkStaat === "open"
+          ? (klantFilter && klanten.find(k => k.id === klantFilter) ? `Algemene taak voor ${klanten.find(k => k.id === klantFilter).naam}…` : "Werktaak toevoegen…")
+          : "Taak toevoegen — bv. 'morgen 9:00 tandarts bellen'"} />
     </>
   );
 }
@@ -1755,7 +1769,7 @@ function LijstWeergave({ openCall, doelen, voegToeNaar, vandaag, ruimte, lijst, 
           </>
         )}
       </main>
-      <InvoerBalk chronoRef={chronoRef} {...{ doelen, voegToeNaar, vandaag }}
+      <InvoerBalk chronoRef={chronoRef} {...{ doelen, voegToeNaar, vandaag }} klanten={(klanten || []).filter(k => !k.gearchiveerd)}
         standaardDoel={{ ruimte, listId: lijst.id, fase: nieuweFase }}
         basisExtra={ruimte === "werk" && klantFilter ? { klantId: klantFilter } : {}}
         voegToe={(tekst) => voegToe(tekst, isProject ? { category: nieuweFase } : {})}
