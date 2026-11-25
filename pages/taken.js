@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import {
   vandaagStr, plusDagen, isoWeekdag, normaliseerHerhaling, herhalingLabel, vinkTaak, isInMijnDag,
-  groepeerGepland, sorteerTaken, planDatum, ontleedSnelleInvoer, ontleedPlakImport, nieuweTaak, isGeldigePin,
+  groepeerGepland, sorteerTaken, planDatum, ontleedSnelleInvoer, splitsTaken, ontleedPlakImport, nieuweTaak, isGeldigePin,
 } from "../lib/taken-logica";
 import {
   FASES, SOORTEN, STANDAARD_SJABLONEN, maakProjectUitSjabloon, maakLosProject, registreerGebruik, verschuifProject, projectVoortgang,
@@ -1450,8 +1450,13 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
   const invoerRef = useRef(null);
   const dag0 = vandaag || vandaagStr();
   const morgen = plusDagen(dag0, 1);
-  const voorbeeld = tekst.trim().length > 2 ? ontleedSnelleInvoer(tekst, chronoRef.current, new Date()) : null;
+  // Meerdere taken in één keer ("taak … taak …")?
+  const [weg, setWeg] = useState([]);
+  const alleMeer = splitsTaken(tekst);
+  const meer = alleMeer.map((t, i) => ({ i, t, v: ontleedSnelleInvoer(t, chronoRef.current, new Date()) })).filter(x => !weg.includes(x.i));
+  const voorbeeld = !alleMeer.length && tekst.trim().length > 2 ? ontleedSnelleInvoer(tekst, chronoRef.current, new Date()) : null;
   const chips = [];
+  if (alleMeer.length && !paneel) chips.push(`🗂️ ${meer.length} taken herkend`);
   if (!paneel) {
     if (voorbeeld?.herinnering) chips.push(`🔔 ${herinneringKort(voorbeeld.herinnering)}`);
     else if (voorbeeld?.dueDate) chips.push(`📅 ${datumKort(voorbeeld.dueDate)}`);
@@ -1464,7 +1469,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
   const isProjectDoel = !!doelLijst?.lopendProject;
 
   function prefill(t) {
-    const v = t.trim().length > 2 ? ontleedSnelleInvoer(t, chronoRef.current, new Date()) : null;
+    const v = t.trim().length > 2 && !splitsTaken(t).length ? ontleedSnelleInvoer(t, chronoRef.current, new Date()) : null;
     const datum = v?.dueDate || basisExtra.dueDate || null;
     const tijd = v?.herinnering ? v.herinnering.slice(11, 16) : "";
     const start = standaardDoel && doelen.some(d => sleutel(d) === sleutel(standaardDoel)) ? standaardDoel : doelen[0];
@@ -1479,6 +1484,32 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
 
   function verstuur() {
     if (!tekst.trim()) return;
+    if (alleMeer.length) {
+      if (!meer.length) return;
+      if (paneel && kanUitklappen) {
+        const d = doelLijst || doelen[0];
+        const datum = paneel.wanneer === "vandaag" ? dag0 : paneel.wanneer === "morgen" ? morgen : paneel.wanneer === "datum" ? (paneel.datum || null) : null;
+        meer.forEach(({ t, v }) => {
+          // Een datum/tijd die je bij de taak zelf zegt, gaat vóór de keuze in het paneel.
+          const dueDate = v.dueDate || datum || (paneel.tijd ? dag0 : null);
+          const herinnering = v.herinnering || (dueDate && paneel.tijd ? `${dueDate}T${paneel.tijd}` : null);
+          const extra = { ...basisExtra, dueDate, herinnering };
+          if (v.herhaling) extra.herhaling = v.herhaling;
+          if (v.belangrijk) extra.belangrijk = true;
+          if (paneel.notitie.trim()) extra.note = paneel.notitie.trim();
+          if (d.lopendProject) extra.category = paneel.fase;
+          delete extra.klantId;
+          if (d.ruimte === "werk" && d.groep !== "project" && paneel.klantId) extra.klantId = paneel.klantId;
+          const titel = (v.titel || t).trim();
+          voegToeNaar(d.ruimte, d.listId, titel.charAt(0).toUpperCase() + titel.slice(1), extra, `${d.label} (${meer.length} taken)`);
+        });
+        setPaneel(null);
+      } else {
+        meer.forEach(({ t }) => voegToe(t));
+      }
+      setTekst(""); setWeg([]);
+      return;
+    }
     if (paneel && kanUitklappen) {
       const d = doelLijst || doelen[0];
       const datum = paneel.wanneer === "vandaag" ? dag0 : paneel.wanneer === "morgen" ? morgen : paneel.wanneer === "datum" ? (paneel.datum || null) : null;
@@ -1511,10 +1542,20 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
     let gehoord = "";
     let r;
     try { r = new SR(); } catch { setSpraakHint("geen"); invoerRef.current?.focus(); return; }
-    r.lang = "nl-NL"; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+    // Doorlopend luisteren, zodat je meerdere taken achter elkaar kunt
+    // inspreken ("taak … taak …"). Na 3 s stilte stopt hij vanzelf.
+    r.lang = "nl-NL"; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+    let stilte = null;
+    const wachtOpStilte = () => { clearTimeout(stilte); stilte = setTimeout(() => { try { r.stop(); } catch { /* al gestopt */ } }, 3000); };
+    wachtOpStilte();
     r.onresult = (e) => {
-      let t = "";
-      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      wachtOpStilte();
+      const stukken = [];
+      for (let i = 0; i < e.results.length; i++) {
+        const st = e.results[i][0].transcript.trim();
+        if (st && st !== stukken[stukken.length - 1]) stukken.push(st); // Safari herhaalt soms een stuk
+      }
+      const t = stukken.join(" ");
       gehoord = t.trim();
       const zin = basis + gehoord;
       setTekst(zin.charAt(0).toUpperCase() + zin.slice(1));
@@ -1525,6 +1566,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
       else if (e.error !== "aborted") setSpraakHint("fout");
     };
     r.onend = () => {
+      clearTimeout(stilte);
       setLuistert(false); herkenRef.current = null;
       if (gehoord && kanUitklappen) { const zin = basis + gehoord; setPaneel(p => p || prefill(zin)); }
     };
@@ -1537,7 +1579,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
   const HINTS = {
     geen: "Inspreken kan hier niet rechtstreeks. Tik op de 🎤 rechtsonder op je iPhone-toetsenbord om in te spreken.",
     geweigerd: "Geen toegang tot de microfoon. Zet 'Microfoon' en 'Spraakherkenning' aan voor Safari in Instellingen › Apps › Safari, of gebruik de 🎤 op het toetsenbord.",
-    stil: "Ik hoorde niets — tik nog eens op de 🎤 en spreek je taak in.",
+    stil: "Ik hoorde niets — tik nog eens op de 🎤 en spreek je taak in. Meerdere taken? Zeg 'taak' vóór elke taak.",
     fout: "Inspreken lukte niet. Probeer opnieuw, of gebruik de 🎤 op je toetsenbord.",
   };
   const klein = { ...S.chip(false), padding: "5px 10px", fontSize: 12 };
@@ -1555,7 +1597,20 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
           </div>
         )}
         {paneel && kanUitklappen && (
-          <div data-testid="invoer-paneel" style={{ background: C.kaart, border: `1px solid ${C.rand2}`, borderRadius: 16, padding: 12, marginBottom: 8, boxShadow: "0 6px 18px rgba(45,42,38,.10)", display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 10, boxSizing: "border-box", width: "100%", maxWidth: "100%", overflow: "hidden" }}>
+          <div data-testid="invoer-paneel" style={{ background: C.kaart, border: `1px solid ${C.rand2}`, borderRadius: 16, padding: 12, marginBottom: 8, boxShadow: "0 6px 18px rgba(45,42,38,.10)", display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 10, boxSizing: "border-box", width: "100%", maxWidth: "100%", overflow: "hidden", maxHeight: "70vh", overflowY: "auto" }}>
+            {alleMeer.length > 0 && (
+              <div data-testid="meer-taken" style={{ background: "#2D4A3E0D", borderRadius: 12, padding: "8px 10px" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.groen, marginBottom: 4 }}>🗂️ {meer.length} taken herkend</div>
+                {meer.map(({ i, t, v }) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", borderTop: "1px solid #EAE3D4" }}>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 14 }}>{v.titel || t}</span>
+                    {(v.herinnering || v.dueDate) && <span style={{ fontSize: 11, color: C.groen, fontWeight: 600, whiteSpace: "nowrap" }}>{v.herinnering ? `🔔 ${herinneringKort(v.herinnering)}` : `📅 ${datumKort(v.dueDate)}`}</span>}
+                    <button aria-label={`${t} weghalen`} onClick={() => setWeg(w => [...w, i])} style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex" }}><X size={14} color={C.licht} /></button>
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Waar en wanneer hieronder gelden voor alle taken; een datum die je bij een taak zelf zegt, gaat voor.</div>
+              </div>
+            )}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 12, color: C.muted, width: 58, flexShrink: 0 }}>Waar</span>
               <select aria-label="Lijst" value={paneel.doel} onChange={e => setPaneel(p => ({ ...p, doel: e.target.value }))} style={{ ...veld, flex: 1, width: 0, minWidth: 0, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", WebkitAppearance: "none", appearance: "none", paddingRight: 28, backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%238C8576' stroke-width='1.6'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center" }}>
@@ -1610,7 +1665,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
             <textarea aria-label="Notitie" value={paneel.notitie} onChange={e => setPaneel(p => ({ ...p, notitie: e.target.value }))} placeholder="Notitie (optioneel)" rows={2}
               style={{ ...veld, resize: "vertical", width: "100%", boxSizing: "border-box" }} />
             <button onClick={verstuur} disabled={!tekst.trim()} style={{ ...S.knop(), opacity: tekst.trim() ? 1 : 0.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
-              Toevoegen
+              {alleMeer.length ? `${meer.length} taken toevoegen` : "Toevoegen"}
             </button>
           </div>
         )}
@@ -1618,10 +1673,11 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
             {chips.map(c => <span key={c} style={{ fontSize: 12, background: "#2D4A3E14", color: C.groen, borderRadius: 999, padding: "4px 10px", fontWeight: 600 }}>{c}</span>)}
             {voorbeeld?.titel && <span style={{ fontSize: 12, color: C.muted, padding: "4px 2px" }}>→ "{voorbeeld.titel}"</span>}
+            {alleMeer.length > 0 && <span style={{ fontSize: 12, color: C.muted, padding: "4px 2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>→ {meer.map(x => x.v.titel || x.t).join(" · ")}</span>}
           </div>
         )}
         <form onSubmit={e => { e.preventDefault(); verstuur(); }} style={{ display: "flex", gap: 6, background: C.kaart, border: `1px solid ${luistert ? C.rood : C.rand2}`, borderRadius: 16, padding: 6, boxShadow: "0 6px 18px rgba(45,42,38,.08)" }}>
-          <input ref={invoerRef} value={tekst} onChange={e => setTekst(e.target.value)} placeholder={luistert ? "Ik luister…" : placeholder} aria-label="Taak toevoegen"
+          <input ref={invoerRef} value={tekst} onChange={e => { setTekst(e.target.value); setWeg([]); }} placeholder={luistert ? "Ik luister…" : placeholder} aria-label="Taak toevoegen"
             style={{ flex: 1, border: "none", outline: "none", fontSize: 16, padding: "8px 10px", background: "transparent", minWidth: 0, fontFamily: "inherit", color: C.tekst }} />
           <button type="button" onClick={spraak} aria-label={luistert ? "Stoppen met inspreken" : "Taak inspreken"} title="Taak inspreken"
             style={{ ...S.knop(luistert ? C.rood : C.bg, luistert ? "#FAF6F0" : C.groen), border: `1px solid ${luistert ? C.rood : C.rand2}`, padding: "8px 11px", display: "flex", alignItems: "center", animation: luistert ? "luisterPuls 1.2s ease-in-out infinite" : "none" }}>

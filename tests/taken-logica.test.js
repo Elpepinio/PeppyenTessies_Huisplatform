@@ -190,4 +190,19 @@ test("net toegevoegde taak die je zelf verwijdert, komt niet terug", !L.voegLijs
 const t = L.nieuweTaak({ name: "Test" }, { wie: "Tessa", nu: 7, id: "q" });
 test("nieuwe taak heeft alle velden", t.id === "q" && t.addedBy === "Tessa" && t.mijnDag === null && Array.isArray(t.substappen) && t.herinnering === null);
 
+
+sectie("Meerdere taken in één keer (splitsTaken)");
+{
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  test("drie taken met 'taak'", eq(L.splitsTaken("taak tandarts bellen taak morgen offerte sturen taak boodschappen doen"), ["Tandarts bellen", "Morgen offerte sturen", "Boodschappen doen"]));
+  test("leestekens van dicteren", eq(L.splitsTaken("Taak: tandarts bellen. Taak, morgen offerte sturen."), ["Tandarts bellen", "Morgen offerte sturen"]));
+  test("'en taak' / 'volgende taak'", eq(L.splitsTaken("taak Leonie mailen en taak callsheet maken volgende taak drone checken"), ["Leonie mailen", "Callsheet maken", "Drone checken"]));
+  test("genummerd", eq(L.splitsTaken("taak 1 moodboard taak 2: hotel boeken"), ["Moodboard", "Hotel boeken"]));
+  test("'eerste taak … tweede taak …'", eq(L.splitsTaken("eerste taak moodboard sturen tweede taak hotel boeken"), ["Moodboard sturen", "Hotel boeken"]));
+  test("één keer 'taak' → niet splitsen", L.splitsTaken("taak tandarts bellen").length === 0 && L.splitsTaken("tandarts bellen").length === 0);
+  test("'taken'/'taakverdeling' tellen niet", L.splitsTaken("taken verdelen en taakverdeling maken").length === 0);
+  test("lege delen worden overgeslagen", eq(L.splitsTaken("taak taak hotel boeken taak crew briefen"), ["Hotel boeken", "Crew briefen"]));
+  test("tekst vóór eerste 'taak' hoort bij eerste taak", eq(L.splitsTaken("morgen taak hotel boeken taak crew briefen"), ["Morgen hotel boeken", "Crew briefen"]));
+}
+
 samenvatting();
