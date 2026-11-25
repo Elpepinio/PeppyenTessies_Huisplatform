@@ -5,7 +5,7 @@
 // om te voorkomen dat gelijktijdige offline-wijzigingen van Pepijn en Tessa
 // elkaar per ongeluk overschrijven.
 
-const CACHE_NAME = "huishouden-cache-v2";
+const CACHE_NAME = "huishouden-cache-v3";
 const APP_SHELL = ["/", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -41,13 +41,17 @@ self.addEventListener("fetch", (event) => {
   // dus nooit — die mogen agressief cache-first bediend worden.
   // De pdf.js-worker heeft de versie in de naam: ook cache-first, zodat
   // PDF's lezen offline werkt.
-  if (url.pathname.startsWith("/_next/static/") || url.pathname.startsWith("/pdfjs/")) {
+  // Productfoto's zijn per id onveranderlijk → ook cache-first (zichtbaar in
+  // de winkel zonder bereik).
+  if (url.pathname.startsWith("/_next/static/") || url.pathname.startsWith("/pdfjs/") || url.pathname === "/api/product-foto") {
     event.respondWith(
       caches.match(request).then((cached) => {
         if (cached) return cached;
         return fetch(request).then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          if (response && response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          }
           return response;
         });
       })

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { rolHerhalendeTaakDoor, normaliseerHerhaling, volgendeHerhalingsDatum, herhalingLabel } from "../lib/taken-logica";
-import { Plus, Check, CheckCheck, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift, MoreHorizontal } from "lucide-react";
+import { Plus, Check, CheckCheck, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift, MoreHorizontal, Camera } from "lucide-react";
 
 // ---- Constanten ----
 const UNITS = ["stuks", "g", "kg", "ml", "l", "pak"];
@@ -433,6 +433,93 @@ function berekenVolgendeItems(items, modus) {
   return items.map(i => ({ ...i, checked: false, inCart: false })); // "bewaren"
 }
 
+// ── Productfoto's ─────────────────────────────────────────────────────
+// Verkleind in de app (lange kant max. 1280 px, JPEG) zodat hij scherp
+// genoeg blijft om een verpakking te herkennen, maar klein is (±100–250 kB).
+const fotoUrl = (id) => `/api/product-foto?id=${id}`;
+async function verkleinFoto(file, maxZijde = 1280) {
+  let bron;
+  try { bron = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+  catch {
+    bron = await new Promise((ok, fout) => {
+      const img = new Image();
+      img.onload = () => ok(img); img.onerror = () => fout(new Error("Kon de foto niet lezen"));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  const b = bron.width, h = bron.height;
+  let schaal = Math.min(1, maxZijde / Math.max(b, h));
+  let kwaliteit = 0.82, data = "";
+  for (let poging = 0; poging < 5; poging++) {
+    const c = document.createElement("canvas");
+    c.width = Math.round(b * schaal); c.height = Math.round(h * schaal);
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(bron, 0, 0, c.width, c.height);
+    data = c.toDataURL("image/jpeg", kwaliteit);
+    if (data.length * 0.75 <= 380 * 1024) break;
+    kwaliteit = Math.max(0.6, kwaliteit - 0.08); schaal *= 0.85;
+  }
+  return data;
+}
+async function uploadFoto(file) {
+  const data = await verkleinFoto(file);
+  const r = await fetch("/api/product-foto", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Uploaden mislukt");
+  return (await r.json()).id;
+}
+function verwijderFotoOpServer(id) {
+  if (id) fetch(fotoUrl(id), { method: "DELETE" }).catch(() => {});
+}
+
+// Knop die de camera/fotobibliotheek opent en een foto-id teruggeeft.
+function FotoKiezer({ fotoId, onFoto, label = "📷 Foto toevoegen", compact = false }) {
+  const [bezig, setBezig] = useState(false);
+  const [fout, setFout] = useState(null);
+  async function gekozen(e) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setBezig(true); setFout(null);
+    try { onFoto(await uploadFoto(f)); }
+    catch (err) { setFout(err.message || "Uploaden mislukt — probeer het opnieuw."); }
+    finally { setBezig(false); }
+  }
+  return (
+    <div>
+      <label style={{ ...S.btn(compact ? "#FAF6F0" : "#F3EEE3", "#2D4A3E"), display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid #E4DCCB", padding: compact ? "8px 12px" : "10px 14px", fontSize: 14, cursor: "pointer", opacity: bezig ? 0.6 : 1 }}>
+        {bezig ? "Foto verkleinen…" : fotoId ? "📷 Andere foto" : label}
+        <input type="file" accept="image/*" onChange={gekozen} disabled={bezig} aria-label="Foto kiezen" style={{ display: "none" }} />
+      </label>
+      {fout && <p style={{ fontSize: 12, color: "#B44A3C", margin: "6px 0 0" }}>{fout}</p>}
+    </div>
+  );
+}
+
+function FotoMini({ fotoId, naam, grootte = 40, onOpen }) {
+  if (!fotoId) return null;
+  return (
+    <button type="button" aria-label={`Foto van ${naam} bekijken`} onClick={e => { e.stopPropagation(); onOpen(); }}
+      style={{ padding: 0, border: "1px solid #E4DCCB", borderRadius: 8, overflow: "hidden", width: grootte, height: grootte, flexShrink: 0, background: "#F3EEE3", cursor: "zoom-in" }}>
+      <img src={fotoUrl(fotoId)} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+    </button>
+  );
+}
+
+function FotoViewer({ fotoId, naam, note, sluit }) {
+  return (
+    <div role="dialog" aria-label={`Foto van ${naam}`} onClick={sluit}
+      style={{ position: "fixed", inset: 0, background: "rgba(20,18,16,.92)", zIndex: 300, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "max(16px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom))" }}>
+      <button onClick={sluit} aria-label="Sluiten" style={{ position: "absolute", top: "max(14px, env(safe-area-inset-top))", right: 14, background: "rgba(255,255,255,.15)", border: "none", borderRadius: 999, padding: 8, cursor: "pointer", display: "flex" }}>
+        <X size={20} color="#FFFFFF" />
+      </button>
+      <p style={{ color: "#FAF6F0", fontWeight: 700, fontSize: 17, margin: "0 0 12px", textAlign: "center" }}>{naam}</p>
+      <img src={fotoUrl(fotoId)} alt={naam} style={{ maxWidth: "100%", maxHeight: note ? "68vh" : "78vh", objectFit: "contain", borderRadius: 10, touchAction: "pinch-zoom" }} onClick={e => e.stopPropagation()} />
+      {note && <p style={{ color: "#FAF6F0", background: "rgba(200,110,74,.35)", borderRadius: 10, padding: "10px 14px", fontSize: 15, margin: "14px 0 0", maxWidth: 520, textAlign: "center" }}>📝 {note}</p>}
+    </div>
+  );
+}
+
 export default function LijstenApp() {
   const router = useRouter();
   const [lists, setListsState] = useState([]);
@@ -475,6 +562,9 @@ export default function LijstenApp() {
   const [editName, setEditName] = useState("");
   const [editNoteId, setEditNoteId] = useState(null);
   const [editNoteText, setEditNoteText] = useState("");
+  const [editFotoId, setEditFotoId] = useState(null);
+  const [bekijkFoto, setBekijkFoto] = useState(null); // { fotoId, naam, note }
+  const [newFotoId, setNewFotoId] = useState(null);
 
   // UI-opties
   const [verbergAfgevinkt, setVerbergAfgevinkt] = useState(false);
@@ -679,8 +769,12 @@ export default function LijstenApp() {
   const isCadeau = activeList?.type === "cadeau";
   const isTodo = activeList?.type === "todo";
 
-  function addItem(name, categoryId, amount, unit, note, status, budget) {
+  function addItem(name, categoryId, amount, unit, note, status, budget, fotoId) {
     if (!name.trim() || !activeListId) return;
+    // Opmerking/foto van de vorige keer dat je dit product kocht onthouden.
+    const vorige = activeList?.history?.[name.trim().toLowerCase()];
+    if (!note && vorige?.note) note = vorige.note;
+    if (!fotoId && vorige?.fotoId) fotoId = vorige.fotoId;
     const exists = activeList?.items.find(i =>
       i.name.toLowerCase() === name.toLowerCase() && !i.checked);
     if (exists) { showToast("⚠️ Staat al in de lijst"); return; }
@@ -692,13 +786,14 @@ export default function LijstenApp() {
         amount: amount || 1, unit: unit || "stuks",
         checked: false, inCart: false,
         note: note || "", status: status || null, budget: budget || null,
+        ...(fotoId ? { fotoId } : {}),
         dueDate: null, assignedTo: null, herhaling: null, substappen: [], belangrijk: false,
         addedAt: Date.now(), addedBy: huidigeGebruiker,
         lastActionBy: huidigeGebruiker, lastActionAt: Date.now(),
       }],
     }));
     setNewProduct(""); setNewAmount(1); setNewUnit("stuks");
-    setNewNote(""); setNewBudget(""); setNewStatus("Idee");
+    setNewNote(""); setNewBudget(""); setNewStatus("Idee"); setNewFotoId(null);
     setShowAdd(false);
   }
 
@@ -838,6 +933,32 @@ export default function LijstenApp() {
     setToast(null);
   }
 
+  // Opmerking + foto bewaren, ook in het productgeheugen (history), zodat
+  // ze terugkomen als je het product later opnieuw toevoegt.
+  function bewaarDetails(itemId, note, fotoId) {
+    let oudFoto = null;
+    updateList(activeListId, l => {
+      const item = l.items.find(i => i.id === itemId);
+      if (!item) return l;
+      oudFoto = item.fotoId || null;
+      const key = item.name.toLowerCase();
+      const history = l.history?.[key] ? { ...l.history, [key]: { ...l.history[key], note, fotoId: fotoId || null } } : l.history;
+      return { ...l, history, items: l.items.map(i => (i.id === itemId ? { ...i, note, fotoId: fotoId || null } : i)) };
+    });
+    // Vervangen/verwijderde foto opruimen als niets er nog naar verwijst.
+    if (oudFoto && oudFoto !== fotoId) {
+      const nogGebruikt = lists.some(l => (l.items || []).some(i => i.id !== itemId && i.fotoId === oudFoto) || Object.values(l.history || {}).some(h => h.fotoId === oudFoto && h.name.toLowerCase() !== (activeList?.items.find(i => i.id === itemId)?.name || "").toLowerCase()) || (l.archief || []).some(r => (r.items || []).some(x => x.fotoId === oudFoto)));
+      if (!nogGebruikt) verwijderFotoOpServer(oudFoto);
+    }
+  }
+  function openDetails(item) { setEditNoteId(item.id); setEditNoteText(item.note || ""); setEditFotoId(item.fotoId || null); }
+  function sluitDetails() {
+    // Nieuw geüploade foto die niet bewaard wordt → weer weg.
+    const item = activeList?.items.find(i => i.id === editNoteId);
+    if (editFotoId && editFotoId !== (item?.fotoId || null)) verwijderFotoOpServer(editFotoId);
+    setEditNoteId(null);
+  }
+
   function updateItem(itemId, fields) {
     updateList(activeListId, l => ({
       ...l, items: l.items.map(i => i.id === itemId ? { ...i, ...fields } : i),
@@ -883,6 +1004,7 @@ export default function LijstenApp() {
         datum: new Date().toLocaleDateString("nl-NL"),
         items: daadwerkelijkGepakt.map(i => ({
           name: i.name, category: i.category, amount: i.amount, unit: i.unit,
+          ...(i.note ? { note: i.note } : {}), ...(i.fotoId ? { fotoId: i.fotoId } : {}),
         })),
       };
       const nextArchief = [huidigRonde, ...(l.archief || [])].slice(0, 5);
@@ -892,6 +1014,7 @@ export default function LijstenApp() {
         nextHistory[key] = {
           name: i.name, category: i.category, amount: i.amount, unit: i.unit,
           count: (nextHistory[key]?.count || 0) + 1, lastUsed: Date.now(),
+          note: i.note || "", fotoId: i.fotoId || null,
         };
       });
       return { ...l, items: berekenVolgendeItems(l.items, modus), history: nextHistory, archief: nextArchief };
@@ -926,7 +1049,10 @@ export default function LijstenApp() {
       .map(i => ({
         id: uid(), name: i.name, category: i.category,
         amount: i.amount, unit: i.unit,
-        checked: false, inCart: false, note: "", addedAt: Date.now(),
+        checked: false, inCart: false,
+        note: i.note || activeList.history?.[i.name.toLowerCase()]?.note || "",
+        ...((i.fotoId || activeList.history?.[i.name.toLowerCase()]?.fotoId) ? { fotoId: i.fotoId || activeList.history[i.name.toLowerCase()].fotoId } : {}),
+        addedAt: Date.now(),
       }));
     updateList(activeListId, l => ({ ...l, items: [...l.items, ...nieuwItems] }));
     setShowVorigeLijst(false);
@@ -985,6 +1111,7 @@ export default function LijstenApp() {
 
     return (
       <div style={S.appBg}>
+        {bekijkFoto && <FotoViewer {...bekijkFoto} sluit={() => setBekijkFoto(null)} />}
         {/* Keuze-overlay: leegmaken of bewaren */}
         {showPakkenKeuze && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 200, display: "flex", alignItems: "flex-end" }}>
@@ -1048,11 +1175,12 @@ export default function LijstenApp() {
                             <span style={S.shopCheckbox(item.inCart)}>
                               {item.inCart && <Check size={15} color="#FAF6F0" strokeWidth={3} />}
                             </span>
-                            <span style={S.shopItemName(item.inCart)}>
+                            <span style={{ ...S.shopItemName(item.inCart), flex: 1, minWidth: 0 }}>
                               {item.name}
                               <span style={S.shopItemAmount}>{item.amount ?? 1} {item.unit || "stuks"}</span>
-                              {item.note && <span style={{ ...S.shopItemAmount, fontStyle: "italic" }}>📝 {item.note}</span>}
+                              {item.note && <span style={{ display: "block", fontSize: 13, color: item.inCart ? "#B8B2A8" : "#A85A38", fontWeight: 600, marginTop: 3, textDecoration: "none" }}>📝 {item.note}</span>}
                             </span>
+                            <FotoMini fotoId={item.fotoId} naam={item.name} grootte={56} onOpen={() => setBekijkFoto({ fotoId: item.fotoId, naam: item.name, note: item.note })} />
                           </li>
                         ))}
                       </ul>
@@ -1286,22 +1414,34 @@ export default function LijstenApp() {
           </div>
         )}
 
+        {bekijkFoto && <FotoViewer {...bekijkFoto} sluit={() => setBekijkFoto(null)} />}
         {/* Note-editor overlay */}
         {editNoteId && (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={() => setEditNoteId(null)}>
-            <div style={{ background: "#FFFFFF", width: "100%", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20 }} onClick={e => e.stopPropagation()}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={sluitDetails}>
+            <div data-testid="details-sheet" style={{ background: "#FFFFFF", width: "100%", padding: "20px 20px 36px", borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "90vh", overflowY: "auto", boxSizing: "border-box" }} onClick={e => e.stopPropagation()}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <p style={{ margin: 0, fontWeight: 700, fontSize: 15 }}>📝 Notitie</p>
-                <button onClick={() => setEditNoteId(null)} aria-label="Sluiten"
+                <p style={{ margin: 0, fontWeight: 700, fontSize: 15 }}>📝 Opmerking & foto · {activeList?.items.find(i => i.id === editNoteId)?.name}</p>
+                <button onClick={sluitDetails} aria-label="Sluiten"
                   style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
                   <X size={18} color="#B8B2A8" />
                 </button>
               </div>
-              <textarea autoFocus style={{ ...S.inp, height: 80, resize: "none" }} value={editNoteText}
-                onChange={e => setEditNoteText(e.target.value)} placeholder="Voeg een notitie toe…" />
-              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1 }} onClick={() => setEditNoteId(null)}>Annuleer</button>
-                <button style={{ ...S.btn(), flex: 2 }} onClick={() => { updateItem(editNoteId, { note: editNoteText }); setEditNoteId(null); showToast("✅ Notitie opgeslagen"); }}>Opslaan</button>
+              <textarea style={{ ...S.inp, height: 70, resize: "none", fontSize: 16 }} value={editNoteText} aria-label="Opmerking"
+                onChange={e => setEditNoteText(e.target.value)} placeholder="Bijv. let op: twee kleuren blauw op de verpakking" />
+              <div style={{ marginTop: 12, display: "flex", gap: 12, alignItems: "flex-start" }}>
+                {editFotoId && (
+                  <FotoMini fotoId={editFotoId} naam="dit product" grootte={96}
+                    onOpen={() => setBekijkFoto({ fotoId: editFotoId, naam: activeList?.items.find(i => i.id === editNoteId)?.name || "", note: editNoteText })} />
+                )}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <FotoKiezer fotoId={editFotoId} onFoto={(id) => { const item = activeList?.items.find(i => i.id === editNoteId); if (editFotoId && editFotoId !== (item?.fotoId || null)) verwijderFotoOpServer(editFotoId); setEditFotoId(id); }} />
+                  {editFotoId && <button style={{ background: "none", border: "none", color: "#B44A3C", fontSize: 13, cursor: "pointer", textAlign: "left", padding: 0, fontFamily: "inherit" }} onClick={() => { const item = activeList?.items.find(i => i.id === editNoteId); if (editFotoId !== (item?.fotoId || null)) verwijderFotoOpServer(editFotoId); setEditFotoId(null); }}>Foto weghalen</button>}
+                  {!editFotoId && <span style={{ fontSize: 12, color: "#8C8576" }}>Maak een foto van de verpakking — hij wordt verkleind maar blijft scherp.</span>}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1 }} onClick={sluitDetails}>Annuleer</button>
+                <button style={{ ...S.btn(), flex: 2 }} onClick={() => { bewaarDetails(editNoteId, editNoteText.trim(), editFotoId); setEditNoteId(null); showToast("✅ Opgeslagen — ook voor de volgende keer"); }}>Opslaan</button>
               </div>
             </div>
           </div>
@@ -1639,6 +1779,7 @@ export default function LijstenApp() {
                       onKeyDown={e => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggleCheck(item.id))}>
                       {item.checked && <Check size={12} color="#FAF6F0" strokeWidth={3} />}
                     </span>
+                    <FotoMini fotoId={item.fotoId} naam={item.name} grootte={38} onOpen={() => setBekijkFoto({ fotoId: item.fotoId, naam: item.name, note: item.note })} />
                     <div style={S.itemMain}>
                       {editingId === item.id ? (
                         <input autoFocus style={S.editInput} value={editName}
@@ -1703,7 +1844,7 @@ export default function LijstenApp() {
                       )}
 
                       {item.note ? (
-                        <span style={S.itemNote} onClick={() => { setEditNoteId(item.id); setEditNoteText(item.note); }}>
+                        <span style={S.itemNote} onClick={() => openDetails(item)}>
                           📝 {item.note}
                         </span>
                       ) : null}
@@ -1711,8 +1852,8 @@ export default function LijstenApp() {
 
                     {/* Acties */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      <button style={S.iconBtn} onClick={() => { setEditNoteId(item.id); setEditNoteText(item.note || ""); }}>
-                        <Pencil size={13} color={item.note ? "#C86E4A" : "#D8D0BF"} />
+                      <button style={S.iconBtn} aria-label="Opmerking & foto" title="Opmerking & foto" onClick={() => openDetails(item)}>
+                        {!isTodo && !isCadeau && !item.note && !item.fotoId ? <Camera size={13} color="#D8D0BF" /> : <Pencil size={13} color={item.note || item.fotoId ? "#C86E4A" : "#D8D0BF"} />}
                       </button>
                       {isTodo && (
                         <button style={S.iconBtn} title="Taakdetails" onClick={() => setTaakDetailId(item.id)}>
@@ -1830,7 +1971,7 @@ export default function LijstenApp() {
               <>
                 <input autoFocus style={{ ...S.inp, marginBottom: 10 }} placeholder="Naam"
                   value={newProduct} onChange={e => setNewProduct(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && addItem(newProduct, newCategory || defaultCatId, newAmount, newUnit, newNote, newStatus, newBudget)} />
+                  onKeyDown={e => e.key === "Enter" && addItem(newProduct, newCategory || defaultCatId, newAmount, newUnit, newNote, newStatus, newBudget, newFotoId)} />
 
                 {isCadeau ? (
                   <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -1861,8 +2002,15 @@ export default function LijstenApp() {
                   </div>
                 )}
 
-                <input style={{ ...S.inp, marginBottom: 12, fontSize: 14 }} placeholder="📝 Notitie (optioneel)"
+                <input style={{ ...S.inp, marginBottom: 10, fontSize: 16 }} placeholder="📝 Opmerking (optioneel) — bv. let op: twee kleuren blauw"
                   value={newNote} onChange={e => setNewNote(e.target.value)} />
+                {!isTodo && !isCadeau && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
+                    {newFotoId && <FotoMini fotoId={newFotoId} naam={newProduct || "product"} grootte={52} onOpen={() => setBekijkFoto({ fotoId: newFotoId, naam: newProduct || "Product", note: newNote })} />}
+                    <FotoKiezer compact fotoId={newFotoId} onFoto={(id) => { if (newFotoId) verwijderFotoOpServer(newFotoId); setNewFotoId(id); }} />
+                    {newFotoId && <button style={{ background: "none", border: "none", color: "#B44A3C", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }} onClick={() => { verwijderFotoOpServer(newFotoId); setNewFotoId(null); }}>Weghalen</button>}
+                  </div>
+                )}
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
                   {activeList.categories.map(c => (
@@ -1874,7 +2022,7 @@ export default function LijstenApp() {
                 </div>
                 <div style={{ display: "flex", gap: 10 }}>
                   <button style={{ ...S.btn("#E4DCCB", "#2D2A26"), flex: 1 }} onClick={() => setShowAdd(false)}>Annuleer</button>
-                  <button style={{ ...S.btn(), flex: 2 }} onClick={() => addItem(newProduct, newCategory || defaultCatId, newAmount, newUnit, newNote, newStatus, newBudget)}>Toevoegen</button>
+                  <button style={{ ...S.btn(), flex: 2 }} onClick={() => addItem(newProduct, newCategory || defaultCatId, newAmount, newUnit, newNote, newStatus, newBudget, newFotoId)}>Toevoegen</button>
                 </div>
               </>
             )}
