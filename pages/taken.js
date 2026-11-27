@@ -20,7 +20,7 @@ import Head from "next/head";
 import { useRouter } from "next/router";
 import {
   Sun, Star, CalendarDays, User, Bell, Repeat, Lock, Mail, Copy, Tag, ChevronLeft, ChevronRight,
-  ChevronDown, Plus, X, Check, Mic, Square, Trash2, Briefcase, Home, Upload, ArrowRightLeft, KeyRound, Download, Send,
+  ChevronDown, Plus, X, Check, Mic, Square, Pencil, Trash2, Briefcase, Home, Upload, ArrowRightLeft, KeyRound, Download, Send,
 } from "lucide-react";
 import {
   vandaagStr, plusDagen, volgendeWerkdag, isoWeekdag, normaliseerHerhaling, herhalingLabel, vinkTaak, isInMijnDag,
@@ -3248,6 +3248,25 @@ function TaakDetail({ ruimte, lijst, taak, ik, klanten, status, meldingen, zetMe
   const [nieuweKlantNaam, setNieuweKlantNaam] = useState("");
   const [verplaatsOpen, setVerplaatsOpen] = useState(false);
   useEffect(() => { setNaam(taak.name); setNotitie(taak.note || ""); }, [taak.id]);
+  // Titel automatisch bewaren: kort na het typen én bij sluiten, zodat een
+  // wijziging nooit verloren gaat (ook niet als je meteen wegtikt).
+  const [titelFocus, setTitelFocus] = useState(false);
+  const titelEl = useRef(null);
+  // Titelveld groeit mee met de tekst (geen afgeknipte regels).
+  useEffect(() => { const el = titelEl.current; if (el) { el.style.height = "auto"; el.style.height = `${el.scrollHeight}px`; } }, [naam, titelFocus]);
+  const naamRef = useRef(naam);
+  naamRef.current = naam;
+  const taakNaamRef = useRef(taak.name);
+  taakNaamRef.current = taak.name;
+  const zetRef = useRef(zet);
+  zetRef.current = zet;
+  const bewaarTitel = () => { const n = naamRef.current.replace(/\s+/g, " ").trim(); if (n && n !== taakNaamRef.current) zetRef.current({ name: n }); };
+  useEffect(() => {
+    if (naam.trim() === taak.name) return;
+    const t = setTimeout(bewaarTitel, 700);
+    return () => clearTimeout(t);
+  }, [naam]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => bewaarTitel(), []); // eslint-disable-line react-hooks/exhaustive-deps
   const h = normaliseerHerhaling(taak.herhaling);
   const presetId = !h ? "geen" : (h.interval === 1 && !h.dagen ? h.freq : (h.interval === 1 && h.dagen?.join() === "1,2,3,4,5" ? "werkdagen" : "aangepast"));
   const inMijnDag = taak.mijnDag === vandaag;
@@ -3283,15 +3302,22 @@ function TaakDetail({ ruimte, lijst, taak, ik, klanten, status, meldingen, zetMe
           <button onClick={vink} aria-label="Afvinken" style={{ width: 26, height: 26, minWidth: 26, marginTop: 6, borderRadius: 999, border: `2px solid ${taak.checked ? C.groen : "#CFC6B4"}`, background: taak.checked ? C.groen : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 }}>
             {taak.checked && <Check size={15} color="#FAF6F0" strokeWidth={3} />}
           </button>
-          <textarea value={naam} rows={Math.min(4, Math.ceil((naam.length || 1) / 32))} onChange={e => setNaam(e.target.value)}
-            onBlur={() => naam.trim() && naam.trim() !== taak.name && zet({ name: naam.trim() })}
-            style={{ flex: 1, fontSize: 18, fontWeight: 700, border: "none", resize: "none", outline: "none", fontFamily: "inherit", color: C.tekst, background: "transparent", padding: "4px 0" }} aria-label="Titel" />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <textarea ref={titelEl} value={naam} rows={1} onChange={e => setNaam(e.target.value.replace(/\n/g, ""))}
+              onFocus={() => setTitelFocus(true)}
+              onBlur={() => { setTitelFocus(false); if (!naam.trim()) setNaam(taak.name); else bewaarTitel(); }}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } if (e.key === "Escape") { setNaam(taak.name); e.currentTarget.blur(); } }}
+              enterKeyHint="done"
+              style={{ width: "100%", boxSizing: "border-box", overflow: "hidden", lineHeight: 1.3, fontSize: 18, fontWeight: 700, resize: "none", outline: "none", fontFamily: "inherit", color: C.tekst, padding: "4px 8px", margin: "0 -8px", borderRadius: 10,
+                border: `1px solid ${titelFocus ? C.groen : "transparent"}`, background: titelFocus ? C.bg : "transparent", transition: "background .15s, border-color .15s" }} aria-label="Titel" />
+            {!titelFocus && <span style={{ fontSize: 11, color: C.licht, display: "flex", alignItems: "center", gap: 4, marginTop: -2 }}><Pencil size={10} /> Tik op de tekst om te wijzigen</span>}
+          </div>
           <button onClick={() => zet({ belangrijk: !taak.belangrijk })} aria-label="Belangrijk" style={{ background: "none", border: "none", cursor: "pointer", padding: 6 }}>
             <Star size={20} color={taak.belangrijk ? C.terra : "#D8D0BF"} fill={taak.belangrijk ? C.terra : "none"} />
           </button>
           <button onClick={sluit} aria-label="Sluiten" style={{ background: "none", border: "none", cursor: "pointer", padding: 6 }}><X size={20} color={C.licht} /></button>
         </div>
-        <p style={{ margin: "0 0 0 36px", fontSize: 12, color: C.muted }}>{ruimte === "werk" ? "💼" : "🏠"} {lijst.icon} {lijst.name}</p>
+        <p style={{ margin: "0 0 0 36px", fontSize: 12, color: C.muted }}>{ruimte === "werk" ? "💼" : "🏠"}{lijst.icon && lijst.icon !== (ruimte === "werk" ? "💼" : "🏠") ? ` ${lijst.icon}` : ""} {lijst.name}</p>
 
         {/* Stappen */}
         <div style={{ margin: "14px 0 0" }}>
