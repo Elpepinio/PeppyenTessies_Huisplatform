@@ -81,8 +81,8 @@ let ext = L.pasOpzetToe(pr, { postDoorOns: false, draaidagen: 2, prelight: "apar
 const postNa = ext.items.filter(i => i.category === "post").map(i => i.name);
 test("post extern: montage/kleur/afmix weg", !postNa.some(n => /montage|edit v1|kleurcorrectie|afmix|feedback|v1 doorsturen/i.test(n)));
 test("post extern: factuur en apparatuur terugbrengen blijven", postNa.some(n => /factuur/i.test(n)) && postNa.some(n => /apparatuur/i.test(n)));
-test("post extern: taak 'footage overdragen' op de dag na de láátste draaidag", ext.items.some(i => i.opzetTaak === "overdracht" && i.dueDate === "2026-12-12"));
-test("overdracht schuift mee als er een draaidag bij komt", L.zetDraaidagen(ext, [...L.draaidagenVan(ext.project), { id: "d3", datum: "2026-12-12" }], { nieuwId }).items.find(i => i.opzetTaak === "overdracht").dueDate === "2026-12-13");
+test("post extern: 'footage overdragen' na de láátste draaidag (za → maandag)", ext.items.some(i => i.opzetTaak === "overdracht" && i.dueDate === "2026-12-14"));
+test("overdracht schuift mee als er een draaidag bij komt", L.zetDraaidagen(ext, [...L.draaidagenVan(ext.project), { id: "d3", datum: "2026-12-14" }], { nieuwId }).items.find(i => i.opzetTaak === "overdracht").dueDate === "2026-12-15");
 test("2 draaidagen", L.draaidagenVan(ext.project).length === 2 && ext.items.filter(i => i.draaidagId).length === 2);
 test("pre-light dag op de dag vóór de eerste draaidag", ext.items.some(i => i.opzetTaak === "prelight" && i.dueDate === "2026-12-09" && i.name === "Pre-light dag"));
 test("opzet bewaard", ext.project.opzet.postDoorOns === false && ext.project.opzet.prelight === "aparte-dag" && ext.project.opzet.draaidagen === 2);

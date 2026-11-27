@@ -38,6 +38,7 @@ import {
   leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
   draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond, bezettingKosten, kiesSjabloon,
   maakAanvraag, aanvraagNaarOfferte, zetOfferteDeadline, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
+  isWeekend, naarWerkdag,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte, datumKortNl } from "../lib/intake-logica";
 import { offerteVersies, openVersies, gekozenVersie, vergelijkOffertes, voegOfferteVersieToe, kiesOfferteVersie, synchroniseerPlekken } from "../lib/offerte-versies-logica";
@@ -693,6 +694,7 @@ export default function TakenApp() {
             openLeren={() => setSheet({ soort: "leren", listId: lijst.id })}
             openOnderdelen={() => setSheet({ soort: "onderdelen", listId: lijst.id })}
             openCall={(callId) => setSheet({ soort: "call", listId: lijst.id, callId: callId || uid() })}
+            openPlanning={() => setSheet({ soort: "planning", listId: lijst.id })}
             zetDagen={(dagen) => { wijzigLijst(weergave.ruimte, lijst.id, l => zetDraaidagen(l, dagen, { nieuwId: uid, wie: ik })); meld("🎬 Draaidagen bijgewerkt"); }}
             openCallsheet={(dagId) => setSheet({ soort: "callsheet", listId: lijst.id, dagId })}
             openOfferteVanAanvraag={() => setSheet({ soort: "offerteVanAanvraag", listId: lijst.id })}
@@ -860,6 +862,25 @@ export default function TakenApp() {
               setSheet(null);
               setWeergave({ soort: "lijst", ruimte: "werk", listId: lijst.id });
               meld(`🎉 Akkoord! Productie van "${lijst.name}" gestart`);
+            }} />
+        );
+      })()}
+      {sheet?.soort === "planning" && (() => {
+        const lijst = lijstVan("werk", sheet.listId);
+        if (!lijst) return null;
+        return (
+          <PlanningSheet lijst={lijst} vandaag={vandaag} sluit={() => setSheet(null)}
+            zetDatum={(itemId, datum) => {
+              const i = (lijstVan("werk", lijst.id)?.items || []).find(x => x.id === itemId);
+              zetVelden("werk", lijst.id, itemId, { dueDate: datum, datumHandmatig: true, herinnering: i?.herinnering ? `${datum}T${i.herinnering.slice(11, 16)}` : null });
+            }}
+            weekendWeg={(ids) => {
+              wijzigLijst("werk", lijst.id, l => ({ ...l, items: l.items.map(i => {
+                if (!ids.includes(i.id)) return i;
+                const d = werkdagVoorTaak(i, vandaag);
+                return { ...i, dueDate: d, ...(i.herinnering ? { herinnering: `${d}T${i.herinnering.slice(11, 16)}` } : {}) };
+              }) }));
+              meld(`📅 ${ids.length} ${ids.length === 1 ? "deadline" : "deadlines"} naar een werkdag verzet`);
             }} />
         );
       })()}
@@ -1809,7 +1830,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ openCall, doelen, voegToeNaar, vandaag, ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
+function LijstWeergave({ openPlanning, openCall, doelen, voegToeNaar, vandaag, ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
   const [menu, setMenu] = useState(false);
   const isAanvraag = projectStatus(lijst) === "aanvraag";
   const isOfferte = projectStatus(lijst) === "offerte" || isAanvraag;
@@ -1863,7 +1884,7 @@ function LijstWeergave({ openCall, doelen, voegToeNaar, vandaag, ruimte, lijst, 
             {lijst.mailInbox && <p style={S.hint}>📥 Hier komen taken binnen die je naar je taken-e-mailadres stuurt.</p>}
           </div>
         )}
-        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken, openVersie }} />}
+        {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken, openVersie, openPlanning }} />}
         {isAanvraag && <AanvraagKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag, zetDeadline }} />}
         {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld, openVersie }} />}
         {ruimte === "werk" && lijst.project && openCall && <CallsBlok lijst={lijst} openCall={openCall} />}
@@ -1910,7 +1931,7 @@ function LijstWeergave({ openCall, doelen, voegToeNaar, vandaag, ruimte, lijst, 
 }
 
 // Projectkop: klant, draaidag, oplevering, voortgang per fase en "leren".
-function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken, openVersie }) {
+function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken, openVersie, openPlanning }) {
   const p = lijst.project;
   const vg = projectVoortgang(lijst);
   const klant = klantVan(p.klantId);
@@ -1991,6 +2012,14 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
       <SpecificatieBlok lijst={lijst} klantNaam={klant?.naam} zetProject={zetProject} meld={meld} vulPlekken={vulPlekken} />
       <BegrotingBlok lijst={lijst} zetProject={zetProject} />
       {p.intake?.tekst && <IntakeBlok intake={p.intake} zetTekst={(tekst) => zetProject({ intake: { ...p.intake, tekst } })} />}
+      {projectStatus(lijst) === "lopend" && !lijst.project.afgerond && openPlanning && (() => {
+        const weekendAantal = (lijst.items || []).filter(i => !i.checked && i.dueDate && isWeekend(i.dueDate) && !i.draaidagId && i.opzetTaak !== "prelight").length;
+        return (
+          <button onClick={openPlanning} style={{ ...S.knop(C.bg, C.groen), width: "100%", marginTop: 12, border: `1px solid ${C.rand2}` }}>
+            📅 Planning aanpassen {weekendAantal > 0 && <span style={{ fontWeight: 600, color: C.oranje }}>— ⚠️ {weekendAantal} in het weekend</span>}
+          </button>
+        );
+      })()}
       {projectStatus(lijst) === "lopend" && !lijst.project.afgerond && (
         <button onClick={openOnderdelen} style={{ ...S.knop(C.bg, C.groen), width: "100%", marginTop: 12, border: `1px solid ${C.rand2}` }}>
           🧩 Onderdelen aan/uit <span style={{ fontWeight: 400, color: C.muted }}>— cast, locaties, crew, hotel…</span>
@@ -4118,6 +4147,129 @@ function AfwijzenSheet({ lijst, sluit, bevestig }) {
   );
 }
 
+// Planningsoverzicht bij een nieuw project: tik op een datum om hem aan te
+// passen, ✕ om een stap over te slaan. Weekenddagen zijn al vermeden.
+// Planning van een bestaand project in één overzicht: alle open taken met
+// datum, per stuk te verzetten. Plus: weekenddeadlines naar werkdagen.
+// Weekenddeadline → werkdag: taken ná het anker (offset > 0, bv. post) naar
+// de maandag, de rest naar de vrijdag ervoor — maar nooit vóór vandaag.
+function werkdagVoorTaak(i, vandaag) {
+  const richting = (Number(i.offset) || 0) > 0 ? 1 : -1;
+  let d = naarWerkdag(i.dueDate, richting);
+  if (d < vandaag) d = naarWerkdag(i.dueDate, 1);
+  return d;
+}
+
+function PlanningSheet({ lijst, vandaag, sluit, zetDatum, weekendWeg }) {
+  const p = lijst.project || {};
+  const vaste = (i) => !!(i.draaidagId || i.opzetTaak === "prelight");
+  const open = (lijst.items || []).filter(i => !i.checked);
+  const metDatum = open.filter(i => i.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const zonder = open.filter(i => !i.dueDate);
+  const inWeekend = metDatum.filter(i => isWeekend(i.dueDate) && !vaste(i));
+  let vorigeWeek = null;
+  const week = (d) => { const x = new Date(`${d}T12:00:00`); const dag = (x.getDay() + 6) % 7; x.setDate(x.getDate() - dag); return x.toISOString().slice(0, 10); };
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()} data-testid="planning-sheet">
+        <SheetKop titel="📅 Planning" sluit={sluit} />
+        <p style={{ ...S.hint, marginTop: 0 }}>{lijst.icon} {lijst.name}{p.draaidag ? ` · 🎬 ${datumKort(p.draaidag)}` : ""}{p.opleverdatum ? ` · 📦 ${datumKort(p.opleverdatum)}` : ""}. Tik op een datum om hem te verzetten.</p>
+        {inWeekend.length > 0 && (
+          <div style={{ background: "#FFF4E5", border: "1px solid #F1D3A8", borderRadius: 12, padding: "10px 12px", margin: "8px 0", display: "flex", gap: 10, alignItems: "center" }}>
+            <span style={{ flex: 1, fontSize: 13 }}>⚠️ {inWeekend.length} {inWeekend.length === 1 ? "deadline valt" : "deadlines vallen"} in het weekend.</span>
+            <button onClick={() => weekendWeg(inWeekend.map(i => i.id))} style={{ ...S.knop(), padding: "7px 12px", fontSize: 13 }}>Naar werkdagen</button>
+          </div>
+        )}
+        <div style={S.kaart}>
+          {metDatum.map(i => {
+            const w = week(i.dueDate);
+            const nieuweWeek = w !== vorigeWeek; vorigeWeek = w;
+            const weekend = isWeekend(i.dueDate);
+            const telaat = i.dueDate < vandaag;
+            return (
+              <React.Fragment key={i.id}>
+                {nieuweWeek && <div style={{ padding: "6px 12px", fontSize: 11, fontWeight: 700, color: C.muted, background: C.bg, letterSpacing: 0.4 }}>WEEK VAN {datumKort(w).toUpperCase()}</div>}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #F3EEE3" }}>
+                  <label style={{ width: 96, flexShrink: 0, position: "relative", fontSize: 13, cursor: "pointer", color: telaat ? C.rood : weekend ? C.oranje : C.muted, fontWeight: i.datumHandmatig ? 700 : 400, borderBottom: `1px dashed ${C.rand2}` }}>
+                    {datumKort(i.dueDate)}{weekend ? " ⚠️" : ""}
+                    <input type="date" aria-label={`Datum ${i.name}`} value={i.dueDate} onChange={e => e.target.value && zetDatum(i.id, e.target.value)}
+                      style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", cursor: "pointer" }} />
+                  </label>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 14 }}>{FASES.find(f => f.id === i.category)?.icon || ""} {i.name}</span>
+                </div>
+              </React.Fragment>
+            );
+          })}
+          {!metDatum.length && <p style={{ ...S.hint, padding: 12 }}>Nog geen taken met een datum.</p>}
+        </div>
+        {zonder.length > 0 && (
+          <>
+            <p style={S.label}>Zonder datum · {zonder.length}</p>
+            <div style={S.kaart}>
+              {zonder.map(i => (
+                <div key={i.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #F3EEE3" }}>
+                  <label style={{ width: 96, flexShrink: 0, position: "relative", fontSize: 13, color: C.groen, cursor: "pointer" }}>
+                    ＋ datum
+                    <input type="date" aria-label={`Datum ${i.name}`} value="" onChange={e => e.target.value && zetDatum(i.id, e.target.value)} style={{ position: "absolute", inset: 0, opacity: 0, width: "100%" }} />
+                  </label>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 14 }}>{i.name}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        <p style={{ ...S.hint, marginTop: 10 }}>Verschuif je later de draaidag in de projectkop, dan schuiven zelf gekozen datums evenveel mee.</p>
+      </div>
+    </div>
+  );
+}
+
+function PlanningVoorbeeld({ voorbeeld, vandaag, verledenNaarVandaag, aanpassing, zet }) {
+  const [alles, setAlles] = useState(false);
+  const aantalAangepast = Object.keys(aanpassing).length;
+  const zetStap = (id, v) => zet(a => { const n = { ...a }; if (v) n[id] = v; else delete n[id]; return n; });
+  return (
+    <div data-testid="planning-voorbeeld" style={{ background: C.bg, borderRadius: 12, padding: 10, marginTop: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 12, color: C.muted, flex: 1 }}>📅 Planning — tik op een datum om hem te wijzigen. Za/zo worden overgeslagen.</span>
+        {aantalAangepast > 0 && <button onClick={() => zet({})} style={{ ...S.chip(false), padding: "3px 9px", fontSize: 11 }}>↺ Herstel ({aantalAangepast})</button>}
+      </div>
+      <div style={{ maxHeight: alles ? "none" : 260, overflowY: alles ? "visible" : "auto" }}>
+        {FASES.map(f => {
+          const st = voorbeeld.filter(x => x.st.fase === f.id);
+          if (!st.length) return null;
+          return (
+            <div key={f.id} style={{ marginBottom: 6 }}>
+              <strong style={{ fontSize: 12 }}>{f.icon} {f.label}</strong>
+              {st.map(({ st: s, d }) => {
+                const a = aanpassing[s.id] || {};
+                const weg = !!a.weg;
+                const datum = a.datum || (verledenNaarVandaag && d && d < vandaag ? vandaag : d);
+                const telaat = !a.datum && d && d < vandaag;
+                const weekend = isWeekend(datum);
+                return (
+                  <div key={s.id} style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center", padding: "3px 0", color: weg ? C.licht : telaat ? C.rood : C.tekst }}>
+                    <label style={{ width: 92, flexShrink: 0, position: "relative", cursor: weg ? "default" : "pointer", color: weg ? C.licht : a.datum ? C.groen : telaat ? C.rood : C.muted, fontWeight: a.datum ? 700 : 400, textDecoration: weg ? "line-through" : "none", borderBottom: weg ? "none" : `1px dashed ${C.rand2}` }}>
+                      {datum ? datumKort(datum) : "—"}{weekend && !weg ? " ⚠️" : ""}
+                      {!weg && <input type="date" aria-label={`Datum ${s.tekst}`} value={datum || ""} onChange={e => zetStap(s.id, e.target.value ? { datum: e.target.value } : null)}
+                        style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", cursor: "pointer" }} />}
+                    </label>
+                    <span style={{ flex: 1, minWidth: 0, textDecoration: weg ? "line-through" : "none" }}>{SOORTEN[s.soort]?.icon} {s.tekst}</span>
+                    <button aria-label={weg ? `${s.tekst} toch doen` : `${s.tekst} overslaan`} title={weg ? "Toch doen" : "Overslaan"} onClick={() => zetStap(s.id, weg ? null : { weg: true })}
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 4px", color: C.licht, fontSize: 13 }}>{weg ? "↺" : "✕"}</button>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+      {voorbeeld.length > 10 && <button onClick={() => setAlles(!alles)} style={{ background: "none", border: "none", color: C.groen, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: "4px 0 0", fontFamily: "inherit" }}>{alles ? "Kleiner" : `Hele planning tonen (${voorbeeld.length})`}</button>}
+      <p style={{ ...S.hint, margin: "6px 0 0" }}>Later aanpassen kan ook: in het project per taak, of met 📅 Planning bovenin het project.</p>
+    </div>
+  );
+}
+
 function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuweKlant, sluit, maak, vanOfferte = null, voorstel = null, startOfferteNietDoorMij = false }) {
   const [offerteNietDoorMij, setOfferteNietDoorMij] = useState(startOfferteNietDoorMij);
   const [opdrachtVia, setOpdrachtVia] = useState("");
@@ -4167,6 +4319,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
     if (Object.keys(h.deliverables || {}).length) setDeliverables(d => normaliseerDeliverables({ ...d, ...h.deliverables }));
   }
   const [eigenPlanning, setEigenPlanning] = useState([]);
+  const [planAanpassing, setPlanAanpassing] = useState({}); // { stapId: { datum } | { weg: true } }
   const [meetings, setMeetings] = useState(() => standaardMeetings({ draaidag, vandaag }));
   const [ppmAangepast, setPpmAangepast] = useState(false);
   // PPM schuift mee met de draaidag zolang je 'm niet zelf hebt aangepast.
@@ -4264,23 +4417,8 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
         <OpzetKiezer opzet={opzet} zet={setOpzet} />
 
         {voorbeeld.length > 0 && (
-          <div style={{ background: C.bg, borderRadius: 12, padding: 10, marginTop: 12, maxHeight: 180, overflowY: "auto" }}>
-            {FASES.map(f => {
-              const st = voorbeeld.filter(x => x.st.fase === f.id);
-              if (!st.length) return null;
-              return (
-                <div key={f.id} style={{ marginBottom: 6 }}>
-                  <strong style={{ fontSize: 12 }}>{f.icon} {f.label}</strong>
-                  {st.map(({ st: s, d }) => (
-                    <div key={s.id} style={{ fontSize: 12, display: "flex", gap: 6, color: d < vandaag ? C.rood : C.tekst }}>
-                      <span style={{ width: 82, flexShrink: 0, color: d < vandaag ? C.rood : C.muted }}>{datumKort(d)}</span>
-                      <span>{SOORTEN[s.soort]?.icon} {s.tekst}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
+          <PlanningVoorbeeld voorbeeld={voorbeeld} vandaag={vandaag} verledenNaarVandaag={verledenNaarVandaag}
+            aanpassing={planAanpassing} zet={setPlanAanpassing} />
         )}
         <p style={{ ...S.sectieKop, marginTop: 18 }}>🧩 Wat is er nodig voor deze productie?</p>
         <p style={{ ...S.sectieKop, marginTop: 18 }}>📦 Deliverables</p>
@@ -4295,7 +4433,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
           </label>
         )}
         <button disabled={!kan} onClick={() => maak(sjabloon, {
-          naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag, onderdelen: zonderPost(onderdelen, opzet), meetings, deliverables, eigenPlanning, opzet, versieId,
+          naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag, onderdelen: zonderPost(onderdelen, opzet), meetings, deliverables, eigenPlanning, opzet, versieId, planAanpassing,
           ...(!vanOfferte && offerteNietDoorMij ? { offerteAlGedaan: true, opdrachtVia } : {}),
           ...(!vanOfferte?.project?.intake?.tekst && intakeTekst.trim() ? { intakeTekst: intakeTekst.trim(), budget: hNu.budget ?? null, liveDatum: hNu.liveDatum || null } : {}),
         })}

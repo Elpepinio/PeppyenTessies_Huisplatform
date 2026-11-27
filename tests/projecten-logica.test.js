@@ -47,7 +47,7 @@ sectie("Draaidag verschuift → taken schuiven mee");
 const metAfgevinkt = { ...proj, items: proj.items.map(i => (i.sjabloonStapId === "k-offerte" ? { ...i, checked: true } : i)) };
 const verschoven = P.verschuifProject(metAfgevinkt, { draaidag: "2026-12-12" });
 const v = (id) => verschoven.items.find(i => i.sjabloonStapId === id);
-test("open draai-stap schuift 2 dagen", v("k-script").dueDate === "2026-11-28");
+test("open draai-stap schuift 2 dagen (za → vrijdag ervoor)", v("k-script").dueDate === "2026-11-27");
 test("oplever-stap blijft staan als alleen de draaidag wijzigt", v("k-montage").dueDate === "2026-12-17");
 test("afgevinkte taak blijft ongemoeid", v("k-offerte").dueDate === zoek("k-offerte").dueDate);
 test("projectdatum bijgewerkt", verschoven.project.draaidag === "2026-12-12");
@@ -114,7 +114,7 @@ test("stap lag bij de start al in het verleden → telt niet mee", P.werkelijkeO
 test("…en levert dus ook geen timingvoorstel op", !P.berekenLeerVoorstellen(klein, lp("k-offerte", "2026-11-24")).some(v => v.type === "timing"));
 test("op de startdag afgevinkt → telt niet mee", P.werkelijkeOffset(lp("k-locatie", "2026-11-22").items.find(i => i.sjabloonStapId === "k-locatie"), klein.stappen.find(s => s.id === "k-locatie"), laatProject.project) === null);
 test("normale stap later afgerond → telt wél mee", P.werkelijkeOffset(lp("k-locatie", "2026-11-25").items.find(i => i.sjabloonStapId === "k-locatie"), klein.stappen.find(s => s.id === "k-locatie"), laatProject.project) === -8);
-test("project onthoudt startdatum en oorspronkelijke stapdatum", laatProject.project.startDatum === "2026-11-22" && laatProject.items.find(i => i.sjabloonStapId === "k-offerte").sjabloonDatum === "2026-11-08");
+test("project onthoudt startdatum en oorspronkelijke stapdatum", laatProject.project.startDatum === "2026-11-22" && laatProject.items.find(i => i.sjabloonStapId === "k-offerte").sjabloonDatum === "2026-11-06");
 
 sectie("Offertes — wekelijks navragen tot akkoord");
 const off = P.maakOfferte({ naam: "Häcker najaar", klantId: "k1", verstuurdOp: "2026-11-20", bedrag: 4500, vandaag: "2026-11-22", wie: "Pepijn", nu: 5, nieuwId });
@@ -158,7 +158,7 @@ test("kickoff: nieuwe taak op gekozen dag, herinnering een uur vooraf", od("kick
 test("PPM: bestaande sjabloonstap gebruikt (geen dubbele) en ingepland", od("ppm").length === 1 && od("ppm")[0].sjabloonStapId === "g-ppm" && od("ppm")[0].dueDate === "2027-01-13" && metO.items.filter(i => /PPM/.test(i.name)).length === 1);
 test("acteurs: koppelt aan de casting-stap uit het sjabloon", od("acteurs").length === 1 && od("acteurs")[0].sjabloonStapId === "g-casting");
 test("verzekering: koppelt aan bestaande sjabloonstap", od("verzekering")[0].sjabloonStapId === "g-verzekering");
-test("figuranten: nieuwe taak met deelstappen en deadline t.o.v. draaidag", od("figuranten")[0].dueDate === "2027-01-10" && od("figuranten")[0].substappen.length === 3 && od("figuranten")[0].anker === "draai");
+test("figuranten: nieuwe taak met deelstappen en deadline t.o.v. draaidag", od("figuranten")[0].dueDate === "2027-01-08" && od("figuranten")[0].substappen.length === 3 && od("figuranten")[0].anker === "draai");
 test("hotel en exterieur aangemaakt", od("hotel").length === 1 && od("loc-exterieur").length === 1);
 test("niet gekozen → geen taak (interieur, props, edelfiguranten)", !od("loc-interieur").length && !od("props").length && !od("edelfiguranten").length);
 const crewT = od("crew")[0];
@@ -377,6 +377,27 @@ sectie("Los project & offerte niet door mij");
   test("offerte niet door mij: offerte-/akkoordstappen al klaar", offerteIds.length > 0 && ander.items.filter(i => offerteIds.includes(i.sjabloonStapId)).every(i => i.checked && i.voltooidOp));
   test("offerte niet door mij: overige stappen open", ander.items.filter(i => !offerteIds.includes(i.sjabloonStapId)).every(i => !i.checked));
   test("opdracht via + vlag bewaard", ander.project.opdrachtVia === "Productiehuis X" && ander.project.offerteNietDoorMij === true && !zelf.project.offerteNietDoorMij);
+}
+
+
+sectie("Weekend & aangepaste planning");
+{
+  test("isWeekend", P.isWeekend("2026-11-28") && P.isWeekend("2026-11-29") && !P.isWeekend("2026-11-27") && !P.isWeekend(null));
+  test("naarWerkdag: vóór anker → vrijdag, ná anker → maandag", P.naarWerkdag("2026-11-29", -1) === "2026-11-27" && P.naarWerkdag("2026-11-29", 1) === "2026-11-30" && P.naarWerkdag("2026-11-26", -1) === "2026-11-26");
+  test("werkdagVanaf: nooit vóór vandaag", P.werkdagVanaf("2026-11-29", "2026-11-28", -1) === "2026-11-30" && P.werkdagVanaf("2026-11-22", "2026-11-27", -1) === "2026-11-27");
+  const pr = P.maakProjectUitSjabloon(klein, { naam: "W", draaidag: "2026-12-16", vandaag: "2026-11-20", nieuwId });
+  const open = pr.items.filter(i => i.dueDate && i.offset);
+  test("geen enkele sjabloondeadline in het weekend", open.length > 3 && open.every(i => !P.isWeekend(i.dueDate)));
+  test("draaidag zelf mag in het weekend", P.stapDatum({ anker: "draai", offset: 0 }, { draaidag: "2026-12-19" }) === "2026-12-19");
+  const eerste = klein.stappen[1], tweede = klein.stappen[2];
+  const aangepast = P.maakProjectUitSjabloon(klein, { naam: "A", draaidag: "2026-12-16", vandaag: "2026-11-20", nieuwId, planAanpassing: { [eerste.id]: { datum: "2026-12-01" }, [tweede.id]: { weg: true } } });
+  const a1 = aangepast.items.find(i => i.sjabloonStapId === eerste.id);
+  test("eigen datum uit de planning wordt gebruikt", a1.dueDate === "2026-12-01" && a1.datumHandmatig === true);
+  test("overgeslagen stap wordt geen taak", !aangepast.items.some(i => i.sjabloonStapId === tweede.id) && aangepast.items.length === klein.stappen.length - 1);
+  const vs = P.verschuifProject(aangepast, { draaidag: "2026-12-23" });
+  test("bij verschuiven: zelf gekozen datum schuift evenveel mee", vs.items.find(i => i.sjabloonStapId === eerste.id).dueDate === "2026-12-08");
+  test("bij verschuiven: berekende datums opnieuw berekend, ook buiten het weekend", vs.items.filter(i => i.offset && !i.datumHandmatig && i.anker === "draai").every(i => i.dueDate === P.stapDatum(i, { draaidag: "2026-12-23" }) || i.dueDate === "2026-11-20"));
+  test("eerste navraag niet in het weekend", P.eersteNavraagDatum("2026-11-21", "2026-11-21") === "2026-11-30");
 }
 
 samenvatting();
