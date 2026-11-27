@@ -23,7 +23,7 @@ import {
   ChevronDown, Plus, X, Check, Mic, Square, Trash2, Briefcase, Home, Upload, ArrowRightLeft, KeyRound, Download, Send,
 } from "lucide-react";
 import {
-  vandaagStr, plusDagen, isoWeekdag, normaliseerHerhaling, herhalingLabel, vinkTaak, isInMijnDag,
+  vandaagStr, plusDagen, volgendeWerkdag, isoWeekdag, normaliseerHerhaling, herhalingLabel, vinkTaak, isInMijnDag,
   groepeerGepland, sorteerTaken, planDatum, ontleedSnelleInvoer, splitsTaken, ontleedPlakImport, nieuweTaak, isGeldigePin,
 } from "../lib/taken-logica";
 import {
@@ -1470,7 +1470,8 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
   const herkenRef = useRef(null);
   const invoerRef = useRef(null);
   const dag0 = vandaag || vandaagStr();
-  const morgen = plusDagen(dag0, 1);
+  // Werk: "morgen" op vrijdag = maandag. Thuis: gewoon morgen.
+  const morgenVoor = (ruimte) => (ruimte === "werk" ? volgendeWerkdag(dag0) : plusDagen(dag0, 1));
   // Meerdere taken in één keer ("taak … taak …")?
   const [weg, setWeg] = useState([]);
   const alleMeer = splitsTaken(tekst);
@@ -1496,7 +1497,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
     const start = standaardDoel && doelen.some(d => sleutel(d) === sleutel(standaardDoel)) ? standaardDoel : doelen[0];
     return {
       doel: sleutel(start), fase: standaardDoel?.fase || "pre", klantId: basisExtra.klantId || "",
-      wanneer: !datum ? "geen" : datum === dag0 ? "vandaag" : datum === morgen ? "morgen" : "datum",
+      wanneer: !datum ? "geen" : datum === dag0 ? "vandaag" : datum === morgenVoor(start?.ruimte) ? "morgen" : "datum",
       datum: datum || "", tijd, notitie: "",
     };
   }
@@ -1509,7 +1510,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
       if (!meer.length) return;
       if (paneel && kanUitklappen) {
         const d = doelLijst || doelen[0];
-        const datum = paneel.wanneer === "vandaag" ? dag0 : paneel.wanneer === "morgen" ? morgen : paneel.wanneer === "datum" ? (paneel.datum || null) : null;
+        const datum = paneel.wanneer === "vandaag" ? dag0 : paneel.wanneer === "morgen" ? morgenVoor(d.ruimte) : paneel.wanneer === "datum" ? (paneel.datum || null) : null;
         meer.forEach(({ t, v }) => {
           // Een datum/tijd die je bij de taak zelf zegt, gaat vóór de keuze in het paneel.
           const dueDate = v.dueDate || datum || (paneel.tijd ? dag0 : null);
@@ -1533,7 +1534,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
     }
     if (paneel && kanUitklappen) {
       const d = doelLijst || doelen[0];
-      const datum = paneel.wanneer === "vandaag" ? dag0 : paneel.wanneer === "morgen" ? morgen : paneel.wanneer === "datum" ? (paneel.datum || null) : null;
+      const datum = paneel.wanneer === "vandaag" ? dag0 : paneel.wanneer === "morgen" ? morgenVoor(d.ruimte) : paneel.wanneer === "datum" ? (paneel.datum || null) : null;
       const dueDate = datum || (paneel.tijd ? dag0 : null);
       const titel = (voorbeeld?.titel || tekst).trim();
       const extra = { ...basisExtra, dueDate, herinnering: dueDate && paneel.tijd ? `${dueDate}T${paneel.tijd}` : null };
@@ -1667,7 +1668,7 @@ function InvoerBalk({ placeholder, voegToe, chronoRef, boven = null, doelen = []
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 12, color: C.muted, width: 58, flexShrink: 0 }}>Wanneer</span>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", flex: 1, minWidth: 0 }}>
-                {[["geen", "Geen"], ["vandaag", "Vandaag"], ["morgen", "Morgen"]].map(([k, l]) => (
+                {[["geen", "Geen"], ["vandaag", "Vandaag"], ["morgen", (doelLijst?.ruimte === "werk" && morgenVoor("werk") !== plusDagen(dag0, 1)) ? "Maandag" : "Morgen"]].map(([k, l]) => (
                   <button key={k} style={kleinAan(paneel.wanneer === k)} onClick={() => setPaneel(p => ({ ...p, wanneer: k, ...(k === "geen" ? { tijd: "" } : {}) }))}>{l}</button>
                 ))}
                 <label style={{ ...kleinAan(paneel.wanneer === "datum"), display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
@@ -3251,7 +3252,10 @@ function TaakDetail({ ruimte, lijst, taak, ik, klanten, status, meldingen, zetMe
   const presetId = !h ? "geen" : (h.interval === 1 && !h.dagen ? h.freq : (h.interval === 1 && h.dagen?.join() === "1,2,3,4,5" ? "werkdagen" : "aangepast"));
   const inMijnDag = taak.mijnDag === vandaag;
   const nu = new Date();
-  const morgen9 = `${plusDagen(vandaag, 1)}T09:00`;
+  // Werktaak op vrijdag: "morgen" = maandag.
+  const morgenDag = ruimte === "werk" ? volgendeWerkdag(vandaag) : plusDagen(vandaag, 1);
+  const morgenLabel = morgenDag === plusDagen(vandaag, 1) ? "Morgen" : "Maandag";
+  const morgen9 = `${morgenDag}T09:00`;
   const laterVandaag = (() => {
     const d = new Date(nu.getTime() + 3 * 3600 * 1000);
     if (d.getDate() !== nu.getDate()) return null;
@@ -3321,8 +3325,8 @@ function TaakDetail({ ruimte, lijst, taak, ik, klanten, status, meldingen, zetMe
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
           {laterVandaag && <button style={S.chip(taak.herinnering === laterVandaag)} onClick={() => zet({ herinnering: laterVandaag })}>Later vandaag {laterVandaag.slice(11)}</button>}
-          <button style={S.chip(taak.herinnering === morgen9)} onClick={() => zet({ herinnering: morgen9 })}>Morgen 09:00</button>
-          {volgendeMaandag !== plusDagen(vandaag, 1) && <button style={S.chip(taak.herinnering === `${volgendeMaandag}T09:00`)} onClick={() => zet({ herinnering: `${volgendeMaandag}T09:00` })}>Maandag 09:00</button>}
+          <button style={S.chip(taak.herinnering === morgen9)} onClick={() => zet({ herinnering: morgen9 })}>{morgenLabel} 09:00</button>
+          {volgendeMaandag !== morgenDag && <button style={S.chip(taak.herinnering === `${volgendeMaandag}T09:00`)} onClick={() => zet({ herinnering: `${volgendeMaandag}T09:00` })}>Maandag 09:00</button>}
         </div>
         {taak.herinnering && meldingen !== "aan" && meldingen !== "niet-ondersteund" && (
           <p style={S.hint}>🔕 Meldingen staan uit op dit toestel. <button onClick={zetMeldingenAan} style={{ background: "none", border: "none", color: C.groen, fontWeight: 700, cursor: "pointer", padding: 0, fontFamily: "inherit", fontSize: 12 }}>Zet ze aan</button></p>
@@ -3339,7 +3343,7 @@ function TaakDetail({ ruimte, lijst, taak, ik, klanten, status, meldingen, zetMe
           {taak.dueDate && <button style={{ ...S.chip(false), display: "flex", alignItems: "center" }} onClick={() => zet({ dueDate: null })} aria-label="Vervaldatum wissen"><X size={14} /></button>}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-          {[["Vandaag", vandaag], ["Morgen", plusDagen(vandaag, 1)], ["Volgende week", volgendeMaandag]].map(([l, d]) => (
+          {[["Vandaag", vandaag], [morgenLabel, morgenDag], ...(volgendeMaandag !== morgenDag ? [["Volgende week", volgendeMaandag]] : [])].map(([l, d]) => (
             <button key={l} style={S.chip(taak.dueDate === d)} onClick={() => zet({ dueDate: d })}>{l}</button>
           ))}
         </div>
@@ -3534,7 +3538,7 @@ function CallTaakRegel({ taak, lopend, vandaag, wijzig, verwijder }) {
   const [naam, setNaam] = useState(taak.name);
   useEffect(() => { setNaam(taak.name); }, [taak.name]);
   const mini = (aan) => ({ ...S.chip(aan), padding: "4px 9px", fontSize: 12 });
-  const morgen = plusDagen(vandaag, 1);
+  const morgen = volgendeWerkdag(vandaag);
   const eigenDatum = !!taak.dueDate && taak.dueDate !== vandaag && taak.dueDate !== morgen;
   const bewaarNaam = () => { const n = naam.trim(); if (n && n !== taak.name) wijzig({ name: n }); else setNaam(taak.name); };
   return (
@@ -3548,7 +3552,7 @@ function CallTaakRegel({ taak, lopend, vandaag, wijzig, verwijder }) {
       {!taak.checked && (
         <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 6, marginLeft: 22 }}>
           {lopend && FASES.map(f => <button key={f.id} title={f.label} aria-label={f.label} style={mini(taak.category === f.id)} onClick={() => wijzig({ category: f.id })}>{f.icon}</button>)}
-          {[["", "Geen"], [vandaag, "Vandaag"], [morgen, "Morgen"]].map(([d, l]) => (
+          {[["", "Geen"], [vandaag, "Vandaag"], [morgen, morgen === plusDagen(vandaag, 1) ? "Morgen" : "Maandag"]].map(([d, l]) => (
             <button key={l} style={mini((taak.dueDate || "") === d)} onClick={() => wijzig({ dueDate: d || null, herinnering: d && taak.herinnering ? `${d}T${taak.herinnering.slice(11, 16)}` : null })}>{l}</button>
           ))}
           <label style={{ ...mini(eigenDatum), position: "relative" }}>

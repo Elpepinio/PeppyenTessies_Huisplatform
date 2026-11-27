@@ -205,4 +205,10 @@ sectie("Meerdere taken in één keer (splitsTaken)");
   test("tekst vóór eerste 'taak' hoort bij eerste taak", eq(L.splitsTaken("morgen taak hotel boeken taak crew briefen"), ["Morgen hotel boeken", "Crew briefen"]));
 }
 
+
+sectie("Morgen = volgende werkdag (werk)");
+test("vrijdag → maandag", L.volgendeWerkdag("2026-11-27") === "2026-11-30");
+test("zaterdag/zondag → maandag", L.volgendeWerkdag("2026-11-28") === "2026-11-30" && L.volgendeWerkdag("2026-11-29") === "2026-11-30");
+test("donderdag → vrijdag", L.volgendeWerkdag("2026-11-26") === "2026-11-27");
+
 samenvatting();
