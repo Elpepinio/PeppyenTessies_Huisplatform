@@ -54,7 +54,7 @@ export default async function handler(req, res) {
           .filter(a => a && a.id && a.van && String(a.naam || "").trim())
           .slice(0, 300)
           .map(a => ({ id: String(a.id), naam: String(a.naam).trim().slice(0, 80), klantId: a.klantId ? String(a.klantId) : null,
-            van: String(a.van).slice(0, 10), tot: String(a.tot || a.van).slice(0, 10), notitie: String(a.notitie || "").slice(0, 300) }));
+            van: String(a.van).slice(0, 10), tot: String(a.tot || a.van).slice(0, 10), notitie: String(a.notitie || "").slice(0, 300), ...(a.eigen ? { eigen: true } : {}) }));
       }
       // Callsheet-instellingen (jouw naam/telefoon, productiebedrijf, vaste notes).
       if (inkomend.callsheet && typeof inkomend.callsheet === "object") {
