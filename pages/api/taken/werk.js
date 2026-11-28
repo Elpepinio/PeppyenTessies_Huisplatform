@@ -48,6 +48,14 @@ export default async function handler(req, res) {
       if (Array.isArray(inkomend.contacten)) {
         volgend.contacten = inkomend.contacten.filter(c => c && c.id && String(c.naam || "").trim()).slice(0, 1000);
       }
+      // Afwezigheid (vakanties) van klanten, crew en cast.
+      if (Array.isArray(inkomend.afwezigheden)) {
+        volgend.afwezigheden = inkomend.afwezigheden
+          .filter(a => a && a.id && a.van && String(a.naam || "").trim())
+          .slice(0, 300)
+          .map(a => ({ id: String(a.id), naam: String(a.naam).trim().slice(0, 80), klantId: a.klantId ? String(a.klantId) : null,
+            van: String(a.van).slice(0, 10), tot: String(a.tot || a.van).slice(0, 10), notitie: String(a.notitie || "").slice(0, 300) }));
+      }
       // Callsheet-instellingen (jouw naam/telefoon, productiebedrijf, vaste notes).
       if (inkomend.callsheet && typeof inkomend.callsheet === "object") {
         volgend.callsheet = inkomend.callsheet;

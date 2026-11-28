@@ -13,6 +13,7 @@
 // gewoon Nederlands, taken via e-mail en plakken vanuit een andere app.
 // ════════════════════════════════════════════════════════════════════
 import { laadPdfjs } from "../lib/pdf-worker";
+import { normAfwezigheid, herkenAfwezigheid, afwezigOpDatum, komendeAfwezigheden, afwezigheidConflicten, isAfwezigOp, noemtPersoon } from "../lib/afwezigheid-logica";
 import { callActiepunten, callsVan, callTakenVan, callSamenvatting, bewaarCallInProject, verwijderCall, momentTijd, callVoorMoment, isDraaiMoment, verzetMoment, faseVoorDatum, synchroniseerMomentMetCall } from "../lib/calls-logica";
 import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import Link from "next/link";
@@ -169,6 +170,17 @@ export default function TakenApp() {
   // de keuze bij het sjabloon onthouden (volgende keer staat dat weer aan).
   // Contactenboek: namen + prijsafspraken, onthouden over projecten heen.
   const contacten = werk?.contacten || [];
+  // Afwezigheid (vakanties) van klanten, crew en cast.
+  const afwezigheden = werk?.afwezigheden || [];
+  function bewaarAfwezigheden(next) {
+    const w = { ...werkRef.current, afwezigheden: next };
+    werkRef.current = w; setWerk(w); lastWriteRef.current = Date.now();
+    post("/api/taken/werk", { afwezigheden: next });
+  }
+  const afwezigNamen = [...new Set([
+    ...contacten.map(c => c.naam), ...werkLijsten.flatMap(l => (l.project?.calls || []).map(c => c.met)),
+    ...werkLijsten.flatMap(l => (l.items || []).flatMap(i => (i.bezetting || []).map(b => b.naam))),
+  ].filter(Boolean).map(s => String(s).trim()))].slice(0, 200);
   function onthoud(bezetting, lijst) {
     const { contacten: next, contactId } = onthoudContact(werkRef.current?.contacten || [], bezetting, {
       projectId: lijst?.id, projectNaam: lijst?.name, datum: vandaag, nieuwId: uid,
@@ -643,6 +655,8 @@ export default function TakenApp() {
           openPin={(modus) => { setPinModus(modus); setSheet("pin"); }}
           openMail={() => setSheet("mail")}
           openKlanten={() => setSheet("klanten")}
+          afwezigheden={afwezigheden}
+          openAfwezigheid={(start) => setSheet({ soort: "afwezigheid", start: start || null })}
           openImport={() => setSheet("import")}
           zetMeldingenAan={zetMeldingenAan}
           vergrendel={async () => { await post("/api/taken/pin", { actie: "vergrendel" }); setWerk(null); setWerkStaat("vergrendeld"); meld("🔒 Werkruimte vergrendeld op dit toestel"); }}
@@ -698,6 +712,7 @@ export default function TakenApp() {
             openOnderdelen={() => setSheet({ soort: "onderdelen", listId: lijst.id })}
             openCall={(callId) => setSheet({ soort: "call", listId: lijst.id, callId: callId || uid() })}
             openPlanning={() => setSheet({ soort: "planning", listId: lijst.id })}
+            afwezigheden={afwezigheden}
             zetDagen={(dagen) => { wijzigLijst(weergave.ruimte, lijst.id, l => zetDraaidagen(l, dagen, { nieuwId: uid, wie: ik })); meld("🎬 Draaidagen bijgewerkt"); }}
             openCallsheet={(dagId) => setSheet({ soort: "callsheet", listId: lijst.id, dagId })}
             openOfferteVanAanvraag={() => setSheet({ soort: "offerteVanAanvraag", listId: lijst.id })}
@@ -868,6 +883,11 @@ export default function TakenApp() {
             }} />
         );
       })()}
+      {sheet?.soort === "afwezigheid" && (
+        <AfwezigheidSheet afwezigheden={afwezigheden} klanten={klanten.filter(k => !k.gearchiveerd)} klantVan={klantVan} namen={afwezigNamen} vandaag={vandaag}
+          start={sheet.start} sluit={() => setSheet(sheet.terug || null)}
+          bewaar={(next) => { bewaarAfwezigheden(next); meld("🏖️ Afwezigheid bewaard"); }} />
+      )}
       {sheet?.soort === "planning" && (() => {
         const lijst = lijstVan("werk", sheet.listId);
         if (!lijst) return null;
@@ -879,6 +899,8 @@ export default function TakenApp() {
         ])].slice(0, 60);
         return (
           <PlanningSheet lijst={lijst} vandaag={vandaag} sluit={() => setSheet(null)} metSuggesties={metSuggesties}
+            afwezigheden={afwezigheden} klantVan={klantVan}
+            openAfwezigheid={() => setSheet({ soort: "afwezigheid", terug: { soort: "planning", listId: lijst.id } })}
             verzetMomentFn={(itemId, waarde, keten) => {
               const r = verzetMoment(lijstVan("werk", lijst.id), itemId, waarde, { keten });
               zetLijst("werk", r.lijst);
@@ -952,6 +974,13 @@ export default function TakenApp() {
         return (
           <CallSheet key={sheet.callId} lijst={lijst} callId={sheet.callId} vandaag={vandaag} chronoRef={chronoRef} metSuggesties={metSuggesties}
             voorinvulling={sheet.voorinvulling || null}
+            afwezigheden={afwezigheden} klantNaam={klant?.naam || ""}
+            voegAfwezigheidToe={(a) => {
+              if (!a.naam) { setSheet({ soort: "afwezigheid", start: { ...a, klantId: lijst.project?.klantId || "" }, terug: sheet }); return; }
+              const isKlant = !!lijst.project?.klantId && !(lijst.items || []).some(i => (i.bezetting || []).some(b => b.naam && noemtPersoon(b.naam, a.naam)));
+              bewaarAfwezigheden([...afwezigheden, normAfwezigheid({ ...a, id: uid(), klantId: isKlant ? lijst.project.klantId : null })]);
+              meld(`🏖️ ${a.naam} afwezig ${periodeKort(a).toLowerCase()} — toegevoegd`);
+            }}
             sluit={() => setSheet(sheet.terug || null)}
             bewaarCall={(c) => wijzigLijst("werk", lijst.id, l => synchroniseerMomentMetCall(bewaarCallInProject(l, c, [], { nieuwId: uid, wie: ik }), c))}
             voegTaakToe={(c, t) => wijzigLijst("werk", lijst.id, l => {
@@ -1147,7 +1176,123 @@ function KlantGroepen({ sectie, items, klantVan, render, samenvatting = null, mi
   );
 }
 
-function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, openNieuwProject, openLosProject, openSjablonen, openOfferte, openAanvraag, openCijfers, openBackup, openAkkoord, openAfwijzen, zetMeldingenAan, vergrendel, kopieerAdres }) {
+// ════════════════════════════════════════════════════════════════════
+// AFWEZIGHEID — wie is er wanneer niet (vakantie, vrije dagen)
+// ════════════════════════════════════════════════════════════════════
+function periodeKort(a) {
+  return a.van === a.tot ? datumKort(a.van) : `${datumKort(a.van)} – ${datumKort(a.tot)}`;
+}
+function afwStatus(a, vandaag) {
+  if (a.van <= vandaag && vandaag <= a.tot) return { t: `nu afwezig · terug ${datumKort(plusDagen(a.tot, 1)).toLowerCase()}`, k: C.rood };
+  const n = Math.round((new Date(`${a.van}T12:00:00`) - new Date(`${vandaag}T12:00:00`)) / 86400000);
+  return { t: n === 1 ? "vanaf morgen" : `over ${n} dagen`, k: n <= 7 ? C.oranje : C.muted };
+}
+
+function AfwezigheidSheet({ afwezigheden, klanten, klantVan, namen, vandaag, sluit, bewaar, start = null }) {
+  const leeg = { id: null, naam: "", klantId: "", van: "", tot: "", notitie: "" };
+  const [form, setForm] = useState(start ? { ...leeg, ...start } : null);
+  const [oudOpen, setOudOpen] = useState(false);
+  const komend = afwezigheden.filter(a => a.tot >= vandaag).sort((a, b) => a.van.localeCompare(b.van));
+  const voorbij = afwezigheden.filter(a => a.tot < vandaag).sort((a, b) => b.van.localeCompare(a.van));
+  const kan = form && form.naam.trim() && form.van;
+  function opslaan() {
+    const a = normAfwezigheid({ ...form, id: form.id || uid(), klantId: form.klantId || null });
+    bewaar(form.id ? afwezigheden.map(x => (x.id === form.id ? a : x)) : [...afwezigheden, a]);
+    setForm(null);
+  }
+  const rij = (a) => {
+    const st = afwStatus(a, vandaag);
+    const k = a.klantId ? klantVan(a.klantId) : null;
+    return (
+      <button key={a.id} onClick={() => setForm({ ...a, klantId: a.klantId || "" })} style={{ ...S.rij, alignItems: "flex-start" }}>
+        <span style={{ fontSize: 18 }}>🏖️</span>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: "block", fontWeight: 600, fontSize: 15 }}>{a.naam}{k ? <span style={{ color: k.kleur || C.muted, fontWeight: 600 }}> · ● {k.naam}</span> : ""}</span>
+          <span style={{ display: "block", fontSize: 13, color: C.muted }}>{periodeKort(a)}{a.notitie ? ` · ${a.notitie}` : ""}</span>
+          {a.tot >= vandaag && <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: st.k, marginTop: 2 }}>{st.t}</span>}
+        </span>
+        <ChevronRight size={16} color={C.licht} />
+      </button>
+    );
+  };
+  return (
+    <div style={S.sheetAchter} onClick={sluit}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()} data-testid="afwezigheid-sheet">
+        <SheetKop titel="🏖️ Afwezigheid" sluit={sluit} />
+        <p style={{ ...S.hint, marginTop: 0 }}>Vakanties en vrije dagen van klanten, crew en cast. Valt een kickoff, PPM, call, akkoord of draaidag in zo'n periode, dan zie je een waarschuwing in het project en de planning.</p>
+        {form ? (
+          <div style={{ background: C.bg, borderRadius: 14, padding: 12, marginTop: 10, display: "grid", gap: 8 }}>
+            <label style={{ fontSize: 12, color: C.muted, display: "grid", gap: 4 }}>Wie
+              <input aria-label="Naam afwezige" list="afw-namen" value={form.naam} onChange={e => setForm(f => ({ ...f, naam: e.target.value }))} placeholder="Bijv. Leonie Schröder" style={S.inp} autoFocus={!form.naam} />
+              <datalist id="afw-namen">{namen.map(n => <option key={n} value={n} />)}</datalist>
+            </label>
+            <label style={{ fontSize: 12, color: C.muted, display: "grid", gap: 4 }}>Klant (als het iemand van de klant is)
+              <select aria-label="Klant afwezige" value={form.klantId || ""} onChange={e => setForm(f => ({ ...f, klantId: e.target.value }))} style={S.inp}>
+                <option value="">— geen (crew, cast, eigen team) —</option>
+                {klanten.map(k => <option key={k.id} value={k.id}>{k.naam}</option>)}
+              </select>
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <label style={{ flex: 1, minWidth: 0, fontSize: 12, color: C.muted, display: "grid", gap: 4 }}>Van
+                <input type="date" aria-label="Afwezig van" value={form.van} onChange={e => setForm(f => ({ ...f, van: e.target.value, tot: !f.tot || f.tot < e.target.value ? e.target.value : f.tot }))} style={S.inp} />
+              </label>
+              <label style={{ flex: 1, minWidth: 0, fontSize: 12, color: C.muted, display: "grid", gap: 4 }}>Tot en met
+                <input type="date" aria-label="Afwezig tot" value={form.tot} min={form.van || undefined} onChange={e => setForm(f => ({ ...f, tot: e.target.value }))} style={S.inp} />
+              </label>
+            </div>
+            <input aria-label="Notitie afwezigheid" value={form.notitie} onChange={e => setForm(f => ({ ...f, notitie: e.target.value }))} placeholder="Notitie (optioneel) — bv. 'vervanger: Mark'" style={S.inp} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setForm(null)} style={{ ...S.knop(C.kaart, C.tekst), border: `1px solid ${C.rand2}`, flex: 1 }}>Annuleer</button>
+              <button disabled={!kan} onClick={opslaan} style={{ ...S.knop(), flex: 2, opacity: kan ? 1 : 0.5 }}>Bewaren</button>
+            </div>
+            {form.id && <button onClick={() => { bewaar(afwezigheden.filter(x => x.id !== form.id)); setForm(null); }} style={{ background: "none", border: "none", color: C.rood, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Verwijderen</button>}
+          </div>
+        ) : (
+          <button onClick={() => setForm({ ...leeg })} style={{ ...S.knop(), width: "100%", marginTop: 12 }}>＋ Afwezigheid toevoegen</button>
+        )}
+        <p style={S.label}>Komend & nu · {komend.length}</p>
+        <div style={S.kaart}>
+          {komend.map(rij)}
+          {!komend.length && <p style={{ ...S.hint, padding: 12 }}>Niemand afwezig gepland.</p>}
+        </div>
+        {voorbij.length > 0 && (
+          <>
+            <button onClick={() => setOudOpen(!oudOpen)} style={{ background: "none", border: "none", color: C.muted, fontSize: 13, cursor: "pointer", marginTop: 10, fontFamily: "inherit" }}>{oudOpen ? "▾" : "▸"} Voorbij ({voorbij.length})</button>
+            {oudOpen && <div style={S.kaart}>{voorbij.map(rij)}</div>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Waarschuwing in een project: wie is er afwezig tijdens momenten die ertoe doen.
+function AfwezigheidMelding({ conflicten, klantVan, openPlanning, compact = false }) {
+  if (!conflicten.length) return null;
+  const perPersoon = new Map();
+  for (const c of conflicten) {
+    if (!perPersoon.has(c.afwezigheid.id)) perPersoon.set(c.afwezigheid.id, { a: c.afwezigheid, items: [] });
+    perPersoon.get(c.afwezigheid.id).items.push(c.item);
+  }
+  return (
+    <div data-testid="afwezig-melding" style={{ background: "#FFF4E5", border: "1px solid #F1D3A8", borderRadius: 12, padding: "10px 12px", margin: compact ? "0 0 8px" : "10px 0 4px" }}>
+      {[...perPersoon.values()].map(({ a, items }) => {
+        const k = a.klantId ? klantVan(a.klantId) : null;
+        return (
+          <div key={a.id} style={{ fontSize: 13, marginBottom: 4 }}>
+            <b>🏖️ {a.naam}{k ? ` (${k.naam})` : ""} is afwezig {periodeKort(a).toLowerCase()}</b>
+            <span style={{ display: "block", color: C.muted }}>
+              Valt erin: {items.slice(0, 4).map(i => `${i.name.replace(/^📞\s*/, "")} (${datumKort(i.dueDate).toLowerCase()})`).join(", ")}{items.length > 4 ? ` en nog ${items.length - 4}` : ""}
+            </span>
+          </div>
+        );
+      })}
+      {openPlanning && <button onClick={openPlanning} style={{ ...S.chip(false), padding: "4px 10px", fontSize: 12, marginTop: 4 }}>📅 Naar de planning</button>}
+    </div>
+  );
+}
+
+function Overzicht({ afwezigheden = [], openAfwezigheid, ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, klantVan, mailInfo, meldingen, aantal, open, nieuweLijst, openPin, openMail, openKlanten, openImport, openNieuwProject, openLosProject, openSjablonen, openOfferte, openAanvraag, openCijfers, openBackup, openAkkoord, openAfwijzen, zetMeldingenAan, vergrendel, kopieerAdres }) {
   const openAantal = (l) => (l.items || []).filter(i => !i.checked).length;
   const [afgerondOpen, setAfgerondOpen] = useState(false);
   const offertes = werkLijsten.filter(l => projectStatus(l) === "offerte" && !l.project.afgerond)
@@ -1254,6 +1399,29 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                 <Plus size={18} color={C.groen} /><span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Nieuwe aanvraag — notities van het eerste gesprek</span>
               </button>
             </div>
+
+            {/* Afwezig: wie is er binnenkort (of nu) niet */}
+            {komendeAfwezigheden(afwezigheden, vandaagStr(), 30).length > 0 && (
+              <>
+                <p style={{ ...S.sectieKop, marginTop: 4 }}>🏖️ Afwezig</p>
+                <div style={S.kaart} data-testid="afwezig-overzicht">
+                  {komendeAfwezigheden(afwezigheden, vandaagStr(), 30).slice(0, 5).map(a => {
+                    const st = afwStatus(a, vandaagStr());
+                    const k = a.klantId ? klantVan(a.klantId) : null;
+                    return (
+                      <button key={a.id} style={S.rij} onClick={() => openAfwezigheid()}>
+                        <span style={{ fontSize: 17 }}>🏖️</span>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ display: "block", fontSize: 15, fontWeight: 600 }}>{a.naam}{k ? <span style={{ color: k.kleur || C.muted }}> · ● {k.naam}</span> : ""}</span>
+                          <span style={{ display: "block", fontSize: 12, color: C.muted }}>{periodeKort(a)} · <span style={{ color: st.k, fontWeight: 700 }}>{st.t}</span></span>
+                        </span>
+                        <ChevronRight size={16} color={C.licht} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
 
             {/* Offertes: verstuurd, wachten op akkoord — wekelijks navragen */}
             <p style={{ ...S.sectieKop, marginTop: 4 }}>📨 Offertes uitstaand
@@ -1414,6 +1582,12 @@ function Overzicht({ ik, status, thuisLijsten, werkLijsten, werkStaat, klanten, 
                 <Tag size={18} color={C.groen} />
                 <span style={{ flex: 1, fontSize: 15 }}>Klanten & projecten</span>
                 <span style={{ fontSize: 13, color: C.muted }}>{klanten.length || ""}</span>
+                <ChevronRight size={16} color={C.licht} />
+              </button>
+              <button style={S.rij} onClick={() => openAfwezigheid()}>
+                <span style={{ fontSize: 17, width: 18, textAlign: "center" }}>🏖️</span>
+                <span style={{ flex: 1, fontSize: 15 }}>Afwezigheid (vakanties)</span>
+                <span style={{ fontSize: 13, color: C.muted }}>{komendeAfwezigheden(afwezigheden, vandaagStr(), 365).length || ""}</span>
                 <ChevronRight size={16} color={C.licht} />
               </button>
               <button style={S.rij} onClick={openBackup}>
@@ -1888,7 +2062,7 @@ function SlimOverzicht({ id, regels, alleRegels, ruimteFilter, setRuimteFilter, 
 // ════════════════════════════════════════════════════════════════════
 // ÉÉN LIJST
 // ════════════════════════════════════════════════════════════════════
-function LijstWeergave({ openPlanning, openCall, doelen, voegToeNaar, vandaag, ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
+function LijstWeergave({ afwezigheden = [], openPlanning, openCall, doelen, voegToeNaar, vandaag, ruimte, lijst, klanten, klantFilter, setKlantFilter, klantVan, voltooidOpen, setVoltooidOpen, chronoRef, terug, vink, ster, openTaak, voegToe, wijzig, verwijder, wisVoltooid, sjabloon, verschuif, zetProject, openLeren, openAkkoord, openAfwijzen, nagevraagd, openOnderdelen, zetDagen, openCallsheet, openOfferteVanAanvraag, zetOpzet, meld, vulPlekken, zetDeadline, openVersie }) {
   const [menu, setMenu] = useState(false);
   const isAanvraag = projectStatus(lijst) === "aanvraag";
   const isOfferte = projectStatus(lijst) === "offerte" || isAanvraag;
@@ -1945,6 +2119,7 @@ function LijstWeergave({ openPlanning, openCall, doelen, voegToeNaar, vandaag, r
         {isProject && <ProjectKop {...{ lijst, klanten, klantVan, sjabloon, verschuif, zetProject, openLeren, openOnderdelen, zetDagen, openCallsheet, zetOpzet, meld, vulPlekken, openVersie, openPlanning }} />}
         {isAanvraag && <AanvraagKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, openOfferteVanAanvraag, zetDeadline }} />}
         {isOfferte && !isAanvraag && <OfferteKop {...{ lijst, klanten, klantVan, zetProject, openAkkoord, openAfwijzen, nagevraagd, meld, openVersie }} />}
+        {ruimte === "werk" && lijst.project && !lijst.project.afgerond && <AfwezigheidMelding conflicten={afwezigheidConflicten(lijst, afwezigheden)} klantVan={klantVan} openPlanning={openPlanning} />}
         {ruimte === "werk" && lijst.project && openCall && <CallsBlok lijst={lijst} openCall={openCall} />}
         {ruimte === "werk" && !isProject && <KlantFilter {...{ klanten, klantFilter, setKlantFilter }} />}
         {isProject && open.length > 0 ? (
@@ -3652,7 +3827,7 @@ function CallTaakRegel({ taak, lopend, vandaag, wijzig, verwijder }) {
   );
 }
 
-function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], voorinvulling = null, sluit, bewaarCall, voegTaakToe, wijzigTaak, verwijderTaak, verwijder }) {
+function CallSheet({ afwezigheden = [], voegAfwezigheidToe = null, klantNaam = "", lijst, callId, vandaag, chronoRef, metSuggesties = [], voorinvulling = null, sluit, bewaarCall, voegTaakToe, wijzigTaak, verwijderTaak, verwijder }) {
   const call = (lijst.project?.calls || []).find(c => c.id === callId) || null;
   // Call bij een vast moment (kickoff, PPM, geplande call): onderwerp, tijd en koppeling.
   const extraVast = { onderwerp: call?.onderwerp || voorinvulling?.onderwerp || "", momentTaakId: call?.momentTaakId || voorinvulling?.momentTaakId || null };
@@ -3780,10 +3955,27 @@ function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], voor
             {spraak.luistert ? <><Square size={11} fill="#FAF6F0" /> Stop</> : <><Mic size={13} /> Inspreken</>}
           </button>
         </div>
+        {(() => {
+          const weg = datum ? (met.trim() ? afwezigOpDatum(afwezigheden, datum, { naam: met }) : afwezigOpDatum(afwezigheden, datum, { klantId: lijst.project?.klantId || "__geen" })) : [];
+          return weg.length ? <p style={{ ...S.hint, color: C.oranje, fontWeight: 700, marginTop: 0 }}>⚠️ {weg.map(a => `${a.naam} is op ${datumKort(datum).toLowerCase()} afwezig (${periodeKort(a).toLowerCase()})`).join(" · ")}</p> : null;
+        })()}
         {spraak.hint && <p style={{ ...S.hint, color: C.oranje, marginTop: 0 }}>{spraak.hint}</p>}
         <textarea aria-label="Notities call" value={notities} onChange={e => { setNotities(e.target.value); gewijzigd({ notities: e.target.value }); }} onBlur={nuBewaren} rows={7}
           placeholder={"Wat is er besproken?\n\nTip: begin een regel met -> of [ ] en het wordt een taaksuggestie:\n-> moodboard sturen vrijdag"}
           style={{ ...S.inp, resize: "vertical", lineHeight: 1.45 }} />
+        {voegAfwezigheidToe && (() => {
+          const g = herkenAfwezigheid(notities, chronoRef.current, new Date());
+          if (!g) return null;
+          const wie = met.trim() || klantNaam || "";
+          const al = afwezigheden.some(a => a.van === g.van && a.tot === g.tot && (!wie || noemtPersoon(a.naam, wie) || noemtPersoon(wie, a.naam)));
+          return (
+            <div data-testid="afw-gevonden" style={{ display: "flex", gap: 8, alignItems: "center", background: "#FFF4E5", border: "1px solid #F1D3A8", borderRadius: 12, padding: "8px 10px", marginTop: 8, fontSize: 13 }}>
+              <span style={{ flex: 1, minWidth: 0 }}>🏖️ Afwezigheid gevonden: <b>{wie || "iemand"}</b> {periodeKort(g).toLowerCase()}</span>
+              {al ? <span style={{ color: C.groen, fontWeight: 700 }}>✓ Staat erin</span>
+                : <button onClick={() => voegAfwezigheidToe({ naam: wie, van: g.van, tot: g.tot, notitie: g.regel.slice(0, 120) })} style={{ ...S.chip(true), padding: "4px 10px", fontSize: 12 }}>＋ Toevoegen</button>}
+            </div>
+          );
+        })()}
 
         <p style={S.label}>✅ Taken uit deze call</p>
         {suggesties.length > 0 && (
@@ -4264,7 +4456,7 @@ function SpelingLabel({ n }) {
   return <span title="Werkdagen speling tot het volgende vaste moment" style={{ fontSize: 11, fontWeight: 700, color: kleur, background: `${kleur}14`, borderRadius: 999, padding: "2px 7px", whiteSpace: "nowrap" }}>{n < 0 ? `${-n} wd te laat` : `${n} wd speling`}</span>;
 }
 
-function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weekendWeg, koppel, wachtDagen, stelVoor, verzetMomentFn, verschuifAnker, planCall, openMomentCall, metSuggesties = [] }) {
+function PlanningSheet({ afwezigheden = [], klantVan = () => null, openAfwezigheid, lijst, vandaag, sluit, schuif, herstel, zetVast, weekendWeg, koppel, wachtDagen, stelVoor, verzetMomentFn, verschuifAnker, planCall, openMomentCall, metSuggesties = [] }) {
   const p = lijst.project || {};
   const heeftKeten = (lijst.items || []).some(i => i.naId && !i.checked);
   const [modus, setModus] = useState(() => { try { return localStorage.getItem("planning-modus") || (heeftKeten ? "keten" : "alles"); } catch { return heeftKeten ? "keten" : "alles"; } });
@@ -4310,6 +4502,10 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
   }
   const stapKnop = { background: C.bg, border: `1px solid ${C.rand2}`, borderRadius: 8, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, color: C.groen, flexShrink: 0 };
   const isVastMoment = (i) => isVastePlanning(i) && !i.vast;
+  const afwConflicten = afwezigheidConflicten(lijst, afwezigheden);
+  const afwVan = (id) => afwConflicten.filter(c => c.item.id === id).map(c => c.afwezigheid);
+  // Relevante afwezigheden voor dit project (klant of ingeplande mensen) — voor de tijdbalk.
+  const afwBanden = afwezigheden.filter(a => (a.klantId && a.klantId === p.klantId) || afwConflicten.some(c => c.afwezigheid.id === a.id));
   function verzetAnker(soort, datum) {
     if (!datum) return;
     const snapshot = snapshotNu();
@@ -4369,6 +4565,7 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
           </div>
         )}
         {melding && <p style={{ ...S.hint, color: C.rood, margin: "0 0 8px" }}>{melding}</p>}
+        <AfwezigheidMelding conflicten={afwConflicten} klantVan={klantVan} compact />
         {inWeekend.length > 0 && (
           <div style={{ background: "#FFF4E5", border: "1px solid #F1D3A8", borderRadius: 12, padding: "10px 12px", margin: "0 0 8px", display: "flex", gap: 10, alignItems: "center" }}>
             <span style={{ flex: 1, fontSize: 13 }}>⚠️ {inWeekend.length} {inWeekend.length === 1 ? "deadline valt" : "deadlines vallen"} in het weekend of op een feestdag.</span>
@@ -4386,6 +4583,11 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
               <input type="date" aria-label="Datum afspraak" value={planOpen.datum} onChange={e => setPlanOpen(v => ({ ...v, datum: e.target.value }))} style={{ ...S.inp, flex: 1, minWidth: 0 }} />
               <input type="time" aria-label="Tijd afspraak" value={planOpen.tijd} onChange={e => setPlanOpen(v => ({ ...v, tijd: e.target.value }))} style={{ ...S.inp, width: 110 }} />
             </div>
+            {(() => {
+              const weg = !planOpen.datum ? [] : planOpen.met?.trim() ? afwezigOpDatum(afwezigheden, planOpen.datum, { naam: planOpen.met }) : afwezigOpDatum(afwezigheden, planOpen.datum, { klantId: p.klantId || "__geen" });
+              const uniek = [...new Map(weg.map(a => [a.id, a])).values()];
+              return uniek.length ? <p style={{ ...S.hint, margin: 0, color: C.oranje, fontWeight: 700 }}>⚠️ {uniek.map(a => `${a.naam} is dan afwezig (${periodeKort(a).toLowerCase()})`).join(" · ")}</p> : null;
+            })()}
             <p style={{ ...S.hint, margin: 0 }}>Komt als vast moment in de planning (met een melding een uur van tevoren) en bij 📞 Calls, waar je straks je notities maakt.</p>
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={() => setPlanOpen(null)} style={{ ...S.knop(C.bg, C.tekst), border: `1px solid ${C.rand2}`, flex: 1 }}>Annuleer</button>
@@ -4397,9 +4599,12 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
             <Plus size={16} /> Call of afspraak inplannen
           </button>
         )}
+        {openAfwezigheid && !planOpen && (
+          <button onClick={openAfwezigheid} style={{ ...S.rij, color: C.muted, fontSize: 13, padding: "4px 4px 8px" }}>🏖️ Afwezigheid (vakanties) beheren{afwBanden.length ? ` · ${afwBanden.length} relevant` : ""}</button>
+        )}
 
         {weergave === "balk" ? (
-          <Tijdbalk lijst={lijst} taken={metDatum} markers={markers} vandaag={vandaag} geraakt={geraakt} verzet={verzet} isVastMoment={isVastMoment} />
+          <Tijdbalk lijst={lijst} taken={metDatum} markers={markers} vandaag={vandaag} geraakt={geraakt} verzet={verzet} isVastMoment={isVastMoment} banden={afwBanden} afwVan={afwVan} />
         ) : (
           <div style={S.kaart}>
             {regels.map((r, n) => {
@@ -4439,6 +4644,11 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
                         style={{ background: "none", border: "none", cursor: "pointer", padding: 4, fontSize: 14, opacity: i.vast ? 1 : 0.3 }}>📌</button>
                     )}
                   </div>
+                  {afwVan(i.id).length > 0 && (
+                    <div style={{ margin: "4px 0 0 72px", fontSize: 12, fontWeight: 700, color: C.oranje }}>
+                      🏖️ {afwVan(i.id).map(a => `${a.naam} afwezig ${periodeKort(a).toLowerCase()}`).join(" · ")}
+                    </div>
+                  )}
                   {vastMoment && (
                     <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 0 72px", flexWrap: "wrap", fontSize: 12 }}>
                       <span style={{ color: C.groen, fontWeight: 700 }}>📍 Vast moment</span>
@@ -4514,7 +4724,7 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
 
 // Tijdbalk: dagen horizontaal, taken als bolletjes die je sleept. Pijlen
 // tonen waar een taak op wacht; draaidag/oplevering/vandaag als lijnen.
-function Tijdbalk({ lijst, taken, markers, vandaag, geraakt, verzet, isVastMoment }) {
+function Tijdbalk({ lijst, taken, markers, vandaag, geraakt, verzet, isVastMoment, banden = [], afwVan = () => [] }) {
   const [zoom, setZoom] = useState("week");
   const [sleep, setSleep] = useState(null); // { id, startX, dagen }
   const scrollRef = useRef(null);
@@ -4587,6 +4797,15 @@ function Tijdbalk({ lijst, taken, markers, vandaag, geraakt, verzet, isVastMomen
               </div>
             ))}
             <div style={{ position: "absolute", left: 0, right: 0, top: kopH - 1, height: 1, background: C.rand2 }} />
+            {/* afwezigheid: oranje band over de periode */}
+            {banden.filter(a => a.tot >= start && a.van <= eind).map((a, n) => {
+              const v = a.van < start ? start : a.van, t = a.tot > eind ? eind : a.tot;
+              return (
+                <div key={`afw${a.id}`} title={`${a.naam} afwezig ${periodeKort(a)}`} style={{ position: "absolute", left: dagenTussen(start, v) * dagB, width: (dagenTussen(v, t) + 1) * dagB, top: kopH, height: hoogte - kopH, background: "repeating-linear-gradient(135deg, rgba(201,125,12,.10) 0 6px, rgba(201,125,12,.04) 6px 12px)", borderLeft: "2px solid rgba(201,125,12,.5)", pointerEvents: "none" }}>
+                  <span style={{ position: "absolute", top: 18 + n * 16, left: 4, fontSize: 10, fontWeight: 700, color: C.oranje, whiteSpace: "nowrap", background: "#FFFFFFCC", borderRadius: 4, padding: "0 3px" }}>🏖️ {a.naam}</span>
+                </div>
+              );
+            })}
             {/* vaste momenten + vandaag */}
             {[...markers, { datum: vandaag, label: "Vandaag", kleur: C.rood }].map((m, n) => (
               <div key={`mk${n}`} title={`${m.label} · ${datumKort(m.datum)}`} style={{ position: "absolute", left: x(m.datum) - 1, top: kopH, width: 2, height: hoogte - kopH, background: m.kleur, opacity: m.label === "Vandaag" ? 0.5 : 0.75 }}>
@@ -4618,7 +4837,7 @@ function Tijdbalk({ lijst, taken, markers, vandaag, geraakt, verzet, isVastMomen
                     style={{ position: "absolute", left: x(i.dueDate) - grootte / 2 + dx, top: yVan.get(i.id) - grootte / 2, width: grootte, height: grootte, padding: 0,
                       borderRadius: vastMoment ? 3 : 999, transform: vastMoment ? "rotate(45deg)" : "none",
                       background: vastMoment ? C.groen : i.dueDate < vandaag ? C.rood : geraakt.includes(i.id) ? "#E3A51C" : C.terra,
-                      border: `2px solid ${i.vast ? C.tekst : "#FFFFFF"}`, boxShadow: "0 1px 3px rgba(0,0,0,.25)", cursor: sleep?.id === i.id ? "grabbing" : "grab", touchAction: "none", zIndex: sleep?.id === i.id ? 3 : 2 }} />
+                      border: `2px solid ${afwVan(i.id).length ? C.oranje : i.vast ? C.tekst : "#FFFFFF"}`, outline: afwVan(i.id).length ? `2px solid ${C.oranje}55` : "none", boxShadow: "0 1px 3px rgba(0,0,0,.25)", cursor: sleep?.id === i.id ? "grabbing" : "grab", touchAction: "none", zIndex: sleep?.id === i.id ? 3 : 2 }} />
                   {doel && <span style={{ position: "absolute", left: x(i.dueDate) + dx + 12, top: yVan.get(i.id) - 22, fontSize: 11, fontWeight: 700, background: C.tekst, color: "#FAF6F0", borderRadius: 6, padding: "2px 6px", whiteSpace: "nowrap", zIndex: 4 }}>{datumKort(isVrijeDag(doel) ? naarWerkdag(doel, sleep.dagen > 0 ? 1 : -1) : doel)}</span>}
                 </div>
               );
