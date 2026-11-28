@@ -430,4 +430,65 @@ sectie("Dynamische planning (schuifPlanning)");
   test("taak op 'vast' schuift niet mee", get(vast, "d").dueDate === "2026-12-08" && get(vast, "c").dueDate === "2026-12-07");
 }
 
+
+sectie("Afhankelijkheden (keten)");
+{
+  const t = (id, d, extra = {}) => ({ id, name: id, category: "pre", dueDate: d, ...extra });
+  const basis = { id: "p", project: { draaidag: "2026-12-10", opleverdatum: "2026-12-18" }, items: [
+    t("regie", "2026-11-30"), t("crew", "2026-12-02"), t("cast", "2026-12-02"), t("callsheet", "2026-12-08"),
+    t("verzekering", "2026-12-04"), t("ppm", "2026-12-03", { onderdeelId: "ppm" }), t("draai", "2026-12-10", { draaidagId: "dag1" }),
+    t("edit", "2026-12-14", { category: "post" }), t("kleur", "2026-12-16", { category: "post" }), t("klaar", "2026-12-01", { checked: true }),
+  ] };
+  const g = (l, id) => l.items.find(i => i.id === id);
+  const af = P.leidAfhankelijkhedenAf(basis);
+  test("voorstel: taken op volgorde per fase gekoppeld", g(af.lijst, "crew").naId === "regie" && g(af.lijst, "verzekering").naId === "cast" && g(af.lijst, "callsheet").naId === "verzekering");
+  test("voorstel: zelfde dag = parallel (zelfde voorganger)", g(af.lijst, "cast").naId === "regie");
+  test("voorstel: wachttijd in werkdagen", g(af.lijst, "crew").naDagen === 2 && g(af.lijst, "callsheet").naDagen === 2);
+  test("voorstel: vaste momenten, afgevinkt en eerste taak niet gekoppeld", !g(af.lijst, "ppm").naId && !g(af.lijst, "draai").naId && !g(af.lijst, "klaar").naId && !g(af.lijst, "regie").naId);
+  test("voorstel: post apart gekoppeld", g(af.lijst, "kleur").naId === "edit" && !g(af.lijst, "edit").naId);
+  test("voorstel: bestaande koppeling blijft (zonder overschrijf)", g(P.leidAfhankelijkhedenAf({ ...basis, items: basis.items.map(i => (i.id === "callsheet" ? { ...i, naId: "regie", naDagen: 5 } : i)) }).lijst, "callsheet").naId === "regie");
+
+  const r = P.schuifKeten(af.lijst, "regie", "2026-12-01");
+  test("keten: opvolgers schuiven mee met hun wachttijd", g(r.lijst, "crew").dueDate === "2026-12-03" && g(r.lijst, "cast").dueDate === "2026-12-03" && g(r.lijst, "verzekering").dueDate === "2026-12-07" && g(r.lijst, "callsheet").dueDate === "2026-12-09");
+  test("keten: niet-gekoppelde taken (post) blijven staan", g(r.lijst, "edit").dueDate === "2026-12-14");
+  test("keten: meegeschoven-lijst", r.meegeschoven.sort().join() === "callsheet,cast,crew,verzekering");
+  const terug = P.schuifKeten(af.lijst, "regie", "2026-11-27");
+  test("keten: naar voren trekt opvolgers mee", g(terug.lijst, "crew").dueDate === "2026-12-01");
+  const midden = P.schuifKeten(af.lijst, "crew", "2026-12-03");
+  test("keten: eigen wachttijd past zich aan; voorganger blijft", g(midden.lijst, "crew").naDagen === 3 && g(midden.lijst, "regie").dueDate === "2026-11-30" && g(midden.lijst, "cast").dueDate === "2026-12-02");
+
+  const k = P.zetAfhankelijkheid(af.lijst, "regie", "callsheet");
+  test("kring wordt geweigerd", !!k.fout && g(k.lijst, "regie").naId === undefined);
+  const z = P.zetAfhankelijkheid(af.lijst, "edit", "callsheet");
+  test("koppeling instellen: wachttijd uit datums", g(z.lijst, "edit").naId === "callsheet" && g(z.lijst, "edit").naDagen === 4);
+  const v = P.zetAfhankelijkheid(af.lijst, "regie", null);
+  test("koppeling weghalen", !("naId" in g(v.lijst, "regie")));
+  const voor = P.zetAfhankelijkheid({ ...basis, items: basis.items.map(i => (i.id === "edit" ? { ...i, dueDate: "2026-12-01" } : i)) }, "edit", "callsheet");
+  test("taak vóór nieuwe voorganger → komt erachter", g(voor.lijst, "edit").dueDate === "2026-12-09");
+  const w = P.zetWachtDagen(af.lijst, "callsheet", 4);
+  test("wachttijd aanpassen verzet de taak", g(w.lijst, "callsheet").dueDate === "2026-12-10" && g(w.lijst, "callsheet").naDagen === 4);
+
+  const vastL = { ...af.lijst, items: af.lijst.items.map(i => (i.id === "callsheet" ? { ...i, vast: true } : i)) };
+  const c = P.schuifKeten(vastL, "verzekering", "2026-12-09");
+  test("vaste opvolger beweegt niet maar geeft conflict", g(c.lijst, "callsheet").dueDate === "2026-12-08" && c.conflicten.includes("callsheet"));
+
+  test("speling pre: werkdagen tot draaidag", P.spelingVan(af.lijst, g(af.lijst, "callsheet")) === 1 && P.spelingVan(af.lijst, g(af.lijst, "regie")) === 7);
+  test("speling post: tot oplevering", P.spelingVan(af.lijst, g(af.lijst, "kleur")) === 1);
+  test("speling negatief als te laat (op draaidag = -1)", P.spelingVan(af.lijst, { id: "x", category: "pre", dueDate: "2026-12-10" }) === -1 && P.spelingVan(af.lijst, { id: "x", category: "pre", dueDate: "2026-12-11" }) === -2);
+  test("geen speling voor vaste momenten", P.spelingVan(af.lijst, g(af.lijst, "ppm")) === null);
+}
+
+
+sectie("Feestdagen");
+{
+  test("Pasen 2027 = 28 maart → 2e Paasdag 29 maart", P.feestdagNaam("2027-03-29") === "2e Paasdag");
+  test("Koningsdag 2027 (di 27 april), 2026 op zondag niet → zaterdag 26 april? nee: 2026-04-27 is ma", P.feestdagNaam("2027-04-27") === "Koningsdag" && P.feestdagNaam("2026-04-27") === "Koningsdag");
+  test("Koningsdag op zondag → zaterdag ervoor (2025)", P.feestdagNaam("2025-04-26") === "Koningsdag");
+  test("Hemelvaart 2027 = 6 mei, 2e Pinksterdag 17 mei", P.feestdagNaam("2027-05-06") === "Hemelvaart" && P.feestdagNaam("2027-05-17") === "2e Pinksterdag");
+  test("Bevrijdingsdag alleen in lustrumjaren", P.feestdagNaam("2030-05-05") === "Bevrijdingsdag" && P.feestdagNaam("2027-05-05") === null);
+  test("kerst en nieuwjaar overgeslagen bij werkdagen", P.naarWerkdag("2026-12-25", -1) === "2026-12-24" && P.plusWerkdagen("2026-12-24", 1) === "2026-12-28" && P.plusWerkdagen("2026-12-31", 1) === "2027-01-04");
+  test("werkdagenTussen telt feestdagen niet", P.werkdagenTussen("2026-12-24", "2026-12-28") === 1);
+  test("taak op de draaidag (sjabloon) is vast", P.isVastePlanning({ anker: "draai", offset: 0, category: "productie" }) && !P.isVastePlanning({ anker: "draai", offset: -3, category: "pre" }));
+}
+
 samenvatting();
