@@ -38,7 +38,7 @@ import {
   leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
   draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond, bezettingKosten, kiesSjabloon,
   maakAanvraag, aanvraagNaarOfferte, zetOfferteDeadline, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
-  isWeekend, naarWerkdag,
+  isWeekend, naarWerkdag, plusWerkdagen, isVastePlanning, schuifPlanning,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte, datumKortNl } from "../lib/intake-logica";
 import { offerteVersies, openVersies, gekozenVersie, vergelijkOffertes, voegOfferteVersieToe, kiesOfferteVersie, synchroniseerPlekken } from "../lib/offerte-versies-logica";
@@ -870,10 +870,13 @@ export default function TakenApp() {
         if (!lijst) return null;
         return (
           <PlanningSheet lijst={lijst} vandaag={vandaag} sluit={() => setSheet(null)}
-            zetDatum={(itemId, datum) => {
-              const i = (lijstVan("werk", lijst.id)?.items || []).find(x => x.id === itemId);
-              zetVelden("werk", lijst.id, itemId, { dueDate: datum, datumHandmatig: true, herinnering: i?.herinnering ? `${datum}T${i.herinnering.slice(11, 16)}` : null });
+            schuif={(itemId, datum, meeschuiven) => {
+              const r = schuifPlanning(lijstVan("werk", lijst.id), itemId, datum, { meeschuiven });
+              zetLijst("werk", r.lijst);
+              return r;
             }}
+            herstel={(snapshot, ids) => wijzigLijst("werk", lijst.id, l => ({ ...l, items: l.items.map(i => (ids.includes(i.id) && snapshot[i.id] ? { ...i, ...snapshot[i.id] } : i)) }))}
+            zetVast={(itemId, vast) => zetVelden("werk", lijst.id, itemId, { vast: vast || false })}
             weekendWeg={(ids) => {
               wijzigLijst("werk", lijst.id, l => ({ ...l, items: l.items.map(i => {
                 if (!ids.includes(i.id)) return i;
@@ -2017,7 +2020,7 @@ function ProjectKop({ lijst, klanten, klantVan, sjabloon, verschuif, zetProject,
         const weekendAantal = (lijst.items || []).filter(i => !i.checked && i.dueDate && isWeekend(i.dueDate) && !i.draaidagId && i.opzetTaak !== "prelight").length;
         return (
           <button onClick={openPlanning} style={{ ...S.knop(C.bg, C.groen), width: "100%", marginTop: 12, border: `1px solid ${C.rand2}` }}>
-            📅 Planning aanpassen {weekendAantal > 0 && <span style={{ fontWeight: 600, color: C.oranje }}>— ⚠️ {weekendAantal} in het weekend</span>}
+            📅 Planning — taken verschuiven {weekendAantal > 0 && <span style={{ fontWeight: 600, color: C.oranje }}>— ⚠️ {weekendAantal} in het weekend</span>}
           </button>
         );
       })()}
@@ -4177,57 +4180,105 @@ function AfwijzenSheet({ lijst, sluit, bevestig }) {
   );
 }
 
-// Planningsoverzicht bij een nieuw project: tik op een datum om hem aan te
-// passen, ✕ om een stap over te slaan. Weekenddagen zijn al vermeden.
-// Planning van een bestaand project in één overzicht: alle open taken met
-// datum, per stuk te verzetten. Plus: weekenddeadlines naar werkdagen.
-// Weekenddeadline → werkdag: taken ná het anker (offset > 0, bv. post) naar
-// de maandag, de rest naar de vrijdag ervoor — maar nooit vóór vandaag.
-function werkdagVoorTaak(i, vandaag) {
-  const richting = (Number(i.offset) || 0) > 0 ? 1 : -1;
-  let d = naarWerkdag(i.dueDate, richting);
-  if (d < vandaag) d = naarWerkdag(i.dueDate, 1);
-  return d;
-}
-
-function PlanningSheet({ lijst, vandaag, sluit, zetDatum, weekendWeg }) {
+// Planning van een project als tijdlijn. Met ‹ › schuif je een taak een
+// werkdag; met 🔗 aan schuiven de taken erna (tot de draaidag of de
+// oplevering) automatisch mee. Draaidag, prelight, kickoff/PPM en taken
+// met 📌 blijven staan. Een verschuiving is ongedaan te maken.
+function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weekendWeg }) {
   const p = lijst.project || {};
-  const vaste = (i) => !!(i.draaidagId || i.opzetTaak === "prelight");
+  const [meeschuiven, setMeeschuiven] = useState(() => { try { return localStorage.getItem("planning-meeschuiven") !== "nee"; } catch { return true; } });
+  const [laatste, setLaatste] = useState(null); // { tekst, snapshot, ids }
+  const [geraakt, setGeraakt] = useState([]);
+  useEffect(() => { if (!geraakt.length) return; const t = setTimeout(() => setGeraakt([]), 2500); return () => clearTimeout(t); }, [geraakt]);
+  const zetMee = (v) => { setMeeschuiven(v); try { localStorage.setItem("planning-meeschuiven", v ? "ja" : "nee"); } catch { /* niets */ } };
   const open = (lijst.items || []).filter(i => !i.checked);
-  const metDatum = open.filter(i => i.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const metDatum = open.filter(i => i.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate) || (isVastePlanning(b) ? 1 : 0) - (isVastePlanning(a) ? 1 : 0));
   const zonder = open.filter(i => !i.dueDate);
-  const inWeekend = metDatum.filter(i => isWeekend(i.dueDate) && !vaste(i));
+  const inWeekend = metDatum.filter(i => isWeekend(i.dueDate) && !i.draaidagId && i.opzetTaak !== "prelight");
+  const eersteDraai = draaidagenVan(p)[0]?.datum || null;
+  const week = (d) => { const x = new Date(`${d}T12:00:00`); const dag = (x.getDay() + 6) % 7; x.setDate(x.getDate() - dag); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+
+  function verzet(taak, datum) {
+    if (!datum || datum === taak.dueDate) return;
+    const snapshot = Object.fromEntries((lijst.items || []).map(i => [i.id, { dueDate: i.dueDate || null, herinnering: i.herinnering || null, datumHandmatig: !!i.datumHandmatig }]));
+    const r = schuif(taak.id, datum, meeschuiven);
+    const ids = [taak.id, ...(r?.meegeschoven || [])];
+    setGeraakt(ids);
+    const n = r?.meegeschoven?.length || 0;
+    setLaatste({ snapshot, ids, tekst: `"${taak.name}" → ${datumKort(datum).toLowerCase()}${n ? ` · ${n} ${n === 1 ? "taak schoof" : "taken schoven"} mee` : ""}` });
+  }
+  const stapKnop = { background: C.bg, border: `1px solid ${C.rand2}`, borderRadius: 8, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, color: C.groen, flexShrink: 0 };
+
+  // Tijdlijn met de vaste momenten ertussen.
+  const markers = [
+    ...draaidagenVan(p).map((d, n, alle) => ({ datum: d.datum, label: `🎬 Draaidag${alle.length > 1 ? ` ${n + 1}` : ""}` })),
+    ...(p.opleverdatum ? [{ datum: p.opleverdatum, label: "📦 Oplevering" }] : []),
+  ];
+  const regels = [];
   let vorigeWeek = null;
-  const week = (d) => { const x = new Date(`${d}T12:00:00`); const dag = (x.getDay() + 6) % 7; x.setDate(x.getDate() - dag); return x.toISOString().slice(0, 10); };
+  const alleDatums = [...metDatum.map(i => ({ soort: "taak", datum: i.dueDate, i })), ...markers.map(m => ({ soort: "marker", ...m }))]
+    .sort((a, b) => a.datum.localeCompare(b.datum) || (a.soort === "marker" ? -1 : 1) - (b.soort === "marker" ? -1 : 1));
+  for (const r of alleDatums) {
+    const w = week(r.datum);
+    if (w !== vorigeWeek) { regels.push({ soort: "week", w }); vorigeWeek = w; }
+    regels.push(r);
+  }
+
   return (
     <div style={S.sheetAchter} onClick={sluit}>
       <div style={S.sheet} onClick={e => e.stopPropagation()} data-testid="planning-sheet">
         <SheetKop titel="📅 Planning" sluit={sluit} />
-        <p style={{ ...S.hint, marginTop: 0 }}>{lijst.icon} {lijst.name}{p.draaidag ? ` · 🎬 ${datumKort(p.draaidag)}` : ""}{p.opleverdatum ? ` · 📦 ${datumKort(p.opleverdatum)}` : ""}. Tik op een datum om hem te verzetten.</p>
+        <p style={{ ...S.hint, marginTop: 0 }}>{lijst.icon} {lijst.name}</p>
+        <button onClick={() => zetMee(!meeschuiven)} aria-pressed={meeschuiven} data-testid="meeschuiven"
+          style={{ ...S.rij, background: meeschuiven ? "#2D4A3E10" : C.bg, border: `1px solid ${meeschuiven ? C.groen : C.rand2}`, borderRadius: 12, padding: "10px 12px", marginBottom: 8 }}>
+          <span style={{ fontSize: 18 }}>{meeschuiven ? "🔗" : "⛓️‍💥"}</span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 14, fontWeight: 700, color: meeschuiven ? C.groen : C.tekst }}>Volgende taken schuiven mee: {meeschuiven ? "aan" : "uit"}</span>
+            <span style={{ display: "block", fontSize: 12, color: C.muted }}>{meeschuiven ? "Verzet je een taak, dan schuift alles erna mee (tot de draaidag of oplevering)." : "Alleen de taak die je verzet verandert."}</span>
+          </span>
+        </button>
+        {laatste && (
+          <div data-testid="planning-melding" style={{ display: "flex", gap: 8, alignItems: "center", background: "#2D4A3E0D", borderRadius: 12, padding: "8px 12px", marginBottom: 8, fontSize: 13 }}>
+            <span style={{ flex: 1, minWidth: 0 }}>✓ {laatste.tekst}</span>
+            <button onClick={() => { herstel(laatste.snapshot, laatste.ids); setGeraakt(laatste.ids); setLaatste(null); }} style={{ ...S.chip(false), padding: "5px 10px", fontSize: 12 }}>↩︎ Ongedaan maken</button>
+          </div>
+        )}
         {inWeekend.length > 0 && (
-          <div style={{ background: "#FFF4E5", border: "1px solid #F1D3A8", borderRadius: 12, padding: "10px 12px", margin: "8px 0", display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ background: "#FFF4E5", border: "1px solid #F1D3A8", borderRadius: 12, padding: "10px 12px", margin: "0 0 8px", display: "flex", gap: 10, alignItems: "center" }}>
             <span style={{ flex: 1, fontSize: 13 }}>⚠️ {inWeekend.length} {inWeekend.length === 1 ? "deadline valt" : "deadlines vallen"} in het weekend.</span>
             <button onClick={() => weekendWeg(inWeekend.map(i => i.id))} style={{ ...S.knop(), padding: "7px 12px", fontSize: 13 }}>Naar werkdagen</button>
           </div>
         )}
         <div style={S.kaart}>
-          {metDatum.map(i => {
-            const w = week(i.dueDate);
-            const nieuweWeek = w !== vorigeWeek; vorigeWeek = w;
+          {regels.map((r, n) => {
+            if (r.soort === "week") return <div key={`w${r.w}`} style={{ padding: "6px 12px", fontSize: 11, fontWeight: 700, color: C.muted, background: C.bg, letterSpacing: 0.4 }}>WEEK VAN {datumKort(r.w).toUpperCase()}</div>;
+            if (r.soort === "marker") return (
+              <div key={`m${n}`} style={{ padding: "8px 12px", fontSize: 13, fontWeight: 700, color: C.groen, background: "#2D4A3E0D", borderBottom: "1px solid #F3EEE3" }}>{r.label} · {datumKort(r.datum)}</div>
+            );
+            const i = r.i;
+            const vast = isVastePlanning(i);
             const weekend = isWeekend(i.dueDate);
             const telaat = i.dueDate < vandaag;
+            const naDraai = eersteDraai && i.category === "pre" && !vast && i.dueDate >= eersteDraai;
+            const licht = geraakt.includes(i.id);
             return (
-              <React.Fragment key={i.id}>
-                {nieuweWeek && <div style={{ padding: "6px 12px", fontSize: 11, fontWeight: 700, color: C.muted, background: C.bg, letterSpacing: 0.4 }}>WEEK VAN {datumKort(w).toUpperCase()}</div>}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #F3EEE3" }}>
-                  <label style={{ width: 96, flexShrink: 0, position: "relative", fontSize: 13, cursor: "pointer", color: telaat ? C.rood : weekend ? C.oranje : C.muted, fontWeight: i.datumHandmatig ? 700 : 400, borderBottom: `1px dashed ${C.rand2}` }}>
-                    {datumKort(i.dueDate)}{weekend ? " ⚠️" : ""}
-                    <input type="date" aria-label={`Datum ${i.name}`} value={i.dueDate} onChange={e => e.target.value && zetDatum(i.id, e.target.value)}
-                      style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", cursor: "pointer" }} />
-                  </label>
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 14 }}>{FASES.find(f => f.id === i.category)?.icon || ""} {i.name}</span>
-                </div>
-              </React.Fragment>
+              <div key={i.id} data-testid="planning-regel" style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid #F3EEE3", background: licht ? "#FFF6D6" : "transparent", transition: "background .6s" }}>
+                {!vast ? <button aria-label={`${i.name} een werkdag eerder`} style={stapKnop} onClick={() => verzet(i, plusWerkdagen(i.dueDate, -1))}><ChevronLeft size={16} /></button> : <span style={{ width: 28, flexShrink: 0 }} />}
+                <label style={{ width: 82, flexShrink: 0, position: "relative", fontSize: 13, textAlign: "center", cursor: "pointer", color: telaat ? C.rood : weekend ? C.oranje : C.muted, fontWeight: i.datumHandmatig ? 700 : 400, borderBottom: `1px dashed ${C.rand2}` }}>
+                  {datumKort(i.dueDate)}{weekend ? " ⚠️" : ""}
+                  <input type="date" aria-label={`Datum ${i.name}`} value={i.dueDate} onChange={e => e.target.value && verzet(i, e.target.value)}
+                    style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", cursor: "pointer" }} />
+                </label>
+                {!vast ? <button aria-label={`${i.name} een werkdag later`} style={stapKnop} onClick={() => verzet(i, plusWerkdagen(i.dueDate, 1))}><ChevronRight size={16} /></button> : <span style={{ width: 28, flexShrink: 0 }} />}
+                <span style={{ flex: 1, minWidth: 0, fontSize: 14, marginLeft: 4 }}>
+                  {FASES.find(f => f.id === i.category)?.icon || ""} {i.name}
+                  {naDraai && <span style={{ display: "block", fontSize: 11, color: C.oranje, fontWeight: 600 }}>⚠️ ligt nu na de draaidag</span>}
+                </span>
+                {!(i.draaidagId || i.opzetTaak === "prelight" || i.onderdeelId === "kickoff" || i.onderdeelId === "ppm") && (
+                  <button aria-label={i.vast ? `${i.name} losmaken` : `${i.name} vastzetten`} title={i.vast ? "Vast — schuift niet mee" : "Vastzetten (schuift niet mee)"} onClick={() => zetVast(i.id, !i.vast)}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: 4, fontSize: 14, opacity: i.vast ? 1 : 0.3 }}>📌</button>
+                )}
+              </div>
             );
           })}
           {!metDatum.length && <p style={{ ...S.hint, padding: 12 }}>Nog geen taken met een datum.</p>}
@@ -4240,7 +4291,7 @@ function PlanningSheet({ lijst, vandaag, sluit, zetDatum, weekendWeg }) {
                 <div key={i.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #F3EEE3" }}>
                   <label style={{ width: 96, flexShrink: 0, position: "relative", fontSize: 13, color: C.groen, cursor: "pointer" }}>
                     ＋ datum
-                    <input type="date" aria-label={`Datum ${i.name}`} value="" onChange={e => e.target.value && zetDatum(i.id, e.target.value)} style={{ position: "absolute", inset: 0, opacity: 0, width: "100%" }} />
+                    <input type="date" aria-label={`Datum ${i.name}`} value="" onChange={e => e.target.value && schuif(i.id, e.target.value, false)} style={{ position: "absolute", inset: 0, opacity: 0, width: "100%" }} />
                   </label>
                   <span style={{ flex: 1, minWidth: 0, fontSize: 14 }}>{i.name}</span>
                 </div>
@@ -4248,12 +4299,23 @@ function PlanningSheet({ lijst, vandaag, sluit, zetDatum, weekendWeg }) {
             </div>
           </>
         )}
-        <p style={{ ...S.hint, marginTop: 10 }}>Verschuif je later de draaidag in de projectkop, dan schuiven zelf gekozen datums evenveel mee.</p>
+        <p style={{ ...S.hint, marginTop: 10 }}>‹ › = een werkdag eerder/later (weekend telt niet). 📌 zet een taak vast. De draaidag zelf verzet je in de projectkop — dan schuift de hele planning mee.</p>
       </div>
     </div>
   );
 }
 
+// Weekenddeadline → werkdag: taken ná het anker (offset > 0, bv. post) naar
+// de maandag, de rest naar de vrijdag ervoor — maar nooit vóór vandaag.
+function werkdagVoorTaak(i, vandaag) {
+  const richting = (Number(i.offset) || 0) > 0 ? 1 : -1;
+  let d = naarWerkdag(i.dueDate, richting);
+  if (d < vandaag) d = naarWerkdag(i.dueDate, 1);
+  return d;
+}
+
+// Planningsoverzicht bij een nieuw project: tik op een datum om hem aan te
+// passen, ✕ om een stap over te slaan. Weekenddagen zijn al vermeden.
 function PlanningVoorbeeld({ voorbeeld, vandaag, verledenNaarVandaag, aanpassing, zet }) {
   const [alles, setAlles] = useState(false);
   const aantalAangepast = Object.keys(aanpassing).length;

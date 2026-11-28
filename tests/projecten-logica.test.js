@@ -400,4 +400,34 @@ sectie("Weekend & aangepaste planning");
   test("eerste navraag niet in het weekend", P.eersteNavraagDatum("2026-11-21", "2026-11-21") === "2026-11-30");
 }
 
+
+sectie("Dynamische planning (schuifPlanning)");
+{
+  test("werkdagenTussen telt za/zo niet", P.werkdagenTussen("2026-11-27", "2026-11-30") === 1 && P.werkdagenTussen("2026-11-30", "2026-11-27") === -1 && P.werkdagenTussen("2026-11-23", "2026-11-30") === 5);
+  test("plusWerkdagen slaat weekend over", P.plusWerkdagen("2026-11-27", 1) === "2026-11-30" && P.plusWerkdagen("2026-11-30", -1) === "2026-11-27" && P.plusWerkdagen("2026-11-25", 3) === "2026-11-30");
+  const t = (id, d, extra = {}) => ({ id, name: id, dueDate: d, ...extra });
+  const l = { id: "p", project: { draaidag: "2026-12-10", opleverdatum: "2026-12-18" }, items: [
+    t("a", "2026-11-30"), t("b", "2026-12-02"), t("c", "2026-12-04", { herinnering: "2026-12-04T09:30" }), t("d", "2026-12-08"),
+    t("ppm", "2026-12-03", { onderdeelId: "ppm" }), t("klaar", "2026-12-03", { checked: true }), t("draai", "2026-12-10", { draaidagId: "dag1" }),
+    t("e", "2026-12-14"), t("f", "2026-12-16"), t("eerder", "2026-11-27"),
+  ] };
+  const get = (r, id) => r.lijst.items.find(i => i.id === id);
+  const r = P.schuifPlanning(l, "b", "2026-12-03");
+  test("verzette taak krijgt nieuwe datum + handmatig", get(r, "b").dueDate === "2026-12-03" && get(r, "b").datumHandmatig);
+  test("volgende taken +1 werkdag (vr → ma)", get(r, "c").dueDate === "2026-12-07" && get(r, "d").dueDate === "2026-12-09");
+  test("herinnering schuift mee met tijd", get(r, "c").herinnering === "2026-12-07T09:30");
+  test("eerdere taak blijft staan", get(r, "a").dueDate === "2026-11-30" && get(r, "eerder").dueDate === "2026-11-27");
+  test("PPM, afgevinkt en draaidag blijven staan", get(r, "ppm").dueDate === "2026-12-03" && get(r, "klaar").dueDate === "2026-12-03" && get(r, "draai").dueDate === "2026-12-10");
+  test("taken na de draaidag schuiven niet mee vanuit pre-productie", get(r, "e").dueDate === "2026-12-14" && get(r, "f").dueDate === "2026-12-16");
+  test("meegeschoven-lijst + werkdagen", r.meegeschoven.sort().join() === "c,d" && r.werkdagen === 1);
+  const terug = P.schuifPlanning(l, "b", "2026-11-30");
+  test("naar voren schuiven werkt ook", get(terug, "c").dueDate === "2026-12-02" && get(terug, "d").dueDate === "2026-12-04");
+  const los = P.schuifPlanning(l, "b", "2026-12-03", { meeschuiven: false });
+  test("zonder meeschuiven: alleen die ene taak", get(los, "c").dueDate === "2026-12-04" && los.meegeschoven.length === 0);
+  const post = P.schuifPlanning(l, "e", "2026-12-15");
+  test("na draaidag: schuift mee tot oplevering", get(post, "f").dueDate === "2026-12-17" && get(post, "d").dueDate === "2026-12-08");
+  const vast = P.schuifPlanning({ ...l, items: l.items.map(i => (i.id === "d" ? { ...i, vast: true } : i)) }, "b", "2026-12-03");
+  test("taak op 'vast' schuift niet mee", get(vast, "d").dueDate === "2026-12-08" && get(vast, "c").dueDate === "2026-12-07");
+}
+
 samenvatting();
