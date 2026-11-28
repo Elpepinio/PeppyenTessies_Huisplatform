@@ -13,7 +13,7 @@
 // gewoon Nederlands, taken via e-mail en plakken vanuit een andere app.
 // ════════════════════════════════════════════════════════════════════
 import { laadPdfjs } from "../lib/pdf-worker";
-import { callActiepunten, callsVan, callTakenVan, callSamenvatting, bewaarCallInProject, verwijderCall } from "../lib/calls-logica";
+import { callActiepunten, callsVan, callTakenVan, callSamenvatting, bewaarCallInProject, verwijderCall, momentTijd, callVoorMoment, isDraaiMoment, verzetMoment, faseVoorDatum, synchroniseerMomentMetCall } from "../lib/calls-logica";
 import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import Link from "next/link";
 import Head from "next/head";
@@ -38,7 +38,7 @@ import {
   leesPlanningUitTaken, onthoudPlanningNamen, planningSuggesties, synchroniseerBuyoutHerinneringen, buyoutStart,
   draaidagenVan, zetDraaidagen, projectBegroting, normaliseerMarge, margeStatus, kostenPlafond, bezettingKosten, kiesSjabloon,
   maakAanvraag, aanvraagNaarOfferte, zetOfferteDeadline, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
-  isWeekend, isVrijeDag, feestdagNaam, naarWerkdag, plusWerkdagen, isVastePlanning, schuifPlanning,
+  isWeekend, isVrijeDag, feestdagNaam, naarWerkdag, plusWerkdagen, tijdMin, isVastePlanning, schuifPlanning,
   schuifKeten, zetAfhankelijkheid, zetWachtDagen, leidAfhankelijkhedenAf, spelingVan, opvolgersVan,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte, datumKortNl } from "../lib/intake-logica";
@@ -871,8 +871,43 @@ export default function TakenApp() {
       {sheet?.soort === "planning" && (() => {
         const lijst = lijstVan("werk", sheet.listId);
         if (!lijst) return null;
+        const klant = klantVan(lijst.project?.klantId);
+        const metSuggesties = [...new Set([
+          ...callsVan(lijst.project).map(c => c.met).filter(Boolean),
+          ...(klant ? [klant.naam] : []),
+          ...contacten.map(c => c.naam).filter(Boolean),
+        ])].slice(0, 60);
         return (
-          <PlanningSheet lijst={lijst} vandaag={vandaag} sluit={() => setSheet(null)}
+          <PlanningSheet lijst={lijst} vandaag={vandaag} sluit={() => setSheet(null)} metSuggesties={metSuggesties}
+            verzetMomentFn={(itemId, waarde, keten) => {
+              const r = verzetMoment(lijstVan("werk", lijst.id), itemId, waarde, { keten });
+              zetLijst("werk", r.lijst);
+              return r;
+            }}
+            verschuifAnker={(data) => {
+              const l = verschuifProject(lijstVan("werk", lijst.id), data);
+              zetLijst("werk", l);
+              return l;
+            }}
+            planCall={({ onderwerp, met, datum, tijd }) => {
+              const l = lijstVan("werk", lijst.id);
+              const callId = uid(), taakId = uid();
+              const naam = `📞 ${onderwerp?.trim() || "Call"}${met?.trim() ? ` met ${met.trim()}` : ""}`;
+              const taak = { ...nieuweTaak({
+                name: naam, category: faseVoorDatum(l.project, datum), dueDate: datum,
+                herinnering: tijd ? `${datum}T${tijdMin(tijd, 60)}` : null, klantId: l.project?.klantId || null, note: tijd ? `Om ${tijd}` : "",
+              }, { wie: ik }), id: taakId, callMoment: true };
+              zetLijst("werk", bewaarCallInProject(l, { id: callId, datum, tijd: tijd || null, met: met || "", onderwerp: onderwerp?.trim() || "Call", momentTaakId: taakId, notities: "" }, [taak], { nieuwId: uid, wie: ik }));
+              return taakId;
+            }}
+            openMomentCall={(taak) => {
+              const l = lijstVan("werk", lijst.id);
+              const bestaand = callVoorMoment(l, taak);
+              setSheet({
+                soort: "call", listId: lijst.id, callId: bestaand?.id || uid(), terug: { soort: "planning", listId: lijst.id },
+                voorinvulling: { datum: taak.dueDate, tijd: momentTijd(taak) || "", met: klant?.naam || "", onderwerp: taak.name.replace(/^📞\s*/, ""), momentTaakId: taak.id },
+              });
+            }}
             schuif={(itemId, datum, modus) => {
               const l = lijstVan("werk", lijst.id);
               const r = modus === "keten" ? schuifKeten(l, itemId, datum) : schuifPlanning(l, itemId, datum, { meeschuiven: modus === "alles" });
@@ -882,12 +917,18 @@ export default function TakenApp() {
             koppel={(itemId, naId) => { const r = zetAfhankelijkheid(lijstVan("werk", lijst.id), itemId, naId); if (!r.fout) zetLijst("werk", r.lijst); return r; }}
             wachtDagen={(itemId, n) => { const r = zetWachtDagen(lijstVan("werk", lijst.id), itemId, n); zetLijst("werk", r.lijst); return r; }}
             stelVoor={(overschrijf) => { const r = leidAfhankelijkhedenAf(lijstVan("werk", lijst.id), { overschrijf }); zetLijst("werk", r.lijst); return r; }}
-            herstel={(snapshot) => wijzigLijst("werk", lijst.id, l => ({ ...l, items: l.items.map(i => {
-              const s = snapshot[i.id];
-              if (!s) return i;
-              const { naId: _a, naDagen: _b, ...rest } = { ...i, dueDate: s.dueDate, herinnering: s.herinnering, datumHandmatig: s.datumHandmatig };
-              return s.naId ? { ...rest, naId: s.naId, naDagen: s.naDagen ?? 0 } : rest;
-            }) }))}
+            herstel={(snapshot) => wijzigLijst("werk", lijst.id, l => ({
+              ...l,
+              // Project-datums en calls terug (draaidag/oplevering/geplande calls).
+              ...(snapshot._project ? { project: { ...l.project, draaidag: snapshot._project.draaidag, opleverdatum: snapshot._project.opleverdatum, calls: snapshot._project.calls, ...(snapshot._project.draaidagen ? { draaidagen: snapshot._project.draaidagen } : {}) } } : {}),
+              // Taken die na de momentopname zijn ingepland (geplande calls) weer weg.
+              items: l.items.filter(i => snapshot[i.id] || !i.callMoment).map(i => {
+                const s = snapshot[i.id];
+                if (!s) return i;
+                const { naId: _a, naDagen: _b, ...rest } = { ...i, dueDate: s.dueDate, herinnering: s.herinnering, note: s.note, datumHandmatig: s.datumHandmatig };
+                return s.naId ? { ...rest, naId: s.naId, naDagen: s.naDagen ?? 0 } : rest;
+              }),
+            }))}
             zetVast={(itemId, vast) => zetVelden("werk", lijst.id, itemId, { vast: vast || false })}
             weekendWeg={(ids) => {
               wijzigLijst("werk", lijst.id, l => ({ ...l, items: l.items.map(i => {
@@ -910,8 +951,9 @@ export default function TakenApp() {
         ])].slice(0, 60);
         return (
           <CallSheet key={sheet.callId} lijst={lijst} callId={sheet.callId} vandaag={vandaag} chronoRef={chronoRef} metSuggesties={metSuggesties}
-            sluit={() => setSheet(null)}
-            bewaarCall={(c) => wijzigLijst("werk", lijst.id, l => bewaarCallInProject(l, c, [], { nieuwId: uid, wie: ik }))}
+            voorinvulling={sheet.voorinvulling || null}
+            sluit={() => setSheet(sheet.terug || null)}
+            bewaarCall={(c) => wijzigLijst("werk", lijst.id, l => synchroniseerMomentMetCall(bewaarCallInProject(l, c, [], { nieuwId: uid, wie: ik }), c))}
             voegTaakToe={(c, t) => wijzigLijst("werk", lijst.id, l => {
               const lopend = !!l.project && !["aanvraag", "offerte"].includes(projectStatus(l));
               const herkomst = `📞 Uit call van ${new Date(`${c.datum || vandaag}T12:00`).toLocaleDateString("nl-NL", { weekday: "short", day: "numeric", month: "short" })}${c.met?.trim() ? ` met ${c.met.trim()}` : ""}`;
@@ -3547,7 +3589,10 @@ function CallsBlok({ lijst, openCall }) {
               <button key={c.id} onClick={() => openCall(c.id)} style={{ ...S.rij, borderBottom: "1px solid #F3EEE3", alignItems: "flex-start" }}>
                 <span style={{ fontSize: 18, lineHeight: "22px" }}>📞</span>
                 <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ display: "block", fontWeight: 600, fontSize: 15 }}>{c.datum ? datumKort(c.datum) : "Call"}{c.met ? ` · ${c.met}` : ""}</span>
+                  <span style={{ display: "block", fontWeight: 600, fontSize: 15 }}>
+                    {c.onderwerp ? `${c.onderwerp.replace(/^📞\s*/, "")} · ` : ""}{c.datum ? datumKort(c.datum) : "Call"}{c.tijd ? ` ${c.tijd}` : ""}{c.met ? ` · ${c.met}` : ""}
+                    {c.datum && c.datum >= vandaagStr() && !String(c.notities || "").trim() && <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: C.blauw, background: "#2C6E8C14", borderRadius: 999, padding: "2px 7px" }}>📅 gepland</span>}
+                  </span>
                   {callSamenvatting(c.notities) && <span style={{ display: "block", fontSize: 13, color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{callSamenvatting(c.notities)}</span>}
                   {taken.length > 0 && <span style={{ display: "block", fontSize: 12, color: open ? C.oranje : C.groen, fontWeight: 600, marginTop: 2 }}>{taken.length} {taken.length === 1 ? "taak" : "taken"}{open ? ` · ${open} open` : " · alles klaar ✓"}</span>}
                 </span>
@@ -3607,18 +3652,21 @@ function CallTaakRegel({ taak, lopend, vandaag, wijzig, verwijder }) {
   );
 }
 
-function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], sluit, bewaarCall, voegTaakToe, wijzigTaak, verwijderTaak, verwijder }) {
+function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], voorinvulling = null, sluit, bewaarCall, voegTaakToe, wijzigTaak, verwijderTaak, verwijder }) {
   const call = (lijst.project?.calls || []).find(c => c.id === callId) || null;
+  // Call bij een vast moment (kickoff, PPM, geplande call): onderwerp, tijd en koppeling.
+  const extraVast = { onderwerp: call?.onderwerp || voorinvulling?.onderwerp || "", momentTaakId: call?.momentTaakId || voorinvulling?.momentTaakId || null };
   const lopend = !!lijst.project && !["aanvraag", "offerte"].includes(projectStatus(lijst));
   const standaardFase = lopend ? (FASES.find(f => (lijst.items || []).some(i => i.category === f.id && !i.checked)) || FASES[0]).id : null;
   // Startwaarden: de bewaarde call, of een nieuwere kopie op dit toestel.
   const [start] = useState(() => {
-    const basis = { datum: call?.datum || vandaag, met: call?.met || "", notities: call?.notities || "" };
+    const basis = { datum: call?.datum || voorinvulling?.datum || vandaag, met: call?.met ?? voorinvulling?.met ?? "", notities: call?.notities || "", tijd: call?.tijd || voorinvulling?.tijd || "" };
     const c = leesCallConcept(callId);
     const nieuwer = c && (!call || c.t > (call.bijgewerktOp || 0) + 2000) && (c.notities !== basis.notities || c.met !== basis.met);
-    return nieuwer ? { datum: c.datum || basis.datum, met: c.met || "", notities: c.notities || "", hersteld: true } : basis;
+    return nieuwer ? { datum: c.datum || basis.datum, met: c.met || "", notities: c.notities || "", tijd: c.tijd ?? basis.tijd, hersteld: true } : basis;
   });
   const [datum, setDatum] = useState(start.datum);
+  const [tijd, setTijd] = useState(start.tijd || "");
   const [met, setMet] = useState(start.met);
   const [notities, setNotities] = useState(start.notities);
   const [invoer, setInvoer] = useState("");
@@ -3627,10 +3675,10 @@ function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], slui
   const [status, setStatus] = useState(start.hersteld ? "hersteld" : call ? "bewaard" : "leeg");
   const spraak = useSpraak();
   const spraakBasis = useRef("");
-  const laatste = useRef({ datum, met, notities });
+  const laatste = useRef({ datum, met, notities, tijd });
   const wachtend = useRef(!!start.hersteld);
   const timer = useRef(null);
-  laatste.current = { datum, met, notities };
+  laatste.current = { datum, met, notities, tijd };
 
   const bestaatAl = !!call;
   const heeftInhoud = (v) => !!(v.notities.trim() || v.met.trim());
@@ -3639,7 +3687,7 @@ function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], slui
     if (!wachtend.current) return;
     const v = laatste.current;
     if (!bestaatAl && !heeftInhoud(v)) { wachtend.current = false; return; }
-    bewaarCall({ id: callId, ...v });
+    bewaarCall({ id: callId, ...v, ...extraVast });
     wachtend.current = false;
     setStatus("bewaard");
   }
@@ -3672,7 +3720,7 @@ function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], slui
   function maakTaak(tekst) {
     const slim = ontleedSnelleInvoer(tekst, chronoRef.current, new Date());
     const titel = (slim.titel || tekst).trim();
-    voegTaakToe({ id: callId, ...laatste.current }, {
+    voegTaakToe({ id: callId, ...laatste.current, ...extraVast }, {
       titel: titel.charAt(0).toUpperCase() + titel.slice(1), bron: tekst, fase: standaardFase,
       dueDate: slim.dueDate || null, herinnering: slim.herinnering || null,
     });
@@ -3704,15 +3752,19 @@ function CallSheet({ lijst, callId, vandaag, chronoRef, metSuggesties = [], slui
   return (
     <div style={S.sheetAchter} onClick={klaar}>
       <div style={S.sheet} onClick={e => e.stopPropagation()} data-testid="call-sheet">
-        <SheetKop titel={bestaatAl ? "📞 Call" : "📞 Nieuwe call"} sluit={klaar} />
+        <SheetKop titel={extraVast.onderwerp ? `📞 ${extraVast.onderwerp.replace(/^📞\s*/, "")}` : bestaatAl ? "📞 Call" : "📞 Nieuwe call"} sluit={klaar} />
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: -4 }}>
-          <p style={{ ...S.hint, margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lijst.icon} {lijst.name}</p>
+          <p style={{ ...S.hint, margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lijst.icon} {lijst.name}{extraVast.momentTaakId ? " · 📌 staat in de planning" : ""}</p>
           <span data-testid="call-status" style={{ fontSize: 12, fontWeight: 600, color: STATUS.k, whiteSpace: "nowrap" }}>{STATUS.t}</span>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <div style={{ flex: "0 0 150px" }}>
             <p style={{ ...S.label, marginTop: 8 }}>Datum</p>
             <input type="date" aria-label="Datum call" value={datum || ""} onChange={e => { setDatum(e.target.value); gewijzigd({ datum: e.target.value }); }} style={S.inp} />
+          </div>
+          <div style={{ flex: "0 0 96px" }}>
+            <p style={{ ...S.label, marginTop: 8 }}>Tijd</p>
+            <input type="time" aria-label="Tijd call" value={tijd || ""} onChange={e => { setTijd(e.target.value); gewijzigd({ tijd: e.target.value }); }} style={{ ...S.inp, padding: "10px 8px" }} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <p style={{ ...S.label, marginTop: 8 }}>Met wie</p>
@@ -4212,7 +4264,7 @@ function SpelingLabel({ n }) {
   return <span title="Werkdagen speling tot het volgende vaste moment" style={{ fontSize: 11, fontWeight: 700, color: kleur, background: `${kleur}14`, borderRadius: 999, padding: "2px 7px", whiteSpace: "nowrap" }}>{n < 0 ? `${-n} wd te laat` : `${n} wd speling`}</span>;
 }
 
-function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weekendWeg, koppel, wachtDagen, stelVoor }) {
+function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weekendWeg, koppel, wachtDagen, stelVoor, verzetMomentFn, verschuifAnker, planCall, openMomentCall, metSuggesties = [] }) {
   const p = lijst.project || {};
   const heeftKeten = (lijst.items || []).some(i => i.naId && !i.checked);
   const [modus, setModus] = useState(() => { try { return localStorage.getItem("planning-modus") || (heeftKeten ? "keten" : "alles"); } catch { return heeftKeten ? "keten" : "alles"; } });
@@ -4221,6 +4273,8 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
   const [geraakt, setGeraakt] = useState([]);
   const [koppelOpen, setKoppelOpen] = useState(null);
   const [melding, setMelding] = useState(null);
+  const [momentOpen, setMomentOpen] = useState(null); // { id, datum, tijd }
+  const [planOpen, setPlanOpen] = useState(null); // { onderwerp, met, datum, tijd }
   useEffect(() => { if (!geraakt.length) return; const t = setTimeout(() => setGeraakt([]), 2500); return () => clearTimeout(t); }, [geraakt]);
   const zetModus = (m) => { setModus(m); try { localStorage.setItem("planning-modus", m); } catch { /* niets */ } };
   const open = (lijst.items || []).filter(i => !i.checked);
@@ -4229,18 +4283,23 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
   const zonder = open.filter(i => !i.dueDate);
   const inWeekend = metDatum.filter(i => isVrijeDag(i.dueDate) && !isVastePlanning(i));
   const markers = [
-    ...draaidagenVan(p).map((d, n, alle) => ({ datum: d.datum, label: `🎬 Draaidag${alle.length > 1 ? ` ${n + 1}` : ""}`, kleur: C.groen })),
-    ...(p.opleverdatum ? [{ datum: p.opleverdatum, label: "📦 Oplevering", kleur: "#2C6E8C" }] : []),
+    ...draaidagenVan(p).map((d, n, alle) => ({ datum: d.datum, label: `🎬 Draaidag${alle.length > 1 ? ` ${n + 1}` : ""}`, kleur: C.groen, ...(n === 0 ? { anker: "draaidag" } : {}) })),
+    ...(p.opleverdatum ? [{ datum: p.opleverdatum, label: "📦 Oplevering", kleur: "#2C6E8C", anker: "opleverdatum" }] : []),
   ];
 
-  function snapshotNu() { return Object.fromEntries((lijst.items || []).map(i => [i.id, { dueDate: i.dueDate || null, herinnering: i.herinnering || null, datumHandmatig: !!i.datumHandmatig, naId: i.naId || null, naDagen: i.naDagen ?? null }])); }
-  function verzet(taak, datum) {
-    if (!datum || datum === taak.dueDate) return;
+  function snapshotNu() {
+    return {
+      ...Object.fromEntries((lijst.items || []).map(i => [i.id, { dueDate: i.dueDate || null, herinnering: i.herinnering || null, note: i.note || "", datumHandmatig: !!i.datumHandmatig, naId: i.naId || null, naDagen: i.naDagen ?? null }])),
+      _project: { draaidag: p.draaidag || null, draaidagen: p.draaidagen || null, opleverdatum: p.opleverdatum || null, calls: p.calls || [] },
+    };
+  }
+  function verzet(taak, datum, tijd) {
+    if (!datum || (datum === taak.dueDate && (!tijd || tijd === momentTijd(taak)))) return;
     const snapshot = snapshotNu();
-    const r = schuif(taak.id, datum, modus);
+    const r = isVastMoment(taak) ? verzetMomentFn(taak.id, { datum, tijd }, modus === "keten") : schuif(taak.id, datum, modus);
     const n = r?.meegeschoven?.length || 0;
     setGeraakt([taak.id, ...(r?.meegeschoven || [])]);
-    setLaatste({ snapshot, ids: Object.keys(snapshot), tekst: `"${taak.name}" → ${datumKort(datum).toLowerCase()}${n ? ` · ${n} ${n === 1 ? "taak schoof" : "taken schoven"} mee` : ""}${r?.conflicten?.length ? ` · ⚠️ ${r.conflicten.length} vaste ${r.conflicten.length === 1 ? "taak komt" : "taken komen"} in de knel` : ""}` });
+    setLaatste({ snapshot, ids: Object.keys(snapshot), tekst: `"${taak.name}" → ${datumKort(datum).toLowerCase()}${tijd ? ` om ${tijd}` : ""}${r?.draaidag ? " (draaidag verzet)" : ""}${n ? ` · ${n} ${n === 1 ? "taak schoof" : "taken schoven"} mee` : ""}${r?.conflicten?.length ? ` · ⚠️ ${r.conflicten.length} vaste ${r.conflicten.length === 1 ? "taak komt" : "taken komen"} in de knel` : ""}` });
   }
   function koppelAan(taak, naId) {
     const snapshot = snapshotNu();
@@ -4251,6 +4310,23 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
   }
   const stapKnop = { background: C.bg, border: `1px solid ${C.rand2}`, borderRadius: 8, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, color: C.groen, flexShrink: 0 };
   const isVastMoment = (i) => isVastePlanning(i) && !i.vast;
+  function verzetAnker(soort, datum) {
+    if (!datum) return;
+    const snapshot = snapshotNu();
+    const voor = new Map((lijst.items || []).map(i => [i.id, i.dueDate]));
+    const nieuw = verschuifAnker({ [soort]: datum });
+    const ids = (nieuw?.items || []).filter(i => voor.get(i.id) !== i.dueDate).map(i => i.id);
+    setGeraakt(ids);
+    setLaatste({ snapshot, tekst: `${soort === "draaidag" ? "🎬 Draaidag" : "📦 Oplevering"} → ${datumKort(datum).toLowerCase()} · ${ids.length} ${ids.length === 1 ? "taak schoof" : "taken schoven"} mee` });
+  }
+  function bevestigPlan() {
+    if (!planOpen?.datum) return;
+    const snapshot = snapshotNu();
+    const id = planCall(planOpen);
+    setGeraakt(id ? [id] : []);
+    setLaatste({ snapshot, tekst: `📞 ${planOpen.onderwerp || "Call"} ingepland op ${datumKort(planOpen.datum).toLowerCase()}${planOpen.tijd ? ` om ${planOpen.tijd}` : ""}` });
+    setPlanOpen(null);
+  }
 
   // Lijstweergave: weken + vaste momenten tussen de taken.
   const week = (d) => { const x = new Date(`${d}T12:00:00`); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
@@ -4300,13 +4376,45 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
           </div>
         )}
 
+        {planOpen ? (
+          <div data-testid="plan-call" style={{ background: C.bg, border: `1px solid ${C.rand2}`, borderRadius: 12, padding: 12, margin: "0 0 8px", display: "grid", gap: 8 }}>
+            <b style={{ fontSize: 14 }}>📞 Call of afspraak inplannen</b>
+            <input aria-label="Onderwerp" value={planOpen.onderwerp} onChange={e => setPlanOpen(v => ({ ...v, onderwerp: e.target.value }))} placeholder="Bijv. Review rough cut, Locatiebezoek, Call regisseur" style={S.inp} />
+            <input aria-label="Met wie (gepland)" list="plan-met" value={planOpen.met} onChange={e => setPlanOpen(v => ({ ...v, met: e.target.value }))} placeholder="Met wie (optioneel)" style={S.inp} />
+            <datalist id="plan-met">{metSuggesties.map(n => <option key={n} value={n} />)}</datalist>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input type="date" aria-label="Datum afspraak" value={planOpen.datum} onChange={e => setPlanOpen(v => ({ ...v, datum: e.target.value }))} style={{ ...S.inp, flex: 1, minWidth: 0 }} />
+              <input type="time" aria-label="Tijd afspraak" value={planOpen.tijd} onChange={e => setPlanOpen(v => ({ ...v, tijd: e.target.value }))} style={{ ...S.inp, width: 110 }} />
+            </div>
+            <p style={{ ...S.hint, margin: 0 }}>Komt als vast moment in de planning (met een melding een uur van tevoren) en bij 📞 Calls, waar je straks je notities maakt.</p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setPlanOpen(null)} style={{ ...S.knop(C.bg, C.tekst), border: `1px solid ${C.rand2}`, flex: 1 }}>Annuleer</button>
+              <button disabled={!planOpen.datum} onClick={bevestigPlan} style={{ ...S.knop(), flex: 2, opacity: planOpen.datum ? 1 : 0.5 }}>Inplannen</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setPlanOpen({ onderwerp: "", met: "", datum: plusWerkdagen(vandaag, 1), tijd: "10:00" })} style={{ ...S.rij, color: C.groen, fontWeight: 700, fontSize: 14, padding: "8px 4px", marginBottom: 4 }}>
+            <Plus size={16} /> Call of afspraak inplannen
+          </button>
+        )}
+
         {weergave === "balk" ? (
           <Tijdbalk lijst={lijst} taken={metDatum} markers={markers} vandaag={vandaag} geraakt={geraakt} verzet={verzet} isVastMoment={isVastMoment} />
         ) : (
           <div style={S.kaart}>
             {regels.map((r, n) => {
               if (r.soort === "week") return <div key={`w${r.w}`} style={{ padding: "6px 12px", fontSize: 11, fontWeight: 700, color: C.muted, background: C.bg, letterSpacing: 0.4 }}>WEEK VAN {datumKort(r.w).toUpperCase()}</div>;
-              if (r.soort === "marker") return <div key={`m${n}`} style={{ padding: "8px 12px", fontSize: 13, fontWeight: 700, color: r.kleur, background: `${r.kleur}12`, borderBottom: "1px solid #F3EEE3" }}>{r.label} · {datumKort(r.datum)}</div>;
+              if (r.soort === "marker") return (
+                <div key={`m${n}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", fontSize: 13, fontWeight: 700, color: r.kleur, background: `${r.kleur}12`, borderBottom: "1px solid #F3EEE3" }}>
+                  <span style={{ flex: 1 }}>{r.label} · {datumKort(r.datum)}</span>
+                  {r.anker && (
+                    <label style={{ position: "relative", fontSize: 12, fontWeight: 600, color: r.kleur, cursor: "pointer", border: `1px solid ${r.kleur}55`, borderRadius: 999, padding: "3px 10px", background: "#FFFFFF" }}>
+                      ✏️ Verzetten
+                      <input type="date" aria-label={`${r.label} verzetten`} value={r.datum} onChange={e => e.target.value && verzetAnker(r.anker, e.target.value)} style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", cursor: "pointer" }} />
+                    </label>
+                  )}
+                </div>
+              );
               const i = r.i;
               const vast = isVastePlanning(i);
               const vastMoment = isVastMoment(i);
@@ -4317,19 +4425,37 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
               return (
                 <div key={i.id} data-testid="planning-regel" style={{ padding: "7px 10px", borderBottom: "1px solid #F3EEE3", background: geraakt.includes(i.id) ? "#FFF6D6" : "transparent", transition: "background .6s" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {!vast ? <button aria-label={`${i.name} een werkdag eerder`} style={stapKnop} onClick={() => verzet(i, plusWerkdagen(i.dueDate, -1))}><ChevronLeft size={16} /></button> : <span style={{ width: 28, flexShrink: 0 }} />}
+                    <button aria-label={`${i.name} een werkdag eerder`} style={stapKnop} onClick={() => verzet(i, plusWerkdagen(i.dueDate, -1))}><ChevronLeft size={16} /></button>
                     <label style={{ width: 82, flexShrink: 0, position: "relative", fontSize: 13, textAlign: "center", cursor: "pointer", color: telaat ? C.rood : weekend ? C.oranje : C.muted, fontWeight: i.datumHandmatig ? 700 : 400, borderBottom: `1px dashed ${C.rand2}` }}>
                       {datumKort(i.dueDate)}{weekend ? " ⚠️" : ""}
+                      {vastMoment && momentTijd(i) && <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: C.groen }}>{momentTijd(i)}</span>}
                       {feestdagNaam(i.dueDate) && <span style={{ display: "block", fontSize: 10, color: C.oranje }}>{feestdagNaam(i.dueDate)}</span>}
                       <input type="date" aria-label={`Datum ${i.name}`} value={i.dueDate} onChange={e => e.target.value && verzet(i, e.target.value)} style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", cursor: "pointer" }} />
                     </label>
-                    {!vast ? <button aria-label={`${i.name} een werkdag later`} style={stapKnop} onClick={() => verzet(i, plusWerkdagen(i.dueDate, 1))}><ChevronRight size={16} /></button> : <span style={{ width: 28, flexShrink: 0 }} />}
+                    <button aria-label={`${i.name} een werkdag later`} style={stapKnop} onClick={() => verzet(i, plusWerkdagen(i.dueDate, 1))}><ChevronRight size={16} /></button>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 14, marginLeft: 4 }}>{FASES.find(f => f.id === i.category)?.icon || ""} {i.name}</span>
                     {!vastMoment && (
                       <button aria-label={i.vast ? `${i.name} losmaken` : `${i.name} vastzetten`} title={i.vast ? "Vast — schuift niet mee" : "Vastzetten"} onClick={() => zetVast(i.id, !i.vast)}
                         style={{ background: "none", border: "none", cursor: "pointer", padding: 4, fontSize: 14, opacity: i.vast ? 1 : 0.3 }}>📌</button>
                     )}
                   </div>
+                  {vastMoment && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 0 72px", flexWrap: "wrap", fontSize: 12 }}>
+                      <span style={{ color: C.groen, fontWeight: 700 }}>📍 Vast moment</span>
+                      {isDraaiMoment(i) ? (
+                        <span style={{ color: C.muted }}>verzetten = de draaidag verzetten (planning schuift mee)</span>
+                      ) : (
+                        <>
+                          <label style={{ display: "flex", alignItems: "center", gap: 4, color: C.muted }}>🕒
+                            <input type="time" aria-label={`Tijd ${i.name}`} value={momentTijd(i) || ""} onChange={e => e.target.value && verzet(i, i.dueDate, e.target.value)} style={{ border: `1px solid ${C.rand2}`, borderRadius: 8, padding: "3px 6px", fontSize: 14, fontFamily: "inherit", background: C.kaart, color: C.tekst }} />
+                          </label>
+                          <button onClick={() => openMomentCall(i)} style={{ ...S.chip(!!callVoorMoment(lijst, i)), padding: "3px 10px", fontSize: 12 }}>
+                            📞 {callVoorMoment(lijst, i)?.notities?.trim() ? "Call-notities" : "Notities maken"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                   {!vastMoment && (
                     <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "4px 0 0 72px", flexWrap: "wrap" }}>
                       <button aria-label={`Afhankelijkheid ${i.name}`} onClick={() => setKoppelOpen(koppelOpen === i.id ? null : i.id)}
@@ -4380,7 +4506,7 @@ function PlanningSheet({ lijst, vandaag, sluit, schuif, herstel, zetVast, weeken
             </div>
           </>
         )}
-        <p style={{ ...S.hint, marginTop: 10 }}>{weergave === "balk" ? "Sleep een bolletje naar een andere dag. " : "‹ › = een werkdag eerder/later. "}Weekenden tellen niet mee. 📌 zet een taak vast. De draaidag zelf verzet je in de projectkop.</p>
+        <p style={{ ...S.hint, marginTop: 10 }}>{weergave === "balk" ? "Sleep een bolletje naar een andere dag. " : "‹ › = een werkdag eerder/later. "}Weekenden en feestdagen tellen niet mee. 📍 Vaste momenten (draaidag, kickoff, PPM, geplande calls) schuiven nooit vanzelf, maar je kunt ze wel zelf verzetten. 📌 zet een gewone taak vast.</p>
       </div>
     </div>
   );
@@ -4415,7 +4541,6 @@ function Tijdbalk({ lijst, taken, markers, vandaag, geraakt, verzet, isVastMomen
   }, [zoom]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function neer(e, i) {
-    if (isVastePlanning(i)) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture?.(e.pointerId);
     setSleep({ id: i.id, startX: e.clientX, dagen: 0 });
@@ -4488,12 +4613,12 @@ function Tijdbalk({ lijst, taken, markers, vandaag, geraakt, verzet, isVastMomen
               const grootte = 16;
               return (
                 <div key={i.id}>
-                  <button aria-label={`${i.name} · ${datumKort(i.dueDate)}${vast ? " (vast)" : " — slepen om te verzetten"}`} data-testid="balk-taak" data-id={i.id}
+                  <button aria-label={`${i.name} · ${datumKort(i.dueDate)}${vast ? " (vast moment)" : ""} — slepen om te verzetten`} data-testid="balk-taak" data-id={i.id}
                     onPointerDown={e => neer(e, i)} onPointerUp={() => los(i)} onPointerCancel={() => setSleep(null)}
                     style={{ position: "absolute", left: x(i.dueDate) - grootte / 2 + dx, top: yVan.get(i.id) - grootte / 2, width: grootte, height: grootte, padding: 0,
                       borderRadius: vastMoment ? 3 : 999, transform: vastMoment ? "rotate(45deg)" : "none",
                       background: vastMoment ? C.groen : i.dueDate < vandaag ? C.rood : geraakt.includes(i.id) ? "#E3A51C" : C.terra,
-                      border: `2px solid ${i.vast ? C.tekst : "#FFFFFF"}`, boxShadow: "0 1px 3px rgba(0,0,0,.25)", cursor: vast ? "default" : sleep?.id === i.id ? "grabbing" : "grab", touchAction: "none", zIndex: sleep?.id === i.id ? 3 : 2 }} />
+                      border: `2px solid ${i.vast ? C.tekst : "#FFFFFF"}`, boxShadow: "0 1px 3px rgba(0,0,0,.25)", cursor: sleep?.id === i.id ? "grabbing" : "grab", touchAction: "none", zIndex: sleep?.id === i.id ? 3 : 2 }} />
                   {doel && <span style={{ position: "absolute", left: x(i.dueDate) + dx + 12, top: yVan.get(i.id) - 22, fontSize: 11, fontWeight: 700, background: C.tekst, color: "#FAF6F0", borderRadius: 6, padding: "2px 6px", whiteSpace: "nowrap", zIndex: 4 }}>{datumKort(isVrijeDag(doel) ? naarWerkdag(doel, sleep.dagen > 0 ? 1 : -1) : doel)}</span>}
                 </div>
               );

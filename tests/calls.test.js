@@ -53,4 +53,38 @@ l = L.verwijderCall(l, "id1");
 test("verwijderen: call weg", !l.project.calls.some(c => c.id === "id1"));
 test("verwijderen: taken blijven, zonder callId", l.items.length === 4 && !l.items.some(i => i.callId));
 
+
+sectie("Vaste momenten & geplande calls");
+{
+  const t = (id, d, extra = {}) => ({ id, name: id, category: "pre", dueDate: d, ...extra });
+  let l = { id: "p", project: { draaidag: "2026-12-10", opleverdatum: "2026-12-18", calls: [] }, items: [
+    t("ppm", "2026-12-03", { onderdeelId: "ppm", note: "Om 10:00", herinnering: "2026-12-03T09:00" }),
+    t("callsheet", "2026-12-07", { naId: "ppm", naDagen: 2 }),
+    t("draai", "2026-12-10", { anker: "draai", offset: 0, category: "productie" }),
+    t("backup", "2026-12-10", { anker: "draai", offset: 0, category: "productie" }),
+    t("script", "2026-12-04", { anker: "draai", offset: -4 }),
+    t("edit", "2026-12-14", { anker: "draai", offset: 2, category: "post" }),
+  ] };
+  const g = (x, id) => x.items.find(i => i.id === id);
+  test("momentTijd uit notitie", L.momentTijd(g(l, "ppm")) === "10:00" && L.momentTijd({ herinnering: "2026-12-01T14:30" }) === "14:30" && L.momentTijd({}) === null);
+  const r = L.verzetMoment(l, "ppm", { datum: "2026-12-04", tijd: "14:00" });
+  test("PPM verzet: datum, notitie en herinnering (uur ervoor)", g(r.lijst, "ppm").dueDate === "2026-12-04" && g(r.lijst, "ppm").note === "Om 14:00" && g(r.lijst, "ppm").herinnering === "2026-12-04T13:00");
+  test("PPM verzet: wachtende taak schuift mee", g(r.lijst, "callsheet").dueDate === "2026-12-08");
+  const d = L.verzetMoment(l, "draai", { datum: "2026-12-15" });
+  test("draaidag-moment verzet de draaidag van het project", d.lijst.project.draaidag === "2026-12-15" && g(d.lijst, "draai").dueDate === "2026-12-15" && g(d.lijst, "backup").dueDate === "2026-12-15");
+  test("draaidag: planning eromheen schuift mee", g(d.lijst, "script").dueDate === "2026-12-11" && g(d.lijst, "edit").dueDate === "2026-12-17");
+  // Geplande call als moment
+  const call = { id: "c1", datum: "2026-12-02", tijd: "15:30", met: "Leonie", onderwerp: "Review moodboard", momentTaakId: "mom" };
+  l = L.bewaarCallInProject({ ...l, items: [...l.items, t("mom", "2026-12-02", { vast: true, callMoment: true, note: "Om 15:30" })] }, call, [], { nieuwId: () => "x", nu: 1 });
+  test("call bewaart tijd, onderwerp en moment", l.project.calls[0].tijd === "15:30" && l.project.calls[0].onderwerp === "Review moodboard" && l.project.calls[0].momentTaakId === "mom");
+  const l2 = L.bewaarCallInProject(l, { id: "c1", datum: "2026-12-02", met: "Leonie", notities: "x" }, [], { nu: 2 });
+  test("bijwerken zonder die velden behoudt ze", l2.project.calls[0].tijd === "15:30" && l2.project.calls[0].momentTaakId === "mom");
+  test("callVoorMoment", L.callVoorMoment(l, g(l, "mom"))?.id === "c1");
+  const m = L.verzetMoment(l, "mom", { datum: "2026-12-03", tijd: "11:00" });
+  test("moment verzetten → call krijgt nieuwe datum/tijd", m.lijst.project.calls[0].datum === "2026-12-03" && m.lijst.project.calls[0].tijd === "11:00");
+  const s2 = L.synchroniseerMomentMetCall(l, { ...l.project.calls[0], datum: "2026-12-04", tijd: "09:30" });
+  test("call verzetten → moment in planning mee", g(s2, "mom").dueDate === "2026-12-04" && L.momentTijd(g(s2, "mom")) === "09:30");
+  test("fase op datum", L.faseVoorDatum(l.project, "2026-12-01") === "pre" && L.faseVoorDatum(l.project, "2026-12-10") === "productie" && L.faseVoorDatum(l.project, "2026-12-11") === "post");
+}
+
 samenvatting();
