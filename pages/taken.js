@@ -43,7 +43,7 @@ import {
   isWeekend, isVrijeDag, feestdagNaam, naarWerkdag, plusWerkdagen, tijdMin, isVastePlanning, schuifPlanning,
   schuifKeten, zetAfhankelijkheid, zetWachtDagen, leidAfhankelijkhedenAf, spelingVan, opvolgersVan,
   voorgangersVan, duurVan, startVan, voegVoorgangerToe, verwijderVoorganger, zetDuur, isKritiek, zetEigenVrijeDagen,
-  bewaarKetenInSjabloon, vergelijkPlanning, planningWaarschuwingen,
+  bewaarKetenInSjabloon, vergelijkPlanning, planningWaarschuwingen, REGEL_ZELF, regelZelfIds,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte, datumKortNl } from "../lib/intake-logica";
 import { offerteVersies, openVersies, vergelijkOffertes, voegOfferteVersieToe, kiesOfferteVersie, synchroniseerPlekken } from "../lib/offerte-versies-logica";
@@ -279,6 +279,7 @@ export default function TakenApp() {
   // van het eerste gesprek (als die bij de start zijn ingevuld) bewaren.
   function rondStartAf(lijst, opties) {
     let l = pasOpzetToe(lijst, opties.opzet || {}, { vandaag, wie: ik, nieuwId: uid });
+    if (opties.opleverOnbekend) l = { ...l, project: { ...l.project, opleverOnbekend: true } };
     if (opties.intakeTekst) {
       l = { ...l, project: { ...l.project, intake: { tekst: opties.intakeTekst, datum: vandaag },
         ...(opties.budget != null && l.project.budget == null && l.project.offerte?.bedrag == null ? { budget: opties.budget } : {}),
@@ -728,8 +729,11 @@ export default function TakenApp() {
             zetDeadline={(datum) => { wijzigLijst("werk", lijst.id, l => zetOfferteDeadline(l, datum, { wie: ik })); meld(`📅 Offerte uiterlijk ${datumKort(datum).toLowerCase()}`); }}
             zetOpzet={(opzet) => {
               const wasExtern = lijst.project?.opzet?.postDoorOns === false;
+              const weerAan = REGEL_ZELF.find(r => opzet[r.vlag] === true && lijst.project?.opzet?.[r.vlag] === false && !(lijst.project?.opzet?.[r.bewaarIn] || []).length);
               wijzigLijst(weergave.ruimte, lijst.id, l => pasOpzetToe(l, opzet, { vandaag, wie: ik, nieuwId: uid }));
-              meld(opzet.postDoorOns && wasExtern ? "🎞️ Post weer bij ons — zet montage, grading en mix aan bij 🧩 Onderdelen" : "⚙️ Opzet bijgewerkt");
+              meld(opzet.postDoorOns && wasExtern ? "🎞️ Post weer bij ons — zet montage, grading en mix aan bij 🧩 Onderdelen"
+                : weerAan ? `${weerAan.label} weer bij ons — kies wat er nodig is bij 🧩 Onderdelen`
+                : opzet.castDoorOns === false || opzet.locatieDoorOns === false ? "⚙️ Opzet bijgewerkt — open taken daarvoor zijn weggehaald" : "⚙️ Opzet bijgewerkt");
             }}
             openAkkoord={() => setSheet({ soort: "akkoord", listId: lijst.id })}
             openAfwijzen={() => setSheet({ soort: "afwijzen", listId: lijst.id })}
@@ -2317,9 +2321,12 @@ function ProjectKop({ afwezigheden = [], lijst, klanten, klantVan, sjabloon, ver
   const vg = projectVoortgang(lijst);
   const klant = klantVan(p.klantId);
   const [draai, setDraai] = useState(p.draaidag);
-  const [oplever, setOplever] = useState(p.opleverdatum);
-  useEffect(() => { setDraai(p.draaidag); setOplever(p.opleverdatum); }, [p.draaidag, p.opleverdatum]);
-  const gewijzigd = draai !== p.draaidag || oplever !== p.opleverdatum;
+  const opleverBekend = p.opleverOnbekend ? null : (p.opleverdatum || null);
+  const [oplever, setOplever] = useState(opleverBekend);
+  useEffect(() => { setDraai(p.draaidag); setOplever(opleverBekend); }, [p.draaidag, opleverBekend]);
+  const opleverNieuw = oplever && oplever !== opleverBekend;
+  const gewijzigd = draai !== p.draaidag || !!opleverNieuw;
+  const schuifData = { draaidag: draai, ...(opleverNieuw ? { opleverdatum: oplever } : {}) };
   const [bezettingOpen, setBezettingOpen] = useState(false);
   const alles = vg.reduce((n, f) => n + f.totaal, 0), klaar = vg.reduce((n, f) => n + f.klaar, 0);
   return (
@@ -2347,9 +2354,12 @@ function ProjectKop({ afwezigheden = [], lijst, klanten, klantVan, sjabloon, ver
           <input type="date" value={draai || ""} onChange={e => { setDraai(e.target.value); if (!p.draaidag || !p.opleverdatum) zetProject({ draaidag: e.target.value || null }); }} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
         </label>
         <label style={{ flex: 1, fontSize: 11, color: C.muted, fontWeight: 700 }}>📦 OPLEVERING
-          <input type="date" value={oplever || ""} onChange={e => { setOplever(e.target.value); if (!p.draaidag || !p.opleverdatum) zetProject({ opleverdatum: e.target.value || null }); }} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
+          <input type="date" aria-label="Opleverdatum project" value={oplever || ""} onChange={e => { setOplever(e.target.value); if (!p.draaidag || !p.opleverdatum) zetProject({ opleverdatum: e.target.value || null, opleverOnbekend: false }); }} style={{ ...S.inp, padding: "8px 10px", fontSize: 14, marginTop: 4 }} />
         </label>
       </div>
+      {p.opleverOnbekend && !opleverNieuw
+        ? <p style={{ ...S.hint, margin: "6px 0 0" }}>📦 Opleverdatum nog onbekend{p.opleverdatum ? ` — posttaken staan voorlopig rond ${datumKort(p.opleverdatum).toLowerCase()}` : ""}. Kies een datum zodra je hem weet.</p>
+        : p.opleverdatum && !p.opleverOnbekend && !gewijzigd && <button onClick={() => zetProject({ opleverOnbekend: true })} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, padding: "4px 0 0", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>Opleverdatum toch nog onbekend?</button>}
       <DraaidagenRegel p={p} zetDagen={zetDagen} openCallsheet={openCallsheet} />
       <OpzetRegel p={p} zetOpzet={zetOpzet} />
       {/* Campagne live: startpunt van de buy-outs (leeg = opleverdatum). */}
@@ -2359,12 +2369,12 @@ function ProjectKop({ afwezigheden = [], lijst, klanten, klantVan, sjabloon, ver
           style={{ ...S.inp, padding: "6px 8px", fontSize: 13, width: "auto" }} />
         {!p.liveDatum && <span style={{ fontWeight: 400 }}>leeg = oplevering</span>}
       </label>
-      {gewijzigd && draai && oplever && p.draaidag && p.opleverdatum && (
+      {gewijzigd && draai && (oplever || p.opleverOnbekend) && p.draaidag && p.opleverdatum && (
         <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <VerschuifVoorvertoning oud={lijst} nieuw={verschuifProject(lijst, { draaidag: draai, opleverdatum: oplever })} afwezigheden={afwezigheden} klantVan={klantVan} />
+          <VerschuifVoorvertoning oud={lijst} nieuw={verschuifProject(lijst, schuifData)} afwezigheden={afwezigheden} klantVan={klantVan} />
           <span style={{ flex: 1 }} />
-          <button style={{ ...S.knop(C.bg, C.tekst), padding: "7px 12px" }} onClick={() => { setDraai(p.draaidag); setOplever(p.opleverdatum); }}>Annuleer</button>
-          <button style={{ ...S.knop(), padding: "7px 12px" }} onClick={() => verschuif({ draaidag: draai, opleverdatum: oplever })}>Planning verschuiven</button>
+          <button style={{ ...S.knop(C.bg, C.tekst), padding: "7px 12px" }} onClick={() => { setDraai(p.draaidag); setOplever(opleverBekend); }}>Annuleer</button>
+          <button style={{ ...S.knop(), padding: "7px 12px" }} onClick={() => verschuif(schuifData)}>Planning verschuiven</button>
         </div>
       )}
       <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
@@ -3046,6 +3056,17 @@ function OpzetKiezer({ opzet, zet }) {
         <button aria-pressed={!opzet.postDoorOns} onClick={() => zet({ postDoorOns: false })} style={{ ...S.chip(!opzet.postDoorOns), padding: "5px 10px", fontSize: 12 }}>Doet een ander</button>
       </div>
       {!opzet.postDoorOns && <p style={S.hint}>Geen montage-, grading- of mixtaken; wel "footage overdragen" de dag na het draaien.</p>}
+      {REGEL_ZELF.map(r => {
+        const aan = opzet[r.vlag] !== false;
+        return (
+          <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, width: 110 }}>{r.label}</span>
+            <button aria-pressed={aan} aria-label={`${r.label.slice(3)} regelen wij`} onClick={() => zet({ [r.vlag]: true })} style={{ ...S.chip(aan), padding: "5px 10px", fontSize: 12 }}>Regelen wij</button>
+            <button aria-pressed={!aan} aria-label={`${r.label.slice(3)} niet nodig`} onClick={() => zet({ [r.vlag]: false })} style={{ ...S.chip(!aan), padding: "5px 10px", fontSize: 12 }}>Niet door ons</button>
+          </div>
+        );
+      })}
+      {REGEL_ZELF.some(r => opzet[r.vlag] === false) && <p style={S.hint}>Geen taken voor {REGEL_ZELF.filter(r => opzet[r.vlag] === false).map(r => r.id).join(" en ")} in de planning.</p>}
     </div>
   );
 }
@@ -3058,7 +3079,7 @@ function OpzetRegel({ p, zetOpzet }) {
     <div style={{ marginTop: 8 }}>
       <button onClick={() => setOpen(!open)} style={{ ...S.rij, padding: "4px 0", borderBottom: "none" }} aria-label="Opzet productie">
         <span style={{ fontSize: 12, flex: 1, color: C.muted }}>
-          ⚙️ {draaidagenVan(p).length ? `${draaidagenVan(p).length} ${draaidagenVan(p).length === 1 ? "draaidag" : "draaidagen"}` : "nog geen draaidag"} · {o.prelight === "geen" ? "geen prelight" : `prelight: ${pre?.label.toLowerCase()}`} · post {o.postDoorOns ? "door ons" : "door een ander"}
+          ⚙️ {draaidagenVan(p).length ? `${draaidagenVan(p).length} ${draaidagenVan(p).length === 1 ? "draaidag" : "draaidagen"}` : "nog geen draaidag"} · {o.prelight === "geen" ? "geen prelight" : `prelight: ${pre?.label.toLowerCase()}`} · post {o.postDoorOns ? "door ons" : "door een ander"}{REGEL_ZELF.filter(r => o[r.vlag] === false).map(r => ` · geen ${r.id}`).join("")}
         </span>
         <ChevronDown size={14} color={C.licht} style={{ transform: open ? "none" : "rotate(-90deg)" }} />
       </button>
@@ -4646,7 +4667,7 @@ function PlanningSheet({ afwezigheden = [], klantVan = () => null, openAfwezighe
   const inWeekend = metDatum.filter(i => isVrijeDag(i.dueDate) && !isVastePlanning(i));
   const markers = [
     ...draaidagenVan(p).map((d, n, alle) => ({ datum: d.datum, label: `🎬 Draaidag${alle.length > 1 ? ` ${n + 1}` : ""}`, kleur: C.groen, ...(n === 0 ? { anker: "draaidag" } : {}) })),
-    ...(p.opleverdatum ? [{ datum: p.opleverdatum, label: "📦 Oplevering", kleur: "#2C6E8C", anker: "opleverdatum" }] : []),
+    ...(p.opleverdatum ? [{ datum: p.opleverdatum, label: p.opleverOnbekend ? "📦 Oplevering (voorlopig)" : "📦 Oplevering", kleur: "#2C6E8C", anker: "opleverdatum" }] : []),
   ];
 
   function snapshotNu() {
@@ -5184,16 +5205,17 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
   const [draaidag, setDraaidag] = useState(h0.draaidag && h0.draaidag >= vandaag ? h0.draaidag : plusDagen(vandaag, 21));
   const [oplever, setOplever] = useState(h0.opleverdatum || null); // null = automatisch (draaidag + doorlooptijd)
   const [verledenNaarVandaag, setVerledenNaarVandaag] = useState(true);
-  const [opzet, setOpzetState] = useState({ draaidagen: h0.draaidagen || 1, prelight: h0.prelight || "geen", postDoorOns: h0.postDoorOns !== false });
-  const zonderPost = (ids, o) => (o.postDoorOns ? ids : ids.filter(id => !postOnderdeelIds().includes(id)));
+  const [opleverOnbekend, setOpleverOnbekend] = useState(false);
+  const [opzet, setOpzetState] = useState({ draaidagen: h0.draaidagen || 1, prelight: h0.prelight || "geen", postDoorOns: h0.postDoorOns !== false, castDoorOns: true, locatieDoorOns: true });
+  const zonderPost = (ids, o) => { const uit = new Set([...(o.postDoorOns ? [] : postOnderdeelIds()), ...regelZelfIds(o)]); return ids.filter(id => !uit.has(id)); };
   const [onderdelen, setOnderdelen] = useState(() => zonderPost([...new Set([...standaardOnderdelen(sjabloon), ...(h0.onderdelen || [])])], opzet));
-  const setOpzet = (v) => { const n = { ...opzet, ...v }; setOpzetState(n); if (v.postDoorOns === false) setOnderdelen(o => zonderPost(o, n)); };
+  const setOpzet = (v) => { const n = { ...opzet, ...v }; setOpzetState(n); if (v.postDoorOns === false || v.castDoorOns === false || v.locatieDoorOns === false) setOnderdelen(o => zonderPost(o, n)); };
   const [deliverables, setDeliverables] = useState(() => normaliseerDeliverables(vanOfferte?.project?.deliverables || (Object.keys(h0.deliverables || {}).length ? h0.deliverables : null) || sjabloon?.laatsteDeliverables || {}));
   const hNu = leesIntake(intakeTekst, { vandaag, klanten });
   const hOpties = (hNu.draaidagOpties || hNu.opleverOpties) ? hNu : h0;
   function neemOver(h) {
     if (h.draaidag && h.draaidag >= vandaag) setDraaidag(h.draaidag);
-    if (h.opleverdatum) setOplever(h.opleverdatum);
+    if (h.opleverdatum) { setOplever(h.opleverdatum); setOpleverOnbekend(false); }
     if (h.klantId && !klantId) setKlantId(h.klantId);
     const n = { ...opzet, ...(h.draaidagen ? { draaidagen: h.draaidagen } : {}), ...(h.prelight ? { prelight: h.prelight } : {}), ...(h.postDoorOns != null ? { postDoorOns: h.postDoorOns } : {}) };
     setOpzetState(n);
@@ -5215,7 +5237,8 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
       </div></div>
     );
   }
-  const opleverdatum = oplever || (draaidag ? plusDagen(draaidag, sjabloon.standaardDoorlooptijd || 14) : "");
+  const doorlooptijd = sjabloon.standaardDoorlooptijd || 14;
+  const opleverdatum = (!opleverOnbekend && oplever) || (draaidag ? plusDagen(draaidag, doorlooptijd) : "");
   const voorbeeld = draaidag ? sorteerStappen(sjabloon.stappen, sjabloon.standaardDoorlooptijd || 14).map(st => ({ st, d: stapDatum(st, { draaidag, opleverdatum }) })) : [];
   const teLaat = voorbeeld.filter(x => x.d < vandaag).length;
   // Meerdere offertes open? Dan eerst kiezen welke akkoord is.
@@ -5269,11 +5292,18 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
             <input type="date" style={S.inp} value={draaidag} onChange={e => setDraaidag(e.target.value)} />
           </label>
           <label style={{ flex: 1 }}><span style={S.label}>📦 Oplevering</span>
-            <input type="date" style={S.inp} value={opleverdatum} onChange={e => setOplever(e.target.value)} />
+            {opleverOnbekend
+              ? <div style={{ ...S.inp, color: C.muted, background: C.bg }}>Nog onbekend</div>
+              : <input type="date" style={S.inp} aria-label="Opleverdatum" value={opleverdatum} onChange={e => setOplever(e.target.value)} />}
           </label>
         </div>
-        {opleverdatum && draaidag && opleverdatum < draaidag && <p style={{ ...S.hint, color: C.rood }}>De oplevering ligt vóór de draaidag.</p>}
-        {[["🎬 Draaidag", hOpties.draaidagOpties, draaidag, setDraaidag], ["📦 Oplevering", hOpties.opleverOpties, opleverdatum, setOplever]].map(([label, opties, huidig, zet]) => (opties || []).length > 1 && (
+        <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, fontSize: 14 }}>
+          <input type="checkbox" checked={opleverOnbekend} onChange={e => setOpleverOnbekend(e.target.checked)} aria-label="Opleverdatum nog onbekend" />
+          Opleverdatum nog niet bekend
+        </label>
+        {opleverOnbekend && draaidag && <p style={S.hint}>De posttaken komen voorlopig rond {datumKortNl(opleverdatum)} te staan ({doorlooptijd} dagen na de draaidag). Vul de echte datum later in de projectkop in, dan schuiven ze mee.</p>}
+        {!opleverOnbekend && opleverdatum && draaidag && opleverdatum < draaidag && <p style={{ ...S.hint, color: C.rood }}>De oplevering ligt vóór de draaidag.</p>}
+        {[["🎬 Draaidag", hOpties.draaidagOpties, draaidag, setDraaidag], ["📦 Oplevering", opleverOnbekend ? null : hOpties.opleverOpties, opleverdatum, setOplever]].map(([label, opties, huidig, zet]) => (opties || []).length > 1 && (
           <div key={label} style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
             <span style={{ fontSize: 12, color: C.muted, fontWeight: 700 }}>{label} — opties uit het gesprek:</span>
             {opties.map(d => <button key={d} aria-pressed={huidig === d} onClick={() => zet(d)} style={{ ...S.chip(huidig === d), padding: "4px 10px", fontSize: 12 }}>{datumKortNl(d)}</button>)}
@@ -5302,10 +5332,10 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
           <PlanningVoorbeeld voorbeeld={voorbeeld} vandaag={vandaag} verledenNaarVandaag={verledenNaarVandaag}
             aanpassing={planAanpassing} zet={setPlanAanpassing} />
         )}
-        <p style={{ ...S.sectieKop, marginTop: 18 }}>🧩 Wat is er nodig voor deze productie?</p>
         <p style={{ ...S.sectieKop, marginTop: 18 }}>📦 Deliverables</p>
         <DeliverablesKiezer waarde={deliverables} zet={setDeliverables} />
-        <OnderdelenKiezer gekozen={onderdelen} setGekozen={setOnderdelen} meetings={meetings} zonderPost={!opzet.postDoorOns}
+        <p style={{ ...S.sectieKop, marginTop: 18 }}>🧩 Wat is er nodig voor deze productie?</p>
+        <OnderdelenKiezer gekozen={onderdelen} setGekozen={setOnderdelen} meetings={meetings} zonderPost={!opzet.postDoorOns} opzet={opzet}
           eigenPlanning={eigenPlanning} setEigenPlanning={setEigenPlanning} suggesties={planningSuggesties(sjabloon, eigenPlanning)} draaidag={draaidag}
           setMeetings={(m) => { setMeetings(m); setPpmAangepast(true); }} />
         {teLaat > 0 && (
@@ -5315,7 +5345,7 @@ function NieuwProjectSheet({ sjablonen, klanten, vandaag, startSjabloonId, nieuw
           </label>
         )}
         <button disabled={!kan} onClick={() => maak(sjabloon, {
-          naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, verledenNaarVandaag, onderdelen: zonderPost(onderdelen, opzet), meetings, deliverables, eigenPlanning, opzet, versieId, planAanpassing,
+          naam: naam.trim(), klantId: klantId || null, draaidag, opleverdatum, opleverOnbekend, verledenNaarVandaag, onderdelen: zonderPost(onderdelen, opzet), meetings, deliverables, eigenPlanning, opzet, versieId, planAanpassing,
           ...(!vanOfferte && offerteNietDoorMij ? { offerteAlGedaan: true, opdrachtVia } : {}),
           ...(!vanOfferte?.project?.intake?.tekst && intakeTekst.trim() ? { intakeTekst: intakeTekst.trim(), budget: hNu.budget ?? null, liveDatum: hNu.liveDatum || null } : {}),
         })}
@@ -5518,12 +5548,13 @@ function LeerSheet({ lijst, sjabloon, sluit, toepassen, nacalculatie = null }) {
 // ONDERDELEN-KIEZER — per groep chips die je met één tik aan/uit zet.
 // Kickoff en PPM krijgen een datum en tijd zodra ze aan staan.
 // ════════════════════════════════════════════════════════════════════
-function OnderdelenKiezer({ gekozen, setGekozen, meetings, setMeetings, eigenPlanning = null, setEigenPlanning, suggesties = [], draaidag, zonderPost = false }) {
+function OnderdelenKiezer({ gekozen, setGekozen, meetings, setMeetings, eigenPlanning = null, setEigenPlanning, suggesties = [], draaidag, zonderPost = false, opzet = {} }) {
+  const verborgen = new Set(REGEL_ZELF.filter(r => opzet[r.vlag] === false).map(r => r.groep));
   const aan = new Set(gekozen);
   const zet = (id) => { const n = new Set(aan); n.has(id) ? n.delete(id) : n.add(id); setGekozen([...n]); };
   return (
     <div>
-      {ONDERDELEN.filter(g => !(zonderPost && g.fase === "post")).map(g => {
+      {ONDERDELEN.filter(g => !(zonderPost && g.fase === "post") && !verborgen.has(g.groep)).map(g => {
         const ids = g.items.map(i => i.id);
         const allesAan = ids.every(id => aan.has(id));
         return (
@@ -5568,7 +5599,8 @@ function OnderdelenKiezer({ gekozen, setGekozen, meetings, setMeetings, eigenPla
 
 function OnderdelenSheet({ lijst, sjabloon, vandaag, sluit, toepassen }) {
   const p = lijst.project;
-  const [gekozen, setGekozen] = useState(() => p.onderdelen || standaardOnderdelen(sjabloon));
+  const opzet = standaardOpzet(p);
+  const [gekozen, setGekozen] = useState(() => { const uit = new Set(regelZelfIds(opzet)); return (p.onderdelen || standaardOnderdelen(sjabloon)).filter(id => !uit.has(id)); });
   const uitTaken = useMemo(() => leesPlanningUitTaken(lijst), []);
   const [meetings, setMeetings] = useState(() => standaardMeetings({ draaidag: p.draaidag, vandaag, bestaand: { ...(p.meetings || {}), ...uitTaken.meetings } }));
   const [deliverables, setDeliverables] = useState(() => normaliseerDeliverables(p.deliverables || {}));
@@ -5582,7 +5614,7 @@ function OnderdelenSheet({ lijst, sjabloon, vandaag, sluit, toepassen }) {
         <p style={{ ...S.sectieKop, marginTop: 4 }}>📦 Deliverables</p>
         <DeliverablesKiezer waarde={deliverables} zet={setDeliverables} />
         <p style={{ ...S.sectieKop, marginTop: 14 }}>🧩 Onderdelen</p>
-        <OnderdelenKiezer {...{ gekozen, setGekozen, meetings, setMeetings, eigenPlanning, setEigenPlanning }} suggesties={planningSuggesties(sjabloon, eigenPlanning)} draaidag={p.draaidag} />
+        <OnderdelenKiezer {...{ gekozen, setGekozen, meetings, setMeetings, eigenPlanning, setEigenPlanning, opzet }} zonderPost={opzet.postDoorOns === false} suggesties={planningSuggesties(sjabloon, eigenPlanning)} draaidag={p.draaidag} />
         {weg > 0 && <p style={{ ...S.hint, color: C.oranje }}>⚠️ {weg} open {weg === 1 ? "taak verdwijnt" : "taken verdwijnen"} uit het project.</p>}
         <button style={{ ...S.knop(), width: "100%", marginTop: 12 }} onClick={() => toepassen(gekozen, meetings, deliverables, eigenPlanning)}>Toepassen</button>
       </div>

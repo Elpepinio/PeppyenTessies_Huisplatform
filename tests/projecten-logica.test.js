@@ -541,4 +541,40 @@ sectie("Feestdagen");
   test("taak op de draaidag (sjabloon) is vast", P.isVastePlanning({ anker: "draai", offset: 0, category: "productie" }) && !P.isVastePlanning({ anker: "draai", offset: -3, category: "pre" }));
 }
 
+sectie("Cast en locatie: regelen wij of niet");
+{
+  const g = P.maakProjectUitSjabloon(groot, { naam: "Groot", draaidag: "2026-12-14", opleverdatum: "2027-01-08", vandaag: "2026-11-22", nieuwId });
+  const heeft = (l, re) => l.items.some(i => !i.checked && re.test(i.name));
+  test("sjabloon heeft casting- en locatietaak", heeft(g, /casting/i) && heeft(g, /^locatie/i));
+  const zonder = P.pasOpzetToe(g, { castDoorOns: false, locatieDoorOns: false }, { vandaag: "2026-11-22", nieuwId });
+  test("cast uit → castingtaak weg", !heeft(zonder, /casting/i));
+  test("locatie uit → locatietaak weg", !heeft(zonder, /^locatie/i));
+  test("callsheet 'naar crew, cast en klant' blijft staan", heeft(zonder, /callsheets doorsturen/i));
+  test("opzet onthoudt de keuze", zonder.project.opzet.castDoorOns === false && zonder.project.opzet.locatieDoorOns === false);
+  const terug = P.pasOpzetToe(zonder, { castDoorOns: true }, { vandaag: "2026-11-22", nieuwId });
+  test("cast weer aan → castingtaak terug, locatie nog weg", heeft(terug, /casting/i) && !heeft(terug, /^locatie/i));
+  test("teruggezette taak niet meer bij uitgezette stappen", !terug.project.uitgezetteStapIds.includes("g-casting"));
+  test("regelZelfIds geeft de onderdelen die uit moeten", P.regelZelfIds({ castDoorOns: false }).join() === "acteurs,edelfiguranten,figuranten");
+  const metOnderdeel = { ...g, items: [...g.items, { id: "x1", name: "Locatie exterieur regelen", onderdeelId: "loc-exterieur", checked: false }, { id: "x2", name: "Locatie al geregeld", onderdeelId: "loc-interieur", checked: true }] };
+  const z2 = P.pasOpzetToe(metOnderdeel, { locatieDoorOns: false }, { vandaag: "2026-11-22", nieuwId });
+  test("open onderdeel-taak gaat weg, afgevinkte blijft", !z2.items.some(i => i.id === "x1") && z2.items.some(i => i.id === "x2"));
+}
+
+sectie("Oplevering nog onbekend");
+{
+  const p0 = P.maakProjectUitSjabloon(klein, { naam: "X", draaidag: "2026-12-10", opleverdatum: "2026-12-24", vandaag: "2026-11-22", nieuwId });
+  const p = { ...p0, project: { ...p0.project, opleverOnbekend: true } };
+  const post = (l) => l.items.find(i => i.anker === "oplever" && !i.checked);
+  const a = P.verschuifProject(p, { draaidag: "2026-12-17" });
+  test("draaidag een week later → voorlopige oplevering schuift mee", a.project.opleverdatum === "2026-12-31");
+  test("blijft voorlopig", a.project.opleverOnbekend === true);
+  test("posttaak schuift mee", post(a).dueDate > post(p).dueDate);
+  const b = P.verschuifProject(p, { opleverdatum: "2027-01-15" });
+  test("echte datum kiezen → niet meer onbekend", b.project.opleverdatum === "2027-01-15" && b.project.opleverOnbekend === false);
+  const c = P.verschuifProject(p, { opleverdatum: "2026-12-24" });
+  test("ook de voorlopige datum bevestigen maakt hem bekend", c.project.opleverOnbekend === false);
+  const d = P.verschuifProject(p0, { draaidag: "2026-12-17" });
+  test("bekende oplevering schuift niet mee met de draaidag", d.project.opleverdatum === "2026-12-24");
+}
+
 samenvatting();
