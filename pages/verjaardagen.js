@@ -14,8 +14,6 @@ const RELATIES = [
 const BINNENKORT_DAGEN = 14;
 const WIE_BADGE_VENSTER_MS = 24 * 60 * 60 * 1000;
 
-const CADEAU_STATUSSEN = ["Idee", "Gekocht", "Ingepakt", "Gegeven"];
-
 // ---- Helpers ----
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 

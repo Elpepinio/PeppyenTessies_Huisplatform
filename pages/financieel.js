@@ -1862,7 +1862,6 @@ function BvTab({ data, persist }) {
   const vpb = berekenVpb(belastbareWinstNaVerrekening);
   const winstNaVpb = winst - vpb;
   const box2 = berekenBox2Belasting(dividend);
-  const beleggingenBv = +data.beleggingenBv || 0;
 
   // Dividend-timing: totaal te verdelen over 2026 en 2027, met schuifje.
   const { belastbareWinst: winstZzpBelast } = berekenBelastbareWinstZzp(+data.winstZzp || 0, { voldoetUrencriterium: data.voldoetUrencriterium, isStarter: data.isStarter });

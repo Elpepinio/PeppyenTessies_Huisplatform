@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { ChevronLeft, Plus, X, Trash2, Mic, Square, Play, Eraser, Search, FileDown, Pencil } from "lucide-react";
 import { jsPDF } from "jspdf";
@@ -495,7 +495,6 @@ function SpraakOpnemer({ onKlaar, onAnnuleer }) {
   const chunksRef = useRef([]);
   const startTijdRef = useRef(0);
   const timerRef = useRef(null);
-  const opnameUrlRef = useRef(null);
   const [opnameBlob, setOpnameBlob] = useState(null);
   const herkenningRef = useRef(null);
   const transcriptRef = useRef(""); // los van state, zodat onresult altijd de actuele waarde ziet

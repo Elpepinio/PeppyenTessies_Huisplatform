@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, MapPin, Star, Camera, Search, Filter, Share2 } from "lucide-react";
+import { Plus, X, ChevronLeft, Share2 } from "lucide-react";
 
 // ── Constanten ─────────────────────────────────────────
 const CATEGORIEEN = [
@@ -201,7 +201,6 @@ function PlacesKaart({ places, onPlaceKlik, filteredIds }) {
     zichtbaar.forEach(place => {
       const cat = CATEGORIEEN.find(c => c.id === place.categorie);
       const kleur = cat?.kleur || C.muted;
-      const status = STATUSSEN.find(s => s.id === place.status);
 
       // SVG pin marker
       const svgIcon = window.L.divIcon({
@@ -864,7 +863,6 @@ export default function PlacesApp() {
   // ════════════════════════
   if (activePlace) {
     const cat = CATEGORIEEN.find(c => c.id === activePlace.categorie);
-    const status = STATUSSEN.find(s => s.id === activePlace.status);
 
     return (
       <div style={S.appBg}>

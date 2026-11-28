@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, Camera, Leaf, Droplets, Scissors, Sun, Thermometer, AlertCircle, Check } from "lucide-react";
+import { Plus, X, ChevronLeft, Camera, Check } from "lucide-react";
 
 // ── Constanten ─────────────────────────────────────────
 const MAANDEN = ["Jan","Feb","Mrt","Apr","Mei","Jun","Jul","Aug","Sep","Okt","Nov","Dec"];
@@ -192,7 +192,6 @@ export default function PlantenApp() {
   const fileRef = useRef();
   const nieuweFotoRef = useRef();
   const [nieuweHerkenLoading, setNieuweHerkenLoading] = useState(false);
-  const cameraRef = useRef();
 
   const nu = new Date();
   const huidigeM = nu.getMonth(); // 0-11

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, Search, ShoppingCart, Clock, Users, Flame, Check, Share2 } from "lucide-react";
+import { Plus, X, ChevronLeft, ShoppingCart, Users, Check, Share2 } from "lucide-react";
 
 // ── Constanten ─────────────────────────────────────────
 const DAGEN = ["Maandag","Dinsdag","Woensdag","Donderdag","Vrijdag","Zaterdag","Zondag"];
@@ -160,11 +160,6 @@ function weergaveReceptBeoordeling(recept) {
 
 function huidigeMaandag() {
   const nu = new Date();
-  // Gebruik lokale datum om tijdzone-issues te vermijden
-  const jaar = nu.getFullYear();
-  const maand = String(nu.getMonth() + 1).padStart(2, "0");
-  const dag = String(nu.getDate()).padStart(2, "0");
-  const vandaag = `${jaar}-${maand}-${dag}`;
   // Bereken dag van de week (0=zo, 1=ma)
   const dagVdWeek = nu.getDay();
   const diff = dagVdWeek === 0 ? -6 : 1 - dagVdWeek;
@@ -294,8 +289,6 @@ export default function MaaltijdApp() {
   });
 
   // Weekmenu plannen
-  const [sleepDag, setSleepDag] = useState(null);
-  const [sleepMoment, setSleepMoment] = useState(null);
   const [showPlanOverlay, setShowPlanOverlay] = useState(false);
   const [planDag, setPlanDag] = useState(null);
   const [planMoment, setPlanMoment] = useState(null);
@@ -1060,7 +1053,7 @@ Als er totaal geen (deel van een) gerecht op de foto te zien is: {"fout": "Geen 
       // prima prijs voor het niet meer kunnen vastlopen op Vercel's limiet.
       const opslagFoto = await comprimeerFotoVoorOpslag(file);
       const aiReferentieFoto = await comprimeerFoto(file, 1000, 0.75);
-      const nieuw = slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}`, aiGerechtFoto: `data:image/jpeg;base64,${aiReferentieFoto}` }, { opentBewerken: true });
+      slaReceptOp({ ...parsed, foto: `data:image/jpeg;base64,${opslagFoto}`, aiGerechtFoto: `data:image/jpeg;base64,${aiReferentieFoto}` }, { opentBewerken: true });
       showToast(`✨ Recept nagemaakt op basis van de foto — pas gerust aan wat niet klopt`);
     } catch (e) {
       setImportFout(e.message);

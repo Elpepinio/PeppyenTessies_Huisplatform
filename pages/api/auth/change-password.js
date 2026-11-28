@@ -1,4 +1,4 @@
-import { verifyPassword, createHousehold, hasHousehold, getSessionTokenFromReq, isValidSession } from "../../../lib/auth";
+import { verifyPassword, createHousehold, getSessionTokenFromReq, isValidSession } from "../../../lib/auth";
 import { Redis } from "@upstash/redis";
 
 const redis = Redis.fromEnv();

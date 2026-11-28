@@ -14,7 +14,7 @@
 // ════════════════════════════════════════════════════════════════════
 import { laadPdfjs } from "../lib/pdf-worker";
 import { werkbelasting, werkplanningWaarschuwingen, perWeek, DRUKTE, DRUKTE_GRENS } from "../lib/werkplanning-logica";
-import { normAfwezigheid, herkenAfwezigheid, afwezigOpDatum, komendeAfwezigheden, afwezigheidConflicten, isAfwezigOp, noemtPersoon } from "../lib/afwezigheid-logica";
+import { normAfwezigheid, herkenAfwezigheid, afwezigOpDatum, komendeAfwezigheden, afwezigheidConflicten, noemtPersoon } from "../lib/afwezigheid-logica";
 import { callActiepunten, callsVan, callTakenVan, callSamenvatting, bewaarCallInProject, verwijderCall, momentTijd, callVoorMoment, isDraaiMoment, verzetMoment, faseVoorDatum, synchroniseerMomentMetCall } from "../lib/calls-logica";
 import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import Link from "next/link";
@@ -42,11 +42,11 @@ import {
   maakAanvraag, aanvraagNaarOfferte, zetOfferteDeadline, pasOpzetToe, standaardOpzet, PRELIGHT, postOnderdeelIds,
   isWeekend, isVrijeDag, feestdagNaam, naarWerkdag, plusWerkdagen, tijdMin, isVastePlanning, schuifPlanning,
   schuifKeten, zetAfhankelijkheid, zetWachtDagen, leidAfhankelijkhedenAf, spelingVan, opvolgersVan,
-  voorgangersVan, duurVan, startVan, voegVoorgangerToe, verwijderVoorganger, zetDuur, isKritiek, zetEigenVrijeDagen, vrijeDagReden,
+  voorgangersVan, duurVan, startVan, voegVoorgangerToe, verwijderVoorganger, zetDuur, isKritiek, zetEigenVrijeDagen,
   bewaarKetenInSjabloon, vergelijkPlanning, planningWaarschuwingen,
 } from "../lib/projecten-logica";
 import { leesIntake, herkenUitOfferte, datumKortNl } from "../lib/intake-logica";
-import { offerteVersies, openVersies, gekozenVersie, vergelijkOffertes, voegOfferteVersieToe, kiesOfferteVersie, synchroniseerPlekken } from "../lib/offerte-versies-logica";
+import { offerteVersies, openVersies, vergelijkOffertes, voegOfferteVersieToe, kiesOfferteVersie, synchroniseerPlekken } from "../lib/offerte-versies-logica";
 import { leesOfferte, regelsUitOffertePdf, maakKostenWerkboek, kostenBestandsnaam, compacteSpecificatie, specificatieStand, korteProjectnaam, vulBezettingUitOfferte, werkelijkUitBezetting, eigenPostSleutels, postNaamSleutel, maakNacalculatie, nacalculatieInzichten, inzichtenVoorOfferte, projectCijfers, cijferJaren } from "../lib/offerte-pdf-logica";
 
 // Marge-doel (standaard minimaal 20%, streven 25%), overal in de projecten nodig.
@@ -2417,7 +2417,6 @@ function ProjectKop({ afwezigheden = [], lijst, klanten, klantVan, sjabloon, ver
 // ── Meerdere draaidagen: extra dagen toevoegen/verwijderen + callsheet per dag ──
 function DraaidagenRegel({ p, zetDagen, openCallsheet }) {
   const dagen = draaidagenVan(p);
-  const [nieuw, setNieuw] = useState(false);
   if (!p.draaidag) return null;
   const voegToe = () => {
     const laatste = dagen[dagen.length - 1]?.datum || p.draaidag;
@@ -4634,7 +4633,6 @@ function PlanningSheet({ afwezigheden = [], klantVan = () => null, openAfwezighe
   const [geraakt, setGeraakt] = useState([]);
   const [koppelOpen, setKoppelOpen] = useState(null);
   const [melding, setMelding] = useState(null);
-  const [momentOpen, setMomentOpen] = useState(null); // { id, datum, tijd }
   const [planOpen, setPlanOpen] = useState(null); // { onderwerp, met, datum, tijd }
   const [ankerVoorstel, setAnkerVoorstel] = useState(null); // { soort, datum, nieuw }
   const [alleenKritiek, setAlleenKritiek] = useState(false);
@@ -4843,7 +4841,6 @@ function PlanningSheet({ afwezigheden = [], klantVan = () => null, openAfwezighe
               );
               const i = r.i;
               if (alleenKritiek && !isKritiek(lijst, i)) return null;
-              const vast = isVastePlanning(i);
               const vastMoment = isVastMoment(i);
               const weekend = isVrijeDag(i.dueDate) && !vastMoment;
               const telaat = i.dueDate < vandaag;

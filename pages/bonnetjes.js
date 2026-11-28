@@ -1,7 +1,7 @@
 import { laadPdfjs } from "../lib/pdf-worker";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, Search, Camera, Trash2, Calendar, ShieldCheck, ShieldAlert, ShieldX, Store } from "lucide-react";
+import { Plus, X, ChevronLeft, Search, Camera, Trash2, ShieldCheck, ShieldAlert, ShieldX, Store } from "lucide-react";
 
 // ── Constanten ─────────────────────────────────────────
 const CATEGORIEEN = [

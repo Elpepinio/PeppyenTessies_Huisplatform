@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { rolHerhalendeTaakDoor, normaliseerHerhaling, volgendeHerhalingsDatum, herhalingLabel } from "../lib/taken-logica";
-import { Plus, Check, CheckCheck, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, Gift, MoreHorizontal, Camera } from "lucide-react";
+import { Plus, Check, CheckCheck, X, ChevronLeft, RotateCcw, Star, Sparkles, Pencil, Trash2, Eye, EyeOff, History, Settings, MoreHorizontal, Camera } from "lucide-react";
 
 // ---- Constanten ----
 const UNITS = ["stuks", "g", "kg", "ml", "l", "pak"];

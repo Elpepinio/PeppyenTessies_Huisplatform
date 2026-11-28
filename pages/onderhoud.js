@@ -1,7 +1,7 @@
 import { laadPdfjs } from "../lib/pdf-worker";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, X, ChevronLeft, AlertCircle, Check, Clock, ExternalLink, Pencil } from "lucide-react";
+import { Plus, X, ChevronLeft, Check, ExternalLink, Pencil } from "lucide-react";
 
 const OBJECT_ICONEN = ["🏠","🚐","🚗","🔧","❄️","🌡️","💧","⚡","🌿","📦","🛁","🍳","🔑","🏊","📺","💻"];
 
@@ -1409,10 +1409,6 @@ export default function OnderhoudApp() {
   // ════════════════════════
   // HOOFD OVERZICHT
   // ════════════════════════
-  const spoedTaken = alleTakenGesorteerd().filter(t => {
-    const d = dagenTotVolgende(t);
-    return d !== null && d <= 30;
-  });
 
   return (
     <div style={S.appBg}>

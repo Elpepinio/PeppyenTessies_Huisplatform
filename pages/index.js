@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { BUILD_INFO } from "../lib/build-info";
-import { Home, List, Wallet, LogOut, Lock, KeyRound, Settings, Eye, EyeOff } from "lucide-react";
+import { Home, LogOut, Lock, KeyRound, Settings, Eye, EyeOff } from "lucide-react";
 import { DndContext, MouseSensor, TouchSensor, KeyboardSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import { SortableContext, rectSortingStrategy, arrayMove, useSortable, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";

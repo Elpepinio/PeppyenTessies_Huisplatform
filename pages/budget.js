@@ -32,7 +32,6 @@ const CATEGORIES = ["Wonen","Boodschappen","Transport","Abonnementen","Uit eten"
 const _now       = new Date();
 const NOW_MONTH  = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}`;
 const NOW_YEAR   = _now.getFullYear();
-const NOW_Q      = Math.ceil((_now.getMonth() + 1) / 3);
 
 // ── Rabobank CSV parser ───────────────────────────────────────────────────────
 // Robuuste CSV-tokenisatie via PapaParse (RFC4180-conform) i.p.v. een
@@ -211,16 +210,6 @@ function parseCreditCardCSV(text, categorieMap) {
       bankRef,
     }];
   });
-}
-
-function detectIBANsInCSV(text) {
-  const sep = text.split("\n")[0].split(";").length > text.split("\n")[0].split(",").length ? ";" : ",";
-  const ibans = new Set();
-  text.trim().split("\n").slice(1).forEach(line => {
-    const first = line.split(sep)[0].replace(/^"|"$/g,"").trim();
-    if (/^NL\d{2}[A-Z]{4}\d{10}$/.test(first)) ibans.add(first);
-  });
-  return [...ibans];
 }
 
 function guessCategory(t) {
@@ -872,7 +861,6 @@ export default function BudgetApp() {
   const setExtraInkomsten = (updater) => persist({ extraInkomsten: typeof updater === "function" ? updater(extraInkomsten) : updater });
   const setExpenses     = (updater) => persist({ expenses: typeof updater === "function" ? updater(expenses) : updater });
   const setBudgets      = (updater) => persist({ budgets: typeof updater === "function" ? updater(budgets) : updater });
-  const setReceipts     = (updater) => persist({ receipts: typeof updater === "function" ? updater(receipts) : updater });
   const setSavingsGoals = (updater) => persist({ savingsGoals: typeof updater === "function" ? updater(savingsGoals) : updater });
   const setTasks        = (updater) => persist({ tasks: typeof updater === "function" ? updater(tasks) : updater });
   const setBijst        = (updater) => persist({ bijst: typeof updater === "function" ? updater(bijst) : updater });
@@ -1390,8 +1378,6 @@ export default function BudgetApp() {
     p2: incomeForMonthPersoon(incomeHistory, incomes, "p2", selectedMonth) - (totalByAccount.p2||0) - bijdrageP2Aftrek,
     gezamenlijk: gezBudget - (totalByAccount.gezamenlijk||0),
   };
-  const totalIncome = totaalInkomenVoorMaand(incomeHistory, incomes, extraInkomsten, selectedMonth);
-  const totalAll    = Object.values(totalByAccount).reduce((s,v) => s+v, 0);
 
   // ── Loading screen ────────────────────────────────────────────────────────
   if (loading) return (

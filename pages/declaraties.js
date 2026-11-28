@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { ChevronLeft, Plus, X, Car, ParkingSquare, Bus, Receipt, Trash2, Pencil, Check, Download, Calculator, Star, Camera } from "lucide-react";
+import { ChevronLeft, Plus, X, Trash2, Pencil, Check, Download, Calculator, Star, Camera } from "lucide-react";
 
 // ── Constanten ────────────────────────────────────────────
 // Belastingdienst-vrijstelling voor zakelijke kilometers met eigen vervoer.
@@ -486,7 +486,6 @@ export default function DeclaratiesApp() {
   const [toast, setToast] = useState(null);
   const [sjablonen, setSjablonen] = useState({});
   const [showSjabloonBeheer, setShowSjabloonBeheer] = useState(false);
-  const [volledigeNaamInvoer, setVolledigeNaamInvoer] = useState("");
   const [sjabloonUploadBezig, setSjabloonUploadBezig] = useState(false);
   const [xlsxBezig, setXlsxBezig] = useState(false);
   const lastWriteRef = useRef(0);
